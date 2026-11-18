@@ -3298,20 +3298,32 @@ class HydrationImpl(
         // changed while the daemon was stopped): the delete would tombstone that row and evict its cache file, the
         // only copy. The user deletes such a file on its own first, or the client says it did (discardLocal,
         // gkrost/unidrive-cli#445: "discard_local":true): then those bytes go with the tree.
+        // gkrost/unidrive-cli#746 finding 3: the rows below as vetted now, and which of them were clean. The provider delete
+        // takes seconds on a large tree; a row made below meanwhile, or a clean one that took unsynced bytes, an upload or
+        // an open handle meanwhile, is not part of the tree the client asked to delete: its row and its copy stay.
+        var vetted: Set<String> = emptySet()
+        var vettedClean: Set<String> = emptySet()
         if (!recursive) {
             if (stateDb.hasEntriesBelow(below)) return refusedNotEmpty(log, normalised, recursive, "alive_descendants")
-        } else if (discardLocal) {
-            val discarded = stateDb.getEntriesByPrefix(below).count { holdsUnsyncedBytes(it) }
-            if (discarded > 0) log.info("rmdir of {}: discard_local, {} file(s) below with bytes only this computer had", normalised, discarded)
         } else {
-            stateDb.getEntriesByPrefix(below).firstOrNull { holdsUnsyncedBytes(it) }?.let {
-                return refusedNotEmpty(log, normalised, recursive, "unsynced_bytes", it.path)
+            val rows = stateDb.getEntriesByPrefix(below)
+            val unsynced = rows.filter { holdsUnsyncedBytes(it) }
+            if (!discardLocal) {
+                unsynced.firstOrNull()?.let { return refusedNotEmpty(log, normalised, recursive, "unsynced_bytes", it.path) }
+            } else if (unsynced.isNotEmpty()) {
+                log.info("rmdir of {}: discard_local, {} file(s) below with bytes only this computer had", normalised, unsynced.size)
             }
+            vetted = rows.mapTo(HashSet()) { it.path }
+            vettedClean = vetted - unsynced.mapTo(HashSet()) { it.path }
+        }
+        val keepBelow = { row: org.krost.unidrive.sync.model.SyncEntry ->
+            row.path !in vetted ||
+                (row.path in vettedClean && (holdsUnsyncedBytes(row) || hasUploadSlot(row.path) || openSets.values.any { it.containsValue(row.path) }))
         }
 
         return runCatching {
-            mount.deleteRemote(normalised, permanent)
-            evictCacheTree(normalised)
+            val kept = mount.deleteRemote(normalised, permanent, keepBelow)
+            evictCacheTree(normalised, kept)
             RmdirResult.Ok
         }.getOrElse { e ->
             // gkrost/unidrive-cli#452 (extends #438 item 9): a cancelled caller is not a failed request — the
@@ -3405,16 +3417,22 @@ class HydrationImpl(
     // a no-op and a partial failure must not abort the op (the cloud delete
     // already succeeded). Deletes children before parents so the directory
     // empties before it is removed.
-    private fun evictCacheTree(path: String) {
+    // gkrost/unidrive-cli#746 finding 3: the copies of [keep] (rows the delete left alive) stay, and so do the folders
+    // that hold them.
+    private fun evictCacheTree(path: String, keep: Set<String> = emptySet()) {
+        val keepFiles = keep.mapNotNullTo(HashSet()) { runCatching { mount.resolveCachePath(it).toAbsolutePath().normalize() }.getOrNull() }
         runCatching {
             val root = mount.resolveCachePath(path)
             if (!Files.exists(root)) return
             // A junction or link below goes as the entry itself, never with what it leads to.
-            LinkedEntries.deleteTree(root) { p -> runCatching { Files.deleteIfExists(p) } }
+            LinkedEntries.deleteTree(root) { p ->
+                if (p.toAbsolutePath().normalize() !in keepFiles) runCatching { Files.deleteIfExists(p) }
+            }
         }
         // archive#728: the whole subtree left the accounting with the folder. (A partial failure over-counts
         // until the next walk, which finds the leftovers and reconciles them.)
         forgetCachePrefix(path)
+        keep.forEach { accountCacheFileOnDisk(it) }
     }
 
     private fun prepareEmptyCache(path: String): java.nio.file.Path {

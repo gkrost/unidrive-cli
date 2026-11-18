@@ -2022,7 +2022,10 @@ class MountEngine private constructor(
     suspend fun deleteRemote(
         path: String,
         permanent: Boolean = false,
-    ) {
+        // gkrost/unidrive-cli#746 finding 3: for a folder, the rows below that the caller did not vet for this delete (made
+        // or written while the provider delete ran). They stay alive; the paths of those kept are returned.
+        keepBelow: ((SyncEntry) -> Boolean)? = null,
+    ): Set<String> {
         // Read before the delete: the folder check below needs the row, and once the
         // row is tombstoned the alive view no longer answers for it.
         val entryBefore = db.getEntry(path)
@@ -2055,10 +2058,20 @@ class MountEngine private constructor(
                 }
             }
         }
-        db.markDeleted(path, mountDelete = true)
-        // archive#87: a folder's rows below it are part of the same user delete — leave none of
-        // them EXISTS, or the next fresh mount plans their re-download (the live 133k case).
-        if (entryBefore?.isFolder == true) db.markDescendantsDeleted(path, mountDelete = true)
+        if (entryBefore?.isFolder != true) {
+            db.markDeleted(path, mountDelete = true)
+            return emptySet()
+        }
+        // One transaction: no row is written below the folder between the read of the rows to keep and the tombstones.
+        return db.batch {
+            val kept = keepBelow?.let { keep -> db.getEntriesByPrefix(path.trimEnd('/') + "/").filter(keep) }.orEmpty()
+            db.markDeleted(path, mountDelete = true)
+            // archive#87: a folder's rows below it are part of the same user delete — leave none of
+            // them EXISTS, or the next fresh mount plans their re-download (the live 133k case).
+            db.markDescendantsDeleted(path, mountDelete = true)
+            kept.forEach { db.upsertEntry(it) }
+            kept.mapTo(HashSet()) { it.path }
+        }
     }
 
     // A poll can lag another device's writes. A cascading delete must not erase a child the mount has never seen,

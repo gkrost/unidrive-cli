@@ -32,6 +32,10 @@ internal class MemProvider : CloudProvider {
     @Volatile var downloadReached: CompletableDeferred<Unit>? = null
     @Volatile var downloadRelease: CompletableDeferred<Unit>? = null
 
+    // When set, delete() signals deleteReached and suspends on deleteRelease before deleting: holds a provider delete.
+    @Volatile var deleteReached: CompletableDeferred<Unit>? = null
+    @Volatile var deleteRelease: CompletableDeferred<Unit>? = null
+
     // The folders listChildren was asked for, in order; and what it answers instead of the folder's children, or throws.
     val listCalls = java.util.concurrent.CopyOnWriteArrayList<String>()
     @Volatile var listFailure: Exception? = null
@@ -146,6 +150,8 @@ internal class MemProvider : CloudProvider {
     }
 
     override suspend fun delete(remotePath: String, ifMatchETag: String?) {
+        deleteReached?.complete(Unit)
+        deleteRelease?.await()
         deleted += remotePath
         remote.remove(remotePath)
         items.remove(remotePath)
