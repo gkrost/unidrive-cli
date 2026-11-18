@@ -250,7 +250,8 @@ class VaultLockIpcTest {
             ask(endpoint, IpcAuth.Scope.FULL, """{"verb":"vault.unlock","passphrase":"$wrongPassphrase"}""")
             ask(endpoint, IpcAuth.Scope.FULL, """{"verb":"vault.unlock","passphrase":"$passphrase"}""")
             statusUntil(endpoint) { it.containsKey("provider") }
-            val seen = capture.list.joinToString("\n") { "${it.formattedMessage}|${it.throwableProxy?.message ?: ""}" }
+            // AppenderBase.doAppend is synchronized on the appender; snapshot under the same lock.
+            val seen = synchronized(capture) { capture.list.toList() }.joinToString("\n") { "${it.formattedMessage}|${it.throwableProxy?.message ?: ""}" }
             assertFalse(seen.contains(passphrase), "the passphrase leaked into a log line: $seen")
             assertFalse(seen.contains(wrongPassphrase), "the wrong passphrase leaked into a log line: $seen")
         } finally {

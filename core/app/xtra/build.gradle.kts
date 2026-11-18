@@ -11,6 +11,12 @@ dependencies {
 
     implementation(libs.kotlinx.coroutines.core)
 
+    // The age-v1 content strategy (AgeV1Strategy): standard age-encryption.org/v1 files via kage. The bcprov
+    // pin overrides kage 0.8.0's transitive 1.86 — 1.87 fixes CVEs and carries upstream's ChaCha20-Poly1305
+    // speedups (~4x on the CCTV stream corpus), and the strategy's throughput depends on it.
+    implementation(libs.kage)
+    implementation(libs.bouncycastle.bcprov) { version { strictly("1.87") } }
+
     testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.coroutines.test)
     // The mount rig's IPC replies are JSON, as HydrationIpcHandler answers them.
