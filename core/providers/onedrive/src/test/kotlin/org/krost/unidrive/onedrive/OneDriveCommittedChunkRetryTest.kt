@@ -179,7 +179,11 @@ class OneDriveCommittedChunkRetryTest {
                             )
                         request.method == HttpMethod.Get && request.url.toString() != uploadUrl -> {
                             metadataReads++
-                            respond(driveItemJson("large-id", "large.bin", fileSize.toLong()), HttpStatusCode.OK, jsonHeaders())
+                            respond(
+                                driveItemJson("large-id", "large.bin", fileSize.toLong(), org.krost.unidrive.QuickXorHash.of(local)),
+                                HttpStatusCode.OK,
+                                jsonHeaders(),
+                            )
                         }
                         else -> respond("{}", HttpStatusCode.OK, jsonHeaders())
                     }
@@ -206,6 +210,9 @@ class OneDriveCommittedChunkRetryTest {
         id: String,
         name: String,
         size: Long,
-    ): String =
-        """{"id":"$id","name":"$name","size":$size,"file":{"mimeType":"application/octet-stream"},"parentReference":{"path":"/drive/root:"}}"""
+        quickXorHash: String? = null,
+    ): String {
+        val hashes = quickXorHash?.let { ""","hashes":{"quickXorHash":"$it"}""" } ?: ""
+        return """{"id":"$id","name":"$name","size":$size,"file":{"mimeType":"application/octet-stream"$hashes},"parentReference":{"path":"/drive/root:"}}"""
+    }
 }

@@ -996,7 +996,6 @@ class GraphApiService(
         if (initialOffset > 0) log.debug("Upload resuming at offset {} / {} bytes", initialOffset, fileSize)
         var offset = initialOffset
         var result: DriveItem? = null
-        var finalChunkConfirmedByProbe = false
         try {
             while (offset < fileSize) {
                 val currentChunkSize = minOf(chunkSize, fileSize - offset).toInt()
@@ -1006,7 +1005,6 @@ class GraphApiService(
                 val chunkResult = uploadChunkWithRetry(uploadUrl, localPath, offset, endByte, fileSize)
                 if (chunkResult is ChunkUploadResult.Committed) {
                     offset = chunkResult.nextOffset
-                    finalChunkConfirmedByProbe = offset >= fileSize
                     log.debug("Upload progress: {}/{} bytes", offset, fileSize)
                     onProgress?.invoke(offset, fileSize)
                     continue
@@ -1039,15 +1037,22 @@ class GraphApiService(
             throw e
         }
 
-        val uploadedItem =
-            result ?: if (finalChunkConfirmedByProbe) {
-                if (itemId != null) getItemById(itemId) else getItemByPath(remotePath)
-            } else {
-                null
-            }
+        // #748 finding 2: every byte is with the session (the final chunk's answer was lost and the probe says it is in,
+        // or the stored session expects nothing more) but no item came back. The item at the target is the upload's only
+        // when it holds these bytes: a sibling at the path (one a `rename` avoided, the file a `fail` met) is not.
+        val uploadedItem = result ?: committedAfterLostAnswer(localPath, target, fileSize)
         sessionStore.delete(remotePath)
-        uploadedItem?.let { downloadUrls.invalidate(itemId ?: it.id) }
-        return uploadedItem ?: throw GraphApiException("Upload session completed but no DriveItem returned")
+        if (uploadedItem == null) {
+            // The session never committed (a failed commit, a conflict at the end): resuming it would end the same way on
+            // every attempt. It is discarded; the session-gone retry creates a fresh one.
+            throw GraphApiException(
+                "OneDrive upload session for $remotePath holds every byte but returned no item and none at the target " +
+                    "holds these bytes; discarding the session",
+                410,
+            )
+        }
+        downloadUrls.invalidate(itemId ?: uploadedItem.id)
+        return uploadedItem
     }
 
     // A try of the final chunk ended without its answer and the session is now gone. Graph removes a session once its
@@ -1084,8 +1089,8 @@ class GraphApiService(
             }
         if (localHash != remoteHash) return null
         log.info(
-            "OneDrive upload of {}: the answer to the final chunk was lost and the session is gone, but the item holds " +
-                "these bytes (same size and quickXorHash); the upload is complete",
+            "OneDrive upload of {}: the upload session returned no item, but the item holds these bytes (same size and " +
+                "quickXorHash); the upload is complete",
             target.remotePath,
         )
         return item
@@ -1194,7 +1199,9 @@ class GraphApiService(
         parsedSession.expirationDateTime
             ?.let { runCatching { java.time.Instant.parse(it) }.getOrNull() }
             ?.let { sessionStore.put(remotePath, stored.copy(expiresAt = it.toString())) }
-        val committedOffset = parsedSession.nextExpectedRanges.nextExpectedStart() ?: 0L
+        // #748 finding 2: a live session that names no range expects no more bytes. Starting at 0 would send the whole
+        // file into 416s; the end of the file sends nothing and lets the upload check the item instead.
+        val committedOffset = parsedSession.nextExpectedRanges.nextExpectedStart() ?: stored.localSize
         log.info(
             "Upload session resumed: {} at offset {} (server expiry {})",
             remotePath,
