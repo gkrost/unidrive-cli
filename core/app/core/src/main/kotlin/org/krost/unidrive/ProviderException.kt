@@ -254,6 +254,18 @@ open class PlanLimitException(
     }
 }
 
+/**
+ * gkrost/unidrive-cli#441: the local volume an upload stages on lacks the room it needs ([requiredBytes]; [usableBytes]
+ * were free when asked). Nothing was staged or sent. Not a [PermanentUploadFailureException]: the same upload goes once
+ * space is freed, so a caller defers the item instead of failing it for good, and does not retry it in a tight loop.
+ */
+open class InsufficientLocalSpaceException(
+    message: String,
+    val requiredBytes: Long,
+    val usableBytes: Long,
+    cause: Throwable? = null,
+) : ProviderException(message, cause)
+
 /** A remote item changed after the caller captured its write token. */
 open class RemoteConflictException(
     message: String,

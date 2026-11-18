@@ -1547,6 +1547,7 @@ class InternxtProvider(
         val encryptedSize: Long
         val hashHex: String
         if (needsEncrypt) {
+            ensureStagingSpace(tempFile, fileSize, remotePath)
             val encryptStarted = System.nanoTime()
             // Re-derive a fresh Cipher per encrypt pass (javax.crypto.Cipher is
             // single-use after doFinal). The fileKey/iv stay byte-identical to
@@ -2351,6 +2352,9 @@ class InternxtProvider(
     // just restored is seen to lag for 1-3 s (FolderUuidCache, archive#132). A test seam, like [clock].
     internal var parentRelistDelayMs: Long = PARENT_RELIST_DELAY_MS
 
+    // The free bytes of the volume holding [dir]; a test seam for the staging preflight (#441).
+    internal var usableSpaceOf: (Path) -> Long = { dir -> Files.getFileStore(dir).usableSpace }
+
     private suspend fun uploadEmpty(
         segments: List<String>,
         plainName: String,
@@ -2428,6 +2432,40 @@ class InternxtProvider(
                 }
             }
         return created.toCloudItem(parentPath)
+    }
+
+    // gkrost/unidrive-cli#441 finding 10: the encrypt pass writes a full copy of the file next to the profile, usually on the
+    // system drive. Before it starts, the volume must hold that copy plus [STAGING_SPACE_MARGIN_BYTES] (a stale partial copy
+    // of an earlier attempt is overwritten, so its bytes count as free); otherwise the upload fails typed, before anything is
+    // written, instead of filling the volume (state DB and logs included) and failing with a generic IOException on every
+    // pass. A volume that cannot say how much is free does not block the upload.
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun ensureStagingSpace(
+        tempFile: Path,
+        fileSize: Long,
+        remotePath: String,
+    ) {
+        val required = fileSize + STAGING_SPACE_MARGIN_BYTES
+        val usable =
+            withContext(Dispatchers.IO) {
+                try {
+                    Files.createDirectories(tempFile.parent)
+                    val stale = if (Files.exists(tempFile)) Files.size(tempFile) else 0L
+                    usableSpaceOf(tempFile.parent) + stale
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    log.warn("upload of {}: the free space of the staging volume cannot be read ({}); not checked", remotePath, e.message)
+                    null
+                }
+            } ?: return
+        if (usable >= required) return
+        throw org.krost.unidrive.InsufficientLocalSpaceException(
+            "not enough local space to stage the upload of $remotePath: $required bytes needed (the file plus a " +
+                "${STAGING_SPACE_MARGIN_BYTES / (1024 * 1024)} MiB margin), $usable free on the staging volume",
+            requiredBytes = required,
+            usableBytes = usable,
+        )
     }
 
     // A create's 409 names a remote of the same size: read it (decrypted into the staging directory, deleted right after)
@@ -5483,6 +5521,9 @@ class InternxtProvider(
         }
 
         private const val ENCRYPT_BUFFER_BYTES = 256 * 1024
+
+        /** The free space an upload leaves on the staging volume beyond its staged copy (#441). */
+        internal const val STAGING_SPACE_MARGIN_BYTES: Long = 256L * 1024 * 1024
 
         /**
          * The encrypt pass of an upload (#747 finding 10): [source] through [cipher] into [out], the ciphertext also into
