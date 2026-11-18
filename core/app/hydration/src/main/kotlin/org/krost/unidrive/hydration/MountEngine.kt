@@ -1260,7 +1260,9 @@ class MountEngine private constructor(
             // gkrost/unidrive-cli#746 finding 6: the row re-read, the bytes compared and the delete under the swap lock too,
             // the one open_write_begin's truncate and edit mark take: no edit starts between this check and the delete.
             val deleted = withCacheSwapLock(path) { deleteVettedCopy(path, disposableOnly, reason, summary, observed) }
-            deleted?.let { (size, unhydrated) -> if (unhydrated) onUnhydrated(path); size }
+            val (size, unhydrated) = deleted ?: return@withLock null
+            if (unhydrated) onUnhydrated(path)
+            size
         }
 
     // The body of [deleteCacheCopyLocked] under both locks: the freed bytes and whether the row was marked not hydrated, or

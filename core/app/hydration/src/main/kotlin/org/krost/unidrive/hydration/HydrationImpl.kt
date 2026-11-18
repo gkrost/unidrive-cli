@@ -3191,7 +3191,7 @@ class HydrationImpl(
                     withContext(NonCancellable) { discardStagedUploadBestEffort(normalised); evictCacheFile(normalised) }
                     UnlinkResult.Ok
                 }.getOrElse { e ->
-                    if (e is CancellationException) throw e
+                    e.rethrowIfCancellation()
                     permanentRefusalOrNull(e)?.let { refusal -> return UnlinkResult.Failed(refusal) }
                     UnlinkResult.Failed(HydrationError.Generic(e.message ?: "unlink failed"))
                 }
@@ -3205,7 +3205,7 @@ class HydrationImpl(
                 stateDb.deleteEntry(normalised)
                 UnlinkResult.Ok
             }.getOrElse { e ->
-                if (e is CancellationException) throw e
+                e.rethrowIfCancellation()
                 UnlinkResult.Failed(HydrationError.Generic(e.message ?: "unlink failed"))
             }
         }
@@ -3216,7 +3216,7 @@ class HydrationImpl(
             withContext(NonCancellable) { discardStagedUploadBestEffort(normalised); evictCacheFile(normalised) }
             UnlinkResult.Ok
         }.getOrElse { e ->
-            if (e is CancellationException) throw e
+            e.rethrowIfCancellation()
             permanentRefusalOrNull(e)?.let { refusal -> return UnlinkResult.Failed(refusal) }
             UnlinkResult.Failed(HydrationError.Generic(e.message ?: "unlink failed"))
         }
