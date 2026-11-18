@@ -23,13 +23,18 @@ object IgnoreDefaults {
     /**
      * Content defaults, the lowest layer: any rule of the account or of a rule file overrides them (`!.git`).
      * Version-control metadata (directories, and the `.git` file of a worktree or submodule), then desktop, OS and
-     * editor junk. The same set as the old default excludes, re-expressed in git syntax.
+     * editor junk. The same set as the old default excludes ([org.krost.unidrive.sync.SyncConfig.DEFAULT_EXCLUDE_PATTERNS]),
+     * re-expressed in git syntax; IgnoreTreeTest asserts the two name the same set (#757).
      */
     val CONTENT: List<String> =
         listOf(
             ".git", ".svn", ".hg", ".bzr",
             ".directory.lock", ".DS_Store", "._*", "Thumbs.db", "ehthumbs.db", "desktop.ini",
             "~\$*", "*.part", "*.crdownload", "*.swp", "*.swx", "*.tmp", "*.unidrive-tmp", "*.unidrive-download-*", "*~",
+            // #757: Windows shell caches and volume folders, LibreOffice locks, macOS volume metadata. `Icon\r` (a folder's
+            // custom icon) is written with its CR doubled: the parser strips one trailing CR as a line ending.
+            "ehthumbs_vista.db", "IconCache.db", "Thumbs.db:encryptable", "\$RECYCLE.BIN", "System Volume Information",
+            ".~lock.*#", ".Spotlight-V100", ".Trashes", ".fseventsd", ".TemporaryItems", ".AppleDouble", "Icon\r\r",
         )
 }
 

@@ -143,8 +143,25 @@ class Reconciler(
     ): Boolean {
         if (remote?.isFolder == true || entry?.isFolder == true) return true
         val local = safeResolveLocalOrNull(syncRoot, path) ?: return false
-        return Files.isDirectory(local)
+        return isDirectoryOnDisk(local)
     }
+
+    // #770: the ignore verdict for a path whose folder facet is not known up front. The rules are asked as a file and as a
+    // directory first: when both answers agree (always, with no rules wired or with rules blind to the facet), the
+    // facet cannot change the verdict and the disk is not asked. Only a verdict that depends on it pays the stat.
+    private fun ignoredWithFacet(
+        path: String,
+        remote: CloudItem?,
+        entry: SyncEntry?,
+    ): Boolean {
+        if (remote?.isFolder == true || entry?.isFolder == true) return isIgnored(path, true)
+        val asFile = isIgnored(path, false)
+        if (asFile == isIgnored(path, true)) return asFile
+        return isIgnored(path, directoryFacet(path, remote, entry))
+    }
+
+    // #770: the disk side of [directoryFacet]; a test substitutes a counting wrapper (as [entryLookup]).
+    internal var isDirectoryOnDisk: (java.nio.file.Path) -> Boolean = { Files.isDirectory(it) }
 
     // archive#316: how resolveSlice reads the rows its page needs. The default asks the state database in
     // bounded chunks of indexed path lookups, so a streamed gather reads the page's and the local
@@ -286,7 +303,7 @@ class Reconciler(
         val allPaths =
             (remoteChangesLocal.keys + localChanges.keys)
                 .filter { path -> excludePatterns.none { pattern -> matchesGlob(path, pattern) } }
-                .filterNot { path -> isIgnored(path, directoryFacet(path, remoteChangesLocal[path], entryByPath[path])) }
+                .filterNot { path -> ignoredWithFacet(path, remoteChangesLocal[path], entryByPath[path]) }
         val pinRules = db.getPinRules()
 
         // UD-240g: heartbeat into reporter every 5k items / 10s during the main
@@ -567,7 +584,7 @@ class Reconciler(
         val requestedPaths = candidates.toHashSet()
         val entryByPath = entryLookup(candidates).values.filter { it.path in requestedPaths }.associateBy { it.path }
         val allPaths =
-            candidates.filterNot { path -> isIgnored(path, directoryFacet(path, pageRemoteLocal[path], entryByPath[path])) }
+            candidates.filterNot { path -> ignoredWithFacet(path, pageRemoteLocal[path], entryByPath[path]) }
 
         for (path in allPaths) {
             val remoteItem = pageRemoteLocal[path]
@@ -1377,7 +1394,7 @@ class Reconciler(
     }
 
     private fun settleTouchedFolderConflicts(actions: MutableList<SyncAction>, remote: Map<String, CloudItem>, entryByPath: Map<String, SyncEntry>) =
-        settleTouchedFolderConflictsIn(actions, remote, entryByPath) { p, item -> excludePatterns.any { matchesGlob(p, it) } || isIgnored(p, directoryFacet(p, item, entryByPath[p])) }
+        settleTouchedFolderConflictsIn(actions, remote, entryByPath) { p, item -> excludePatterns.any { matchesGlob(p, it) } || ignoredWithFacet(p, item, entryByPath[p]) }
 
     // The second remote-side guard: a folder delete must not run when the listing this plan reconciled on shows
     // live content below it that no action deletes — a path the scan skips (excluded or ignored), or one without
@@ -1392,7 +1409,7 @@ class Reconciler(
     ) {
         val held =
             folderDeletesHoldingUnplannedRemoteItems(actions, remoteChangesLocal, entryByPath) { path, item ->
-                excludePatterns.any { matchesGlob(path, it) } || isIgnored(path, directoryFacet(path, item, entryByPath[path]))
+                excludePatterns.any { matchesGlob(path, it) } || ignoredWithFacet(path, item, entryByPath[path])
             }
         if (held.isEmpty()) return
         actions.removeAll(held.toSet())
@@ -1446,8 +1463,6 @@ class Reconciler(
         val matchedFolderCreates = mutableSetOf<String>()
         for (create in folderCreates) {
             if (create.path in matchedFolderCreates) continue
-            val newName = create.path.substringAfterLast("/")
-            val createParentSegs = parentSegments(create.path)
 
             // Find the best matching delete: same basename, has a folder DB
             // row with remoteId, longest common parent-segment overlap with
@@ -1461,17 +1476,11 @@ class Reconciler(
             //     stale row corresponds to the user's actual intent)
             //   - otherwise → pick the highest-scoring candidate, ties
             //     broken by iteration order
-            data class Candidate(val del: SyncAction.DeleteRemote, val score: Int)
-            val candidates = deletes
-                .asSequence()
-                .filter { it.path !in matchedFolderDeletes }
-                .filter { it.path.substringAfterLast("/") == newName }
-                .mapNotNull { d ->
-                    val e = entryByPath[d.path] ?: return@mapNotNull null
-                    if (!e.isFolder || e.remoteId == null) return@mapNotNull null
-                    Candidate(d, commonPrefixSegments(parentSegments(d.path), createParentSegs))
-                }
-                .toList()
+            // #743 finding 10: a candidate also needs evidence that the new folder is the old one: at least one child
+            // name the old folder held (a row under it) that the new folder uploads or creates, and the old folder gone
+            // from disk. A same-named folder alone is two independent operations, not a move.
+            val newPrefix = create.path + "/"
+            val candidates = folderMoveCandidates(create, deletes, actions, entryByPath, matchedFolderDeletes, ::isAbsentLocally)
             if (candidates.isEmpty()) continue
             val maxScore = candidates.maxOf { it.score }
             // UD-240k ambiguous-zero guard: when several candidates share
@@ -1500,21 +1509,7 @@ class Reconciler(
             // Remove the folder delete and create
             actions.remove(del)
             actions.remove(create)
-            // Remove child deletes under old prefix — API move handles them
-            val oldPrefix = del.path + "/"
-            val newPrefix = create.path + "/"
-            val movedNames =
-                actions
-                    .filter { it is SyncAction.DeleteRemote && it.path.startsWith(oldPrefix) }
-                    .map { it.path.removePrefix(oldPrefix) }
-                    .toSet()
-            actions.removeAll { it is SyncAction.DeleteRemote && it.path.startsWith(oldPrefix) }
-            // Only remove new-prefix actions that have a matching old-prefix counterpart (moved files)
-            // Keep uploads for files that are genuinely new (never existed under old folder)
-            actions.removeAll { action ->
-                action.path.startsWith(newPrefix) &&
-                    action.path.removePrefix(newPrefix) in movedNames
-            }
+            settleChildrenOfFolderMove(actions, del.path + "/", newPrefix, best.movedNames, entryByPath, ::isAbsentLocally)
             matchedFolderDeletes.add(del.path)
             matchedFolderCreates.add(create.path)
         }

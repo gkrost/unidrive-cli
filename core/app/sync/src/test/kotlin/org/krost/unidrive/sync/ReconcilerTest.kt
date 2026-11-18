@@ -1002,11 +1002,17 @@ class ReconcilerTest {
         )
         // Local: one new folder at the moved location.
         Files.createDirectories(syncRoot.resolve("Pictures/_Photos/Sample"))
+
+        // #743 finding 10: a folder move needs a child the old folder held and the new one brings.
+        db.upsertEntry(dbEntry("/Pictures/Sample/a.jpg"))
+        db.upsertEntry(dbEntry("/Sample/a.jpg"))
+        Files.writeString(Files.createDirectories(syncRoot.resolve("Pictures/_Photos/Sample")).resolve("a.jpg"), "a")
         val localChanges =
             mapOf(
                 "/Sample" to ChangeState.DELETED,
                 "/Pictures/Sample" to ChangeState.DELETED,
                 "/Pictures/_Photos/Sample" to ChangeState.NEW,
+                "/Pictures/_Photos/Sample/a.jpg" to ChangeState.NEW,
             )
         val remoteChanges = emptyMap<String, CloudItem>()
 
@@ -1046,10 +1052,15 @@ class ReconcilerTest {
             ),
         )
         Files.createDirectories(syncRoot.resolve("Pictures/_Photos/Sample"))
+
+        // #743 finding 10: a folder move needs a child the old folder held and the new one brings.
+        db.upsertEntry(dbEntry("/Pictures/Sample/a.jpg"))
+        Files.writeString(Files.createDirectories(syncRoot.resolve("Pictures/_Photos/Sample")).resolve("a.jpg"), "a")
         val localChanges =
             mapOf(
                 "/Pictures/Sample" to ChangeState.DELETED,
                 "/Pictures/_Photos/Sample" to ChangeState.NEW,
+                "/Pictures/_Photos/Sample/a.jpg" to ChangeState.NEW,
             )
         val actions = reconciler.reconcile(emptyMap(), localChanges)
         val moves = actions.filterIsInstance<SyncAction.MoveRemote>()
@@ -1100,11 +1111,17 @@ class ReconcilerTest {
             ),
         )
         Files.createDirectories(syncRoot.resolve("Pictures/_Photos/Sample"))
+
+        // #743 finding 10: a folder move needs a child the old folder held and the new one brings.
+        db.upsertEntry(dbEntry("/Pictures/Sample/a.jpg"))
+        db.upsertEntry(dbEntry("/Sample/a.jpg"))
+        Files.writeString(Files.createDirectories(syncRoot.resolve("Pictures/_Photos/Sample")).resolve("a.jpg"), "a")
         val localChanges =
             mapOf(
                 "/Sample" to ChangeState.DELETED,
                 "/Pictures/Sample" to ChangeState.DELETED,
                 "/Pictures/_Photos/Sample" to ChangeState.NEW,
+                "/Pictures/_Photos/Sample/a.jpg" to ChangeState.NEW,
             )
         val actions = reconciler.reconcile(emptyMap(), localChanges)
         val moves = actions.filterIsInstance<SyncAction.MoveRemote>()
@@ -1143,10 +1160,15 @@ class ReconcilerTest {
             ),
         )
         Files.createDirectories(syncRoot.resolve("b/docs"))
+
+        // #743 finding 10: a folder move needs a child the old folder held and the new one brings.
+        db.upsertEntry(dbEntry("/a/docs/readme.txt"))
+        Files.writeString(syncRoot.resolve("b/docs/readme.txt"), "r")
         val localChanges =
             mapOf(
                 "/a/docs" to ChangeState.DELETED,
                 "/b/docs" to ChangeState.NEW,
+                "/b/docs/readme.txt" to ChangeState.NEW,
             )
         val actions = reconciler.reconcile(emptyMap(), localChanges)
         val moves = actions.filterIsInstance<SyncAction.MoveRemote>()
@@ -1232,10 +1254,15 @@ class ReconcilerTest {
             ),
         )
         Files.createDirectories(syncRoot.resolve("Pictures/_Photos/Sample"))
+
+        // #743 finding 10: a folder move needs a child the old folder held and the new one brings.
+        db.upsertEntry(dbEntry("/Pictures/Sample/a.jpg"))
+        Files.writeString(Files.createDirectories(syncRoot.resolve("Pictures/_Photos/Sample")).resolve("a.jpg"), "a")
         val localChanges =
             mapOf(
                 "/Pictures/Sample" to ChangeState.DELETED,
                 "/Pictures/_Photos/Sample" to ChangeState.NEW,
+                "/Pictures/_Photos/Sample/a.jpg" to ChangeState.NEW,
             )
         val actions = reconciler.reconcile(emptyMap(), localChanges)
         val moves = actions.filterIsInstance<SyncAction.MoveRemote>()
