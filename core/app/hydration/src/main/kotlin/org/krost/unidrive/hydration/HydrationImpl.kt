@@ -2348,7 +2348,7 @@ class HydrationImpl(
         val retrying: Int = 0,
         val nextTryAtMs: Long? = null,
         val deferred: Int = 0, // live drive: pending uploads held back for space (local_space, remote_space), not failed
-        val conflicts: Int = 0, // test drive 2: edits whose upload the cloud refused as a conflict, kept unsent
+        val conflicts: Int = 0, // conflict copies made since this daemon started (not kept across a restart)
         // archive#1200: the attempts holding a transfer permit, by name. Read live, not from the cached snapshot.
         val running: RunningUploads = RunningUploads(),
     )
