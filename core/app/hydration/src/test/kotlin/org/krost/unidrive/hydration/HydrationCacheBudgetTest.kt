@@ -280,6 +280,23 @@ class HydrationCacheBudgetTest {
             assertEquals(true, env.db.getEntry("/a.txt")?.isHydrated)
         }
 
+    // gkrost/unidrive-cli#746 finding 6: the forced delete of a dehydrate re-reads the row under the lock; a row an
+    // open_write_begin marked as edited since the vetting is refused even when the bytes still look as observed.
+    @Test
+    fun `a dehydrate delete refuses a row marked as edited after it was vetted`() =
+        runTest {
+            val env = freshEnv()
+            val cache = env.syncedAndRead("a.txt").getValue("a.txt")
+            val observed = org.krost.unidrive.engine.Transfers.statBeforeUpload(cache)
+            val row = assertNotNull(env.db.getEntry("/a.txt"))
+            env.db.upsertEntry(row.copy(editBase = "edit-base"))
+
+            val freed = MountEngine.over(env.engine).forceEvictCacheCopy("/a.txt", observed)
+
+            assertEquals(null, freed)
+            assertTrue(Files.exists(cache), "the copy an edit owns must stay")
+        }
+
     // ── gkrost/unidrive-cli#746 finding 4: the access map holds no path forever ─────────────────────
 
     @Test

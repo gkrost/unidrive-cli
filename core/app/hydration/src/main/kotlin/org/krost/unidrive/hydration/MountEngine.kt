@@ -1267,36 +1267,52 @@ class MountEngine private constructor(
     ): Long? =
         hydrateLocks.withLock(path) {
             if (!stillUnused()) return@withLock null
-            // archive#728: one row read decides both the classification and the baseline question below: this
-            // is the re-check that counts, so it must not ask the database twice per evicted file.
-            val entry = db.getEntry(path) ?: return@withLock null
-            if (disposableOnly && dispositionOf(path, entry) == CacheDisposition.PROTECTED) return@withLock null
-            val cache = rowCachePath(path) ?: return@withLock null
-            val size = runCatching { Files.size(cache) }.getOrNull() ?: return@withLock null
-            val mtime = runCatching { Files.getLastModifiedTime(cache).toMillis() }.getOrNull() ?: return@withLock null
-            if (!disposableOnly && (mtime to size) != observed) return@withLock null
-            // The same test cacheDisposition used: the cache copy is the row's local file.
-            val cacheWasLocalFile =
-                entry.cacheBacked == true || (entry.cacheBacked == null && entry.localMtime == mtime && entry.localSize == size)
-            val evictionStarted = System.nanoTime()
-            try {
-                Files.delete(cache)
-            } catch (e: java.io.IOException) {
-                log.debug("#450: cannot evict the cache copy of {}: {}", path, e.message)
-                return@withLock null
-            }
-            val tally = FileEventTally()
-            FileEvents.event(FileEvents.Phase.CACHE_EVICT, path, bytes = size,
-                ms = (System.nanoTime() - evictionStarted) / 1_000_000, tally = tally, extra = listOf("reason" to reason))
-            FileEvents.summary(summary, tally)
-            if (cacheWasLocalFile) {
-                db.markUnhydrated(path)
-                onUnhydrated(path)
-            } else if (entry.cacheBacked == null) {
-                db.upsertEntry(entry.copy(cacheBacked = false))
-            }
-            size
+            // gkrost/unidrive-cli#746 finding 6: the row re-read, the bytes compared and the delete under the swap lock too,
+            // the one open_write_begin's truncate and edit mark take: no edit starts between this check and the delete.
+            val deleted = withCacheSwapLock(path) { deleteVettedCopy(path, disposableOnly, reason, summary, observed) }
+            deleted?.let { (size, unhydrated) -> if (unhydrated) onUnhydrated(path); size }
         }
+
+    // The body of [deleteCacheCopyLocked] under both locks: the freed bytes and whether the row was marked not hydrated, or
+    // null when nothing was deleted.
+    private fun deleteVettedCopy(
+        path: String,
+        disposableOnly: Boolean,
+        reason: String,
+        summary: String,
+        observed: Pair<Long, Long>?,
+    ): Pair<Long, Boolean>? {
+        // archive#728: one row read decides both the classification and the baseline question below: this
+        // is the re-check that counts, so it must not ask the database twice per evicted file.
+        val entry = db.getEntry(path) ?: return null
+        // gkrost/unidrive-cli#746 finding 6: a row that holds an edit owns its copy, whoever vetted it before.
+        if (entry.editBase != null) return null
+        if (disposableOnly && dispositionOf(path, entry) == CacheDisposition.PROTECTED) return null
+        val cache = rowCachePath(path) ?: return null
+        val size = runCatching { Files.size(cache) }.getOrNull() ?: return null
+        val mtime = runCatching { Files.getLastModifiedTime(cache).toMillis() }.getOrNull() ?: return null
+        if (!disposableOnly && (mtime to size) != observed) return null
+        // The same test cacheDisposition used: the cache copy is the row's local file.
+        val cacheWasLocalFile =
+            entry.cacheBacked == true || (entry.cacheBacked == null && entry.localMtime == mtime && entry.localSize == size)
+        val evictionStarted = System.nanoTime()
+        try {
+            Files.delete(cache)
+        } catch (e: java.io.IOException) {
+            log.debug("#450: cannot evict the cache copy of {}: {}", path, e.message)
+            return null
+        }
+        val tally = FileEventTally()
+        FileEvents.event(FileEvents.Phase.CACHE_EVICT, path, bytes = size,
+            ms = (System.nanoTime() - evictionStarted) / 1_000_000, tally = tally, extra = listOf("reason" to reason))
+        FileEvents.summary(summary, tally)
+        if (cacheWasLocalFile) {
+            db.markUnhydrated(path)
+        } else if (entry.cacheBacked == null) {
+            db.upsertEntry(entry.copy(cacheBacked = false))
+        }
+        return size to cacheWasLocalFile
+    }
 
     /**
      * The path the cloud knows [path] by: the row's own remote path when it has one (an entry the drive refused under

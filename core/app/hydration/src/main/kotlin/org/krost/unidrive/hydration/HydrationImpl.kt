@@ -2732,6 +2732,10 @@ class HydrationImpl(
     private suspend fun dehydrateAt(path: String): DehydrateResult {
         if (!resolvesInsideCache(path)) return DehydrateResult.Failed(HydrationError.InvalidPath)
         if (renames.blocks(path)) return DehydrateResult.Busy // archive#1040 M4: the copy has not followed its rename yet
+        // gkrost/unidrive-cli#746 finding 6: the copy as it is BEFORE the vetting below. A write that lands during the
+        // vetting then no longer matches it, and the locked delete leaves the copy alone; a stat taken after the vetting
+        // took that write for the vetted copy.
+        val observed = runCatching { Transfers.statBeforeUpload(mount.resolveCachePath(path)) }.getOrNull()
         val entry = stateDb.getEntry(path)
             ?: return DehydrateResult.Failed(HydrationError.UnknownPath)
 
@@ -2773,7 +2777,7 @@ class HydrationImpl(
             // nothing was deleted; the exists-check tells a copy that was already gone (fine: the row is marked
             // not hydrated either way) from one the delete could not take (an error, or the copy changed under
             // the lock) — the old deleteIfExists answered Ok for the first and Failed for the second too.
-            val freed = mount.forceEvictCacheCopy(path, observed = Transfers.statBeforeUpload(cachePath))
+            val freed = mount.forceEvictCacheCopy(path, observed = observed)
             if (freed == null && Files.exists(cachePath)) {
                 // #517 review: the locked delete was refused (the copy changed while the lock was waited for,
                 // or the delete errored) and the copy stays — it must stay ACCOUNTED for too. Forgetting it
