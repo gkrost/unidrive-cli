@@ -39,6 +39,8 @@ internal fun HydrationImpl.UploadHealth.toJson(): JsonObject =
         // Pending uploads held back for space (local_space, remote_space), not counted in failed. Present only while there are
         // some, like `blocked`: a reply with nothing deferred is unchanged.
         if (deferred > 0) put("deferred", deferred)
+        // Conflict copies made since the daemon started (a mount edit that lost to a newer cloud version); present only when some were.
+        if (conflicts > 0) put("conflicts", conflicts)
         if (blocked.count > 0) put("blocked", blocked.toJson())
         if (running.count > 0) put("running", running.toJson())
     }

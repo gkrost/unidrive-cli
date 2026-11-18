@@ -1342,10 +1342,13 @@ class HydrationImpl(
         e: org.krost.unidrive.RemoteConflictException,
         tx: TransferHandle?,
     ): HydrationEvent.Completed {
-        runCatching { stateDb.markUploadFailed(path, java.time.Instant.now()) }
+        // Test drive 2, owner decision: the edit is kept as a conflict copy and the path takes the cloud's version ([ConflictCopies]).
+        val copy = conflictCopies.keepEditAside(this, path, ::forgetCacheFile)
+        if (copy == null) runCatching { stateDb.markUploadFailed(path, java.time.Instant.now()) }
         _events.emit(HydrationEvent.Failed(path, HydrationError.Conflict, retryScheduled = false))
-        log.warn("upload of {} hit a remote conflict, not retrying: {}", path, e.message ?: "conflict")
-        tx?.finish(TransferResult.CONFLICT, errorClass = e.javaClass.simpleName, message = e.message)
+        copy?.let { _events.emit(HydrationEvent.ViewInvalidated(paths = listOf(path, it))) }
+        log.warn("upload of {} hit a remote conflict, not retrying ({}): {}", path, copy?.let { "the edit is kept as $it" } ?: "the edit stays", e.message ?: "conflict")
+        tx?.finish(TransferResult.CONFLICT, errorClass = e.javaClass.simpleName, message = copy?.let { "the edit is kept as $it" } ?: e.message)
         return HydrationEvent.Completed(
             path = path,
             handleId = handleId,
@@ -2329,6 +2332,7 @@ class HydrationImpl(
         val retrying: Int = 0,
         val nextTryAtMs: Long? = null,
         val deferred: Int = 0, // live drive: pending uploads held back for space (local_space, remote_space), not failed
+        val conflicts: Int = 0, // test drive 2: edits whose upload the cloud refused as a conflict, kept unsent
         // archive#1200: the attempts holding a transfer permit, by name. Read live, not from the cached snapshot.
         val running: RunningUploads = RunningUploads(),
     )
@@ -2393,35 +2397,16 @@ class HydrationImpl(
         val retrying: Int,
         val nextTryAtMs: Long?,
         val deferred: Int,
+        val conflicts: Int,
     ) {
         fun health(nowMs: Long) =
             UploadHealth(
                 pending, inFlight, failed, oldestSinceMs?.let { (nowMs - it).coerceAtLeast(0) }, blocked, takenAtMs,
-                retrying, nextTryAtMs, deferred = deferred,
+                retrying, nextTryAtMs, deferred = deferred, conflicts = conflicts,
             )
     }
 
-    // The entries blocked by name and those below a blocked folder, read from the rows (nothing is kept in memory:
-    // a restart does not lose a block, and a row that is deleted or uploaded drops out by itself).
-    private fun takeBlocked(): BlockedUploads {
-        val direct = stateDb.blockedRows()
-        if (direct.isEmpty()) return BlockedUploads()
-        val items = LinkedHashMap<String, BlockedItem>()
-        for (b in direct) {
-            if (skipsReplay(b.path)) continue
-            items[PathNormalizer.nfc(b.path)] = BlockedItem(b.path, b.block.reason, b.block.sibling, parent = null)
-        }
-        for (b in direct) {
-            if (!b.isFolder) continue
-            for (e in stateDb.getEntriesByPrefix(b.path.trimEnd('/') + "/")) {
-                // A row with a remote id reached the drive some other way and is not waiting for the folder.
-                if (e.remoteId != null || skipsReplay(e.path)) continue
-                items.putIfAbsent(PathNormalizer.nfc(e.path), BlockedItem(e.path, BLOCKED_BY_PARENT, sibling = null, parent = b.path))
-            }
-        }
-        val sorted = items.values.sortedBy { it.path }
-        return BlockedUploads(sorted.size, sorted.take(BLOCKED_ITEMS_CAP))
-    }
+    private fun takeBlocked(): BlockedUploads = stateDb.blockedUploads(::skipsReplay)
 
     private fun takeUploadSnapshot(): UploadSnapshot {
         val pendingPaths = HashSet<String>()
@@ -2448,7 +2433,7 @@ class HydrationImpl(
         }
         return UploadSnapshot(
             pendingPaths.size, uploadsInFlight.get(), failed, oldestSinceMs, System.currentTimeMillis(), takeBlocked(),
-            retryAt.size, retryAt.values.minOrNull(), deferred,
+            retryAt.size, retryAt.values.minOrNull(), deferred, conflictCopies.count,
         )
     }
 
@@ -3410,6 +3395,7 @@ class HydrationImpl(
     // already succeeded). Deletes children before parents so the directory
     // empties before it is removed.
     private val rmdirWindow = RmdirWindow() // gkrost/unidrive-cli#746 finding 3, live drive E3
+    private val conflictCopies = ConflictCopies(stateDb, mount, log) // test drive 2: a lost edit is kept as a conflict copy
 
     private suspend fun remakeFolderOfKeptRow(gone: String): Boolean =
         rmdirWindow.remakeIfKept(gone, { stateDb.getEntry(it) != null }) { mkdirParents(it).let { r -> r == MkdirResult.Ok || r == MkdirResult.Existed } }

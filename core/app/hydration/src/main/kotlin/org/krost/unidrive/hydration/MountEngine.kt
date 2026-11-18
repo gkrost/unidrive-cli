@@ -1783,6 +1783,33 @@ class MountEngine private constructor(
         // upload of them bases on the cloud's current version instead of conflicting again.
         val changedMidUpload = !adopted && sent != null && statBeforeUpload(cachePath)?.let { it != sent } == true
         if (!adopted && !changedMidUpload) Files.deleteIfExists(cachePath)
+        rebaseRowToCloud(path, remotePath, keepEdit = changedMidUpload)
+        if (changedMidUpload) {
+            log.warn(
+                "uploadFromCache: {} was written while it was being uploaded; the bytes the kept copy does not hold stay in the cache as an unsynced edit",
+                path,
+            )
+        }
+        auditLog?.emit(
+            action = "Upload",
+            path = path,
+            size = size,
+            oldHash = prevHash,
+            newHash = copy.hash,
+            result = "conflict:kept-both:$copyPath",
+        )
+        return UploadOutcome(sent = true, size = size, oldHash = prevHash, newHash = copy.hash, keptBothAs = copyPath, copyAdopted = adopted)
+    }
+
+    // Test drive 2: an edit lost to a newer cloud version went to a conflict copy; the row at [path] becomes the cloud item's.
+    suspend fun rebaseToCloudAfterConflict(path: String) = rebaseRowToCloud(path, remotePathOf(path), keepEdit = false)
+
+    // The row at [path] becomes the cloud item's (current version, no cache copy); [keepEdit] keeps mid-upload bytes as an edit.
+    private suspend fun rebaseRowToCloud(
+        path: String,
+        remotePath: String,
+        keepEdit: Boolean,
+    ) {
         db.getEntry(path)?.let { row ->
             val current = currentCloudItemOrNull(remotePath)?.takeIf { !it.isFolder && it.id == row.remoteId }
             db.upsertEntry(
@@ -1801,26 +1828,11 @@ class MountEngine private constructor(
                     localSize = null,
                     localHash = null,
                     cacheBacked = null,
-                    editBase = if (changedMidUpload) (current?.version ?: row.remoteVersion).orEmpty() else null,
+                    editBase = if (keepEdit) (current?.version ?: row.remoteVersion).orEmpty() else null,
                 ),
                 keepMarks = true,
             )
         }
-        if (changedMidUpload) {
-            log.warn(
-                "uploadFromCache: {} was written while it was being uploaded; the bytes the kept copy does not hold stay in the cache as an unsynced edit",
-                path,
-            )
-        }
-        auditLog?.emit(
-            action = "Upload",
-            path = path,
-            size = size,
-            oldHash = prevHash,
-            newHash = copy.hash,
-            result = "conflict:kept-both:$copyPath",
-        )
-        return UploadOutcome(sent = true, size = size, oldHash = prevHash, newHash = copy.hash, keptBothAs = copyPath, copyAdopted = adopted)
     }
 
     // The kept copy's row, from the cache copy that holds its bytes (moved to the copy's cache path). False when the

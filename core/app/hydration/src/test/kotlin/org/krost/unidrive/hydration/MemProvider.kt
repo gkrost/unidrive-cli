@@ -46,6 +46,9 @@ internal class MemProvider : CloudProvider {
     val uploadIfMatch = java.util.concurrent.CopyOnWriteArrayList<String?>()
     @Volatile var enforceIfMatch = false
 
+    // When set, an upload that creates a new item (no existing remote id) suspends here first.
+    @Volatile var uploadGateForCreates: CompletableDeferred<Unit>? = null
+
     // When set, delete() signals deleteReached and suspends on deleteRelease before deleting: holds a provider delete.
     @Volatile var deleteReached: CompletableDeferred<Unit>? = null
     @Volatile var deleteRelease: CompletableDeferred<Unit>? = null
@@ -147,6 +150,7 @@ internal class MemProvider : CloudProvider {
         onProgress: ((Long, Long) -> Unit)?,
     ): CloudItem {
         uploadGate?.await()
+        if (existingRemoteId == null) uploadGateForCreates?.await()
         uploadAttempts.incrementAndGet()
         uploadFailure?.let { throw it }
         uploadIfMatch += ifMatchETag
