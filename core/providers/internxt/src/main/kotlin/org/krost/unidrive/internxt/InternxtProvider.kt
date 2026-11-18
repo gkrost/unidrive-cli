@@ -2124,13 +2124,24 @@ class InternxtProvider(
             }
         if (existingRemoteId != null && !archivedPrior) {
             val replaced =
-                api
-                    .replaceFile(
-                        uuid = existingRemoteId,
-                        size = fileSize,
-                        fileId = bucketEntry.id,
-                        modificationTime = localMtime,
-                    ).afterReplace(localMtime)
+                try {
+                    api
+                        .replaceFile(
+                            uuid = existingRemoteId,
+                            size = fileSize,
+                            fileId = bucketEntry.id,
+                            modificationTime = localMtime,
+                        ).afterReplace(localMtime)
+                } catch (e: InternxtApiException) {
+                    // #747 finding 5: the repeat of a replace that already committed (the ladder's repeat of a 5xx, or the next
+                    // attempt resuming at FINISH_DONE) is refused 400 "New file ID is the same as the old file ID". The meta
+                    // decides: the uploaded object (same fileId and size) means the replace has landed.
+                    if (!isSameFileIdRefusal(e)) throw e
+                    val current = api.getFileMeta(existingRemoteId)
+                    if (current.fileId != bucketEntry.id || current.size?.toLongOrNull() != fileSize) throw e
+                    log.info("replace of {} had already landed (fileId={}); adopting", remotePath, bucketEntry.id)
+                    current
+                }
             finalItem = replaced.toCloudItem(parentPath)
         } else {
             // A create, or the create that follows the archive rename of a replace: the same answers to a 409 and to a
@@ -5095,6 +5106,10 @@ class InternxtProvider(
         // {"message":"Max space used"} when the account's storage is full. Only that sentence is mapped; another 420 keeps
         // its own type.
         internal const val MAX_SPACE_STATUS = 420
+
+        // #747 finding 5, live 2026-11-18: the answer to a replace naming the file's current object.
+        internal fun isSameFileIdRefusal(e: InternxtApiException): Boolean =
+            e.statusCode == 400 && e.message.orEmpty().contains("New file ID is the same as the old file ID")
 
         internal fun isMaxSpaceUsed(e: InternxtApiException): Boolean =
             e.statusCode == MAX_SPACE_STATUS && e.message.orEmpty().contains("Max space used", ignoreCase = true)
