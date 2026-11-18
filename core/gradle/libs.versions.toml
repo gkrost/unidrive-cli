@@ -22,6 +22,9 @@ testcontainers = "2.0.5"
 # benchmark corpus), so the strategy must never resolve to 1.86.
 kage = "0.8.0"
 bouncycastle-bcprov = "1.87"
+# The Tink content strategy (prototype, no wiring yet): AES-GCM-HKDF streaming + the AES-SIV daead the
+# encrypted-name layer would build on. Transitive: gson, protobuf-java, jsr305, error-prone annotations.
+tink = "1.24.0"
 
 [libraries]
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
@@ -46,6 +49,7 @@ socket-io-client = { module = "io.socket:socket.io-client", version.ref = "socke
 testcontainers = { module = "org.testcontainers:testcontainers", version.ref = "testcontainers" }
 detekt-cli = { module = "io.gitlab.arturbosch.detekt:detekt-cli", version.ref = "detekt" }
 kage = { module = "com.github.android-password-store:kage", version.ref = "kage" }
+tink = { module = "com.google.crypto.tink:tink", version.ref = "tink" }
 bouncycastle-bcprov = { module = "org.bouncycastle:bcprov-jdk15to18", version.ref = "bouncycastle-bcprov" }
 
 [bundles]
