@@ -1568,16 +1568,8 @@ class InternxtProvider(
             try {
                 withContext(Dispatchers.IO) {
                     Files.createDirectories(tempFile.parent)
-                    val source = java.security.DigestInputStream(withLocalIoRetry { Files.newInputStream(localPath) }, plainDigest)
-                    javax.crypto.CipherInputStream(source, encCipher).use { cipherIn ->
-                        Files.newOutputStream(tempFile).use { out ->
-                            val buf = ByteArray(8192)
-                            var n: Int
-                            while (cipherIn.read(buf).also { n = it } != -1) {
-                                out.write(buf, 0, n)
-                                digest.update(buf, 0, n)
-                            }
-                        }
+                    java.security.DigestInputStream(withLocalIoRetry { Files.newInputStream(localPath) }, plainDigest).use { source ->
+                        Files.newOutputStream(tempFile).use { out -> encryptToStaging(source, encCipher, out, digest) }
                     }
                 }
                 encryptedSize = withContext(Dispatchers.IO) { Files.size(tempFile) }
@@ -5499,6 +5491,34 @@ class InternxtProvider(
                 modifiedRaw = file.modificationTime,
                 updatedAt = tryParseInternxtInstant(file.updatedAt),
             )
+        }
+
+        private const val ENCRYPT_BUFFER_BYTES = 256 * 1024
+
+        /**
+         * The encrypt pass of an upload (#747 finding 10): [source] through [cipher] into [out], the ciphertext also into
+         * [digest]. Reads in [ENCRYPT_BUFFER_BYTES] chunks, as the download path and the local content proof do; a
+         * CipherInputStream hands out at most 512 bytes per read whatever the caller's buffer.
+         */
+        internal fun encryptToStaging(
+            source: java.io.InputStream,
+            cipher: javax.crypto.Cipher,
+            out: java.io.OutputStream,
+            digest: java.security.MessageDigest,
+        ) {
+            val buf = ByteArray(ENCRYPT_BUFFER_BYTES)
+            val enc = ByteArray(cipher.getOutputSize(buf.size))
+            while (true) {
+                val n = source.read(buf)
+                if (n < 0) break
+                if (n == 0) continue
+                val m = cipher.update(buf, 0, n, enc, 0)
+                out.write(enc, 0, m)
+                digest.update(enc, 0, m)
+            }
+            val tail = cipher.doFinal()
+            out.write(tail)
+            digest.update(tail)
         }
 
         // gkrost/unidrive-cli#793: the answers to a file create that leave its outcome unknown (the write ladder does not repeat them).
