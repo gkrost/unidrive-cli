@@ -161,4 +161,50 @@ class ConflictTransfersInPassTwoTest {
 
             assertEquals(n / 2, provider.downloadByIdCalls.size - before, "every healthy conflict download ran")
         }
+
+    @Test
+    fun `a placeholder that needs bytes only when Pass 1 reaches it still downloads as a paced transfer`() =
+        runTest {
+            // Both new with the same bytes: the plan adopts the local file (no transfer). A new remote folder gives Pass 1
+            // an action before it, after which the local file changes size: the adoption now has to download.
+            Files.writeString(doc(), cloudText)
+            provider.files["/doc.txt"] = cloudText.toByteArray()
+            // A provider with a content hash, so the plan can prove the bytes are the same.
+            provider.hashAlgorithmOverride = org.krost.unidrive.HashAlgorithm.Sha256Hex
+            provider.deltaItems =
+                listOf(
+                    item(cloudText, version = 1).copy(hash = HashVerifier.computeSha256Hex(doc())),
+                    CloudItem(
+                        id = "id-/a", name = "a", path = "/a", size = 0, isFolder = true,
+                        modified = Instant.parse("2026-03-28T12:00:00Z"), created = Instant.parse("2026-03-28T12:00:00Z"),
+                        hash = null, mimeType = null,
+                    ),
+                )
+            var changed = false
+            val engine =
+                SyncEngine(
+                    provider = provider,
+                    db = db,
+                    syncRoot = syncRoot,
+                    conflictPolicy = ConflictPolicy.KEEP_BOTH,
+                    reporter =
+                        object : ProgressReporter by ProgressReporter.Silent {
+                            override fun onActionProgress(index: Int, total: Int, action: String, path: String) {
+                                if (path == "/a" && !changed) {
+                                    Files.writeString(doc(), "a longer local edit made while Pass 1 ran")
+                                    changed = true
+                                }
+                            }
+                        },
+                )
+            engine.bandwidth = BandwidthPacer(1L shl 40)
+            val paced = mutableListOf<Boolean>()
+            provider.duringDownload = { paced += currentTransferMeter() != null }
+
+            engine.syncOnce()
+
+            assertTrue(changed, "the folder came first in Pass 1")
+            assertEquals(cloudText, Files.readString(doc()), "the cloud's bytes took the path")
+            assertEquals(listOf(true), paced, "the late download held a reservation on the shared budget")
+        }
 }

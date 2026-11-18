@@ -1724,6 +1724,13 @@ open class SyncEngine(
                     }
                     val action = head
                     val label = actionLabel(action)
+                    // #742 finding 5: the needs-bytes check of the plan ran before Pass 1. A placeholder whose local file
+                    // changed since then and that has to download now goes to Pass 2 as well, paced and permitted.
+                    if (action is SyncAction.CreatePlaceholder && movesBytesInPassTwo(action)) {
+                        bytesInPassTwo += action
+                        idx++
+                        continue
+                    }
                     try {
                         var applied = true
                         when (action) {
