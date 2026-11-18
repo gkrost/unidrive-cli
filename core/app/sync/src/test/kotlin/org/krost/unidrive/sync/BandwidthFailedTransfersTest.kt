@@ -1,6 +1,7 @@
 package org.krost.unidrive.sync
 
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.CloudItem
@@ -88,6 +89,12 @@ class BandwidthFailedTransfersTest {
             )
         // 1 KiB/s on the test scheduler's clock: a 2048 B download is forecast at 2 s of line time.
         engine.bandwidth = BandwidthPacer(1024) { testScheduler.currentTime * 1_000_000L }
+        // The engine's off-loop work (hashes, the row commits of finished transfers) runs on the test scheduler too. On a
+        // real IO thread the scheduler saw it as idle and advanced the clock past the pacer's waits while it ran, so the
+        // measured line time depended on machine load (8000 ms instead of 6000 under a loaded CPU).
+        val virtual = StandardTestDispatcher(testScheduler)
+        engine.offLoopDispatcher = virtual
+        engine.transferRows = StateGroupCommit(db, dispatcher = virtual)
         return engine
     }
 

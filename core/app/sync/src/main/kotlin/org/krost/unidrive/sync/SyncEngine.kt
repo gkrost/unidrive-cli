@@ -209,7 +209,12 @@ open class SyncEngine(
 
     // gkrost/unidrive-cli#567: the rows of finished transfers are committed off this engine's event loop, a group of
     // concurrent transfers to one commit (see [StateGroupCommit]). Internal for the off-the-loop tests.
-    internal val transferRows = StateGroupCommit(db)
+    // A var so a virtual-time test can put the commits on its own dispatcher (see [offLoopDispatcher]).
+    internal var transferRows = StateGroupCommit(db)
+
+    // Where [offLoop] runs. A virtual-time test sets the test dispatcher: work on a real IO thread looks idle to the test
+    // scheduler, which then advances the clock past pacer waits while that work is still running (a timing flake).
+    internal var offLoopDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO
 
     // The shared token bucket behind [maxBandwidthKbps]: the guard's, one per engine, so every transfer of every dispatch
     // path draws from the same budget, whether it launches in Pass 2, mid-scan on the streaming gather, or on the mount
@@ -4707,7 +4712,7 @@ open class SyncEngine(
     // not cancellable once started: the bytes are placed or sent, and the row that follows must still be written, as it
     // was when the read was a plain call. The caller resumes on its own dispatcher (the loop), so a manual batch it owns
     // stays on its thread.
-    private suspend fun <T> offLoop(block: () -> T): T = withContext(NonCancellable + Dispatchers.IO) { block() }
+    private suspend fun <T> offLoop(block: () -> T): T = withContext(NonCancellable + offLoopDispatcher) { block() }
 
     // gkrost/unidrive-cli#436: the snapshot of the local file a download replaces is a copy of the whole file, so it runs
     // on an IO thread like the hashes of #567, as uncancellable as the plain call was. The monitor keeps snapshots and
