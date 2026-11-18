@@ -93,6 +93,9 @@ class IgnoreTreeTest {
                 "a/desktop.ini", "a/desktop.ini.bak", "~\$doc.docx", "a/~\$x", "a~b", "a~", "a/b~", "a.tmp",
                 "a.tmp/x", "a/b.tmp", "tmp", "a.temp", "x.part", "x.part2", "a/x.crdownload", "a.swp", "a.swx",
                 "a.swo", "doc.txt", "a/b/c.kt", "~", "a/~/b", "a.unidrive-tmp", "a/.ud-0a1b2c3d.unidrive-tmp", "unidrive-tmp",
+                "IconCache.db", "a/ehthumbs_vista.db", "Thumbs.db:encryptable", "\$RECYCLE.BIN/x",
+                "System Volume Information/x", ".~lock.r.odt#", "a/.~lock.r.odt", "a/.Spotlight-V100/x", ".Trashes",
+                ".fseventsd/x", "a/.TemporaryItems/x", ".AppleDouble/x", "Icon\r", "a/Icon\r", "Icon", "Icon.png",
             )
         val (t, _) = tree()
         val diffs =
@@ -102,6 +105,45 @@ class IgnoreTreeTest {
                 old != t.isIgnored(p)
             }
         assertEquals(emptyList(), diffs)
+    }
+
+    @Test
+    fun theContentDefaultsAndTheDefaultExcludesNameTheSameSet() {
+        // #757: IgnoreDefaults.CONTENT (git syntax) and SyncConfig.DEFAULT_EXCLUDE_PATTERNS (glob syntax) are one list in
+        // two syntaxes; a name added to one only would be ignored under the ignore tree and synced without it (or back).
+        val fromGlobs =
+            SyncConfig.DEFAULT_EXCLUDE_PATTERNS
+                .filterNot { it.startsWith("/.unidrive-") }
+                .map { it.removePrefix("**/").removeSuffix("/**") }
+                .toSet()
+        // A trailing CR in git syntax is doubled, as the parser strips one (`Icon\r\r` names `Icon\r`).
+        val fromRules = IgnoreDefaults.CONTENT.map { if (it.endsWith("\r\r")) it.dropLast(1) else it }.toSet()
+        assertEquals(fromGlobs, fromRules)
+        assertEquals(IgnoreDefaults.CONTENT.size, fromRules.size, "no duplicate in CONTENT")
+    }
+
+    @Test
+    fun theContentDefaultsKeepWindowsMacAndLibreOfficeJunkOut() {
+        // #757: the shell caches, volume folders, LibreOffice locks and macOS volume metadata no user wants in a cloud drive.
+        val (t, _) = tree()
+        val junk =
+            listOf(
+                "IconCache.db", "a/ehthumbs_vista.db", "a/Thumbs.db:encryptable", "\$RECYCLE.BIN/S-1-5/x",
+                "System Volume Information/tracking.log", ".~lock.report.odt#", "a/.~lock.x.xlsx#", ".Spotlight-V100/Store-V2",
+                ".Trashes/501/x", ".fseventsd/fseventsd-uuid", ".TemporaryItems/folders.501", "a/.AppleDouble/x", "a/Icon\r",
+            )
+        assertEquals(emptyList(), junk.filterNot { t.isIgnored(it) })
+        val kept = listOf("Icon", "a/Icon.png", "Icons/x", "lock.odt", "a/.~lock.odt", "RECYCLE.BIN", "System Volume")
+        assertEquals(emptyList(), kept.filter { t.isIgnored(it) })
+    }
+
+    @Test
+    fun aNewContentDefaultIsReincludedByARuleFile() {
+        // #757: the added names stay overridable, as every content default.
+        val (t, _) = tree(".unidrive.ignore" to "!IconCache.db\n!.~lock.*#\n")
+        assertFalse(t.isIgnored("IconCache.db"))
+        assertFalse(t.isIgnored(".~lock.a.odt#"))
+        assertTrue(t.isIgnored(".Spotlight-V100/x"))
     }
 
     @Test

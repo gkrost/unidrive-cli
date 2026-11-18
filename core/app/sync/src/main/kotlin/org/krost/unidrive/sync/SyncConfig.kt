@@ -745,6 +745,19 @@ data class SyncConfig(
             "**/*.unidrive-tmp",  // a provider's staging file of a download (also .ud-<hex>.unidrive-tmp), archive#1049 X2
             "**/*.unidrive-download-*", // the tracking engine's staging file of a download (.<name>.unidrive-download-<uuid>), #100
             "**/*~",              // generic backup
+            // #757; kept in step with IgnoreDefaults.CONTENT (IgnoreTreeTest asserts the same set)
+            "**/ehthumbs_vista.db",      // Windows
+            "**/IconCache.db",           // Windows
+            "**/Thumbs.db:encryptable",  // Windows
+            "**/\$RECYCLE.BIN/**",       // Windows, at a volume root
+            "**/System Volume Information/**", // Windows, at a volume root
+            "**/.~lock.*#",              // LibreOffice lock files
+            "**/.Spotlight-V100/**",     // macOS
+            "**/.Trashes/**",            // macOS
+            "**/.fseventsd/**",          // macOS
+            "**/.TemporaryItems/**",     // macOS
+            "**/.AppleDouble/**",        // macOS
+            "**/Icon\r",                 // macOS custom folder icon
         )
 
         private val home: String = System.getenv("HOME") ?: System.getProperty("user.home")
