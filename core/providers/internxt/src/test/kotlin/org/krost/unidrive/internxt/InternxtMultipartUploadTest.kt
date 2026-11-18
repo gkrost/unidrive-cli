@@ -63,6 +63,12 @@ class InternxtMultipartUploadTest {
     // Failure injection: how many more times the finish endpoint answers 409 MissingUploadsError.
     private val failFinish409 = AtomicInteger(0)
 
+    // Failure injection: how many more times the drive's file create answers 500 (after the finish, the bucket entry is in hand).
+    private val failCreate = AtomicInteger(0)
+
+    // The fileId of every drive file create, in order.
+    private val createdFileIds: MutableList<String> = Collections.synchronizedList(mutableListOf())
+
     // One per started multipart session, so a test can tell sessions apart (upload-id-1, upload-id-2, ...).
     private val multipartStarts = AtomicInteger(0)
 
@@ -87,6 +93,8 @@ class InternxtMultipartUploadTest {
         failPart.clear()
         failPart403.clear()
         failFinish409.set(0)
+        failCreate.set(0)
+        createdFileIds.clear()
         multipartStarts.set(0)
         gateSize.set(0)
         gate = CompletableDeferred()
@@ -167,7 +175,12 @@ class InternxtMultipartUploadTest {
                 respond("""{"id":"file-123","index":"${body["index"]?.jsonPrimitive?.content ?: ""}","bucket":"$bucket"}""", HttpStatusCode.OK, json)
             }
             path == "/drive/files" && request.method == HttpMethod.Post -> {
-                val name = bodyOf(request)["plainName"]?.jsonPrimitive?.content ?: ""
+                if (failCreate.getAndDecrement() > 0) {
+                    return respond("""{"statusCode":500,"message":"injected"}""", HttpStatusCode.InternalServerError, json)
+                }
+                val body = bodyOf(request)
+                createdFileIds += body["fileId"]?.jsonPrimitive?.content ?: ""
+                val name = body["plainName"]?.jsonPrimitive?.content ?: ""
                 respond("""{"uuid":"new-uuid","plainName":"$name","type":"bin","size":"1","bucket":"$bucket","status":"EXISTS"}""", HttpStatusCode.OK, json)
             }
             path.startsWith("/drive/folders/content/") ->
@@ -446,6 +459,39 @@ class InternxtMultipartUploadTest {
                 assertEquals(1, multipartStarts.get(), "the expired session was dropped and a fresh one started")
                 assertEquals(listOf(0, 1), partBodies.keys.sorted(), "every part is re-put from the staged ciphertext")
                 assertEquals(1, finishBodies.size)
+            } finally {
+                second.close()
+            }
+        }
+
+    @Test
+    fun `a finished multipart upload resumes from its bucket entry even after the URL TTL`() =
+        runTest {
+            val plaintext = localFile("finished.bin", 2_000_000) // 2 parts
+            failCreate.set(1) // the bridge finish answered; the drive create that follows fails
+            val first = newProvider(concurrency = 2)
+            try {
+                assertFailsWith<InternxtApiException> { first.upload(plaintext, "/finished.bin", existingRemoteId = null, onProgress = null) }
+            } finally {
+                first.close()
+            }
+
+            // The retry comes long after the part URLs expired: they are not needed any more, the bucket entry is pinned.
+            val store = UploadTombstoneStore(tmp.resolve("upload-tombstones"))
+            val hash = UploadTombstoneStore.pathHash(plaintext.toAbsolutePath().toString())
+            val tomb = store.read(hash) ?: error("no tombstone after the failed create")
+            assertEquals(UploadTombstone.Stage.FINISH_DONE, tomb.stage)
+            assertEquals("file-123", tomb.multipart!!.bucketEntryId)
+            store.write(hash, tomb.copy(multipart = tomb.multipart.copy(issuedAtMillis = System.currentTimeMillis() - InternxtConfig.URL_TTL_MS - 60_000)))
+
+            resetWire()
+            val second = newProvider(concurrency = 2)
+            try {
+                second.upload(plaintext, "/finished.bin", existingRemoteId = null, onProgress = null)
+                assertEquals(0, multipartStarts.get(), "no fresh session: the finished one is resumed")
+                assertTrue(partBodies.isEmpty(), "no part is re-put: ${partBodies.keys}")
+                assertTrue(finishBodies.isEmpty(), "no second finish, so no second bucket entry")
+                assertEquals(listOf("file-123"), createdFileIds, "the create names the bucket entry of the first finish")
             } finally {
                 second.close()
             }

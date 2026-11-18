@@ -365,10 +365,7 @@ class InternxtProvider(
      */
     override suspend fun reloadCredentials() {
         authService.initialize()
-        notificationsStartLock.withLock {
-            notificationsClient?.disconnect()
-            notificationsClient = null
-        }
+        notificationsStartLock.withLock { detachNotificationsClient()?.disconnect() }
         if (authService.isAuthenticated && remoteHintsWanted) ensureNotificationsClient()
     }
 
@@ -376,19 +373,19 @@ class InternxtProvider(
     override suspend fun forgetCredentials() {
         authService.forget()
         clearCachedSeed()
-        notificationsStartLock.withLock {
-            notificationsClient?.disconnect()
-            notificationsClient = null
-        }
+        notificationsStartLock.withLock { detachNotificationsClient()?.disconnect() }
     }
+
+    // The client taken out of [notificationsClient] under [notificationsGuard], as close() takes it: a sign-out, a
+    // credential reload or a forget that overlaps close() (which does not take the start lock, #532) never hands the same
+    // client to both, and the field is never written outside the guard.
+    private fun detachNotificationsClient(): NotificationsClient? =
+        synchronized(notificationsGuard) { notificationsClient.also { notificationsClient = null } }
 
     override suspend fun logout() {
         // Under the start lock, like reloadCredentials and forgetCredentials: a sign-in re-running the
         // notifications client must not race the teardown, and the disconnect must not race a start.
-        notificationsStartLock.withLock {
-            notificationsClient?.disconnect()
-            notificationsClient = null
-        }
+        notificationsStartLock.withLock { detachNotificationsClient()?.disconnect() }
         clearCachedSeed()
         // archive#1054: the staged ciphertext of the account's files and their resume state do not outlive the sign-in.
         withContext(Dispatchers.IO) { tombstoneStore.discardAll() }
@@ -401,30 +398,16 @@ class InternxtProvider(
     override fun requestStatus(): org.krost.unidrive.http.RequestStatusSnapshot = api.requestStatus()
 
     override fun close() {
-        // The suspend paths take [notificationsStartLock] around this teardown; close() cannot suspend,
-        // so it waits a few non-blocking tries for a start that holds the lock (its credential fetch ends
-        // when the daemon's serve scope is cancelled) and then tears down regardless — disconnect() is
-        // idempotent, and the only window left is a start between its last suspension point and its
-        // connect, microseconds wide.
-        // After the wait it tears down regardless, and closes the gate for good: a start that is still stalled
-        // (credential lookup, client construction) finds the gate shut at its publish and drops its client.
-        var locked = notificationsStartLock.tryLock()
-        var tries = 0
-        while (!locked && tries < 50) {
-            Thread.sleep(10)
-            locked = notificationsStartLock.tryLock()
-            tries++
-        }
-        try {
-            val detached =
-                synchronized(notificationsGuard) {
-                    notificationsClosed = true
-                    notificationsClient.also { notificationsClient = null }
-                }
-            detached?.disconnect()
-        } finally {
-            if (locked) notificationsStartLock.unlock()
-        }
+        // close() cannot suspend, so it does not take [notificationsStartLock] (#532: it used to spin on it for up to
+        // 500 ms and then tear down regardless). The gate makes the lock unnecessary here: the detach and a start's
+        // publish-and-connect both run under [notificationsGuard], so close() either finds the published client and
+        // disconnects it, or shuts the gate first and the start drops its client unconnected. disconnect() is idempotent.
+        val detached =
+            synchronized(notificationsGuard) {
+                notificationsClosed = true
+                notificationsClient.also { notificationsClient = null }
+            }
+        detached?.disconnect()
         clearCachedSeed()
         authService.close()
         api.close()
@@ -708,6 +691,9 @@ class InternxtProvider(
                     log.debug("download of {}: the listed object {} was replaced by {}; reading the current one", remotePath, hinted.fileId, current.fileId)
                     return downloadStoredObject(current, remotePath, destination, targetMtimeMillis)
                 }
+                // The hinted object is really the current one and it failed (#747): the next attempt asks the meta call
+                // first instead of reading the same dead object by the hint again.
+                api.fileHints.forget(fileUuid)
             }
             throw e
         }
@@ -1221,7 +1207,7 @@ class InternxtProvider(
         ifMatchETag: String?,
         remotePath: String,
     ) {
-        if (ifMatchETag != null && internxtVersionToken(current) != ifMatchETag) {
+        if (ifMatchETag != null && !sameWriteToken(internxtVersionToken(current), ifMatchETag)) {
             throw RemoteConflictException("Internxt item changed before replace: $remotePath")
         }
     }
@@ -1309,6 +1295,14 @@ class InternxtProvider(
                 val item = uploadUnclassified(localPath, remotePath, existingRemoteId, ifMatchETag, onProgress, sourceSha256)
                 sourceSha256.get()?.let { item.copy(sentSha256 = it) } ?: item
             } catch (e: InternxtApiException) {
+                if (isParentFolderNotFound(e)) throw parentGoneAfterCreate(e, remotePath, folderCache, authService.getValidCredentials().rootFolderId)
+                if (isMaxSpaceUsed(e)) {
+                    throw org.krost.unidrive.InsufficientRemoteSpaceException(
+                        "Internxt refused the upload of $remotePath: the account's storage is full (${e.statusCode}: ${serverSentence(e.message) ?: e.message})",
+                        cause = e,
+                        requestId = e.requestId,
+                    )
+                }
                 if (e.statusCode == PLAN_LIMIT_STATUS) {
                     throw org.krost.unidrive.PlanLimitException(
                         "Internxt refused the upload of $remotePath (${e.statusCode}): ${e.message}",
@@ -1558,6 +1552,7 @@ class InternxtProvider(
         val encryptedSize: Long
         val hashHex: String
         if (needsEncrypt) {
+            ensureStagingSpace(tempFile, fileSize, remotePath, usableSpaceOf, log)
             val encryptStarted = System.nanoTime()
             // Re-derive a fresh Cipher per encrypt pass (javax.crypto.Cipher is
             // single-use after doFinal). The fileKey/iv stay byte-identical to
@@ -1568,16 +1563,8 @@ class InternxtProvider(
             try {
                 withContext(Dispatchers.IO) {
                     Files.createDirectories(tempFile.parent)
-                    val source = java.security.DigestInputStream(withLocalIoRetry { Files.newInputStream(localPath) }, plainDigest)
-                    javax.crypto.CipherInputStream(source, encCipher).use { cipherIn ->
-                        Files.newOutputStream(tempFile).use { out ->
-                            val buf = ByteArray(8192)
-                            var n: Int
-                            while (cipherIn.read(buf).also { n = it } != -1) {
-                                out.write(buf, 0, n)
-                                digest.update(buf, 0, n)
-                            }
-                        }
+                    java.security.DigestInputStream(withLocalIoRetry { Files.newInputStream(localPath) }, plainDigest).use { source ->
+                        Files.newOutputStream(tempFile).use { out -> encryptToStaging(source, encCipher, out, digest) }
                     }
                 }
                 encryptedSize = withContext(Dispatchers.IO) { Files.size(tempFile) }
@@ -1815,6 +1802,8 @@ class InternxtProvider(
             hashHex: String,
             startedAt: Instant,
         ): org.krost.unidrive.internxt.model.BucketEntry {
+            val partProgress = MultipartProgress(fileSize, encryptedSize, onProgress)
+
             // Starts a fresh multipart session and persists it. Used at entry, after the
             // presigned-URL TTL drops a session, and after a part PUT meets a dead-URL 403.
             suspend fun startFreshSession(): MultipartResume {
@@ -1865,6 +1854,13 @@ class InternxtProvider(
                     ceilDivLong(encryptedSize, mp.chunkSize).toInt() == mp.numParts &&
                     mp.parts.all { it.index in 0 until mp.numParts }
             val persisted = currentTomb.multipart
+            // A finished session resumes without re-finishing: the bucket entry id was pinned the moment the finish call
+            // answered. Checked before the plan and URL-age checks (#747): the part URLs are not needed any more, and a
+            // fresh session would re-put every part and finish a second bucket entry, leaving the first unreferenced.
+            val finishedEntryId = persisted?.bucketEntryId
+            if (currentTomb.stage == UploadTombstone.Stage.FINISH_DONE && finishedEntryId != null) {
+                return org.krost.unidrive.internxt.model.BucketEntry(id = finishedEntryId, index = indexHex, bucket = bucket)
+            }
             var session =
                 when {
                     persisted == null -> null
@@ -1887,12 +1883,6 @@ class InternxtProvider(
                     else -> persisted
                 } ?: startFreshSession()
 
-            // A finished session resumes without re-finishing: the bucket entry id
-            // was pinned the moment the finish call answered.
-            if (currentTomb.stage == UploadTombstone.Stage.FINISH_DONE && session.bucketEntryId != null) {
-                return org.krost.unidrive.internxt.model.BucketEntry(id = session.bucketEntryId, index = indexHex, bucket = bucket)
-            }
-
             // Parts upload in parallel up to the concurrency cap, each with its own
             // retry ladder (retryShardCommit) and its own watchdog window — the same
             // per-request treatment the single PUT got. Completed parts are persisted
@@ -1914,6 +1904,7 @@ class InternxtProvider(
                     )
                 val completed = java.util.concurrent.ConcurrentHashMap<Int, String>()
                 for (part in current.parts) completed[part.index] = part.etag
+                partProgress.startSession(current.parts.associate { it.index to partSize(current, it.index, encryptedSize) })
                 val tombMutex = kotlinx.coroutines.sync.Mutex()
                 val partsSem = kotlinx.coroutines.sync.Semaphore(effectiveUploadConcurrency)
                 // supervisorScope, not coroutineScope: a part that used its ladder up does not cancel the parts still
@@ -1940,14 +1931,9 @@ class InternxtProvider(
                                                         offset,
                                                         size,
                                                         partBudget,
-                                                        onBytesSent = { sent ->
-                                                            // The single-PUT convention (archive#1197), scaled from this
-                                                            // part's window of the ciphertext to plaintext bytes:
-                                                            // live values while the body streams, always held below
-                                                            // the total; the one final report follows the last part.
-                                                            val scaled = ((offset + sent).toDouble() / encryptedSize * fileSize).toLong()
-                                                            onProgress?.invoke(scaled.coerceIn(0L, fileSize - 1), fileSize)
-                                                        },
+                                                        // archive#1197: live values while the body streams (all parts, see
+                                                        // MultipartProgress); the one final report follows the last part.
+                                                        onBytesSent = { sent -> partProgress.partSent(index, sent) },
                                                     )
                                                 if (put.isNullOrBlank()) {
                                                     throw InternxtApiException("Part ${index + 1} of $remotePath answered no ETag")
@@ -1984,6 +1970,7 @@ class InternxtProvider(
                                             withContext(Dispatchers.IO) { tombstoneStore.write(pathHashStr, currentTomb) }
                                         }
                                     }
+                                    partProgress.partDone(index, size)
                                 } catch (e: CancellationException) {
                                     throw e   // the daemon took the upload down; nothing to drain
                                 } catch (e: Throwable) {
@@ -2132,14 +2119,44 @@ class InternxtProvider(
                 false
             }
         if (existingRemoteId != null && !archivedPrior) {
-            val replaced =
-                api
-                    .replaceFile(
-                        uuid = existingRemoteId,
-                        size = fileSize,
-                        fileId = bucketEntry.id,
-                        modificationTime = localMtime,
-                    ).afterReplace(localMtime)
+            // The object a replace names is always the one this upload finished: in this call, or in an earlier attempt
+            // of the same content whose tombstone this call resumed at FINISH_DONE. Only the resumed one can be stale.
+            val landedBefore =
+                if (tomb?.stage == UploadTombstone.Stage.FINISH_DONE) {
+                    resumedReplaceLanded(existingRemoteId, bucket, bucketEntry.id, fileSize, remotePath, pathHashStr)
+                } else {
+                    null
+                }
+            var replaced =
+                landedBefore ?: try {
+                    api
+                        .replaceFile(
+                            uuid = existingRemoteId,
+                            size = fileSize,
+                            fileId = bucketEntry.id,
+                            modificationTime = localMtime,
+                        ).afterReplace(localMtime)
+                } catch (e: InternxtApiException) {
+                    // #747 finding 5: the repeat of a replace that already committed (the ladder's repeat of a 5xx, or the next
+                    // attempt resuming at FINISH_DONE) is refused 400 "New file ID is the same as the old file ID". The meta
+                    // decides: the uploaded object (same fileId and size) means the replace has landed.
+                    if (!isSameFileIdRefusal(e)) throw e
+                    val current = api.getFileMeta(existingRemoteId)
+                    if (current.fileId != bucketEntry.id || current.size?.toLongOrNull() != fileSize) throw e
+                    log.info("replace of {} had already landed (fileId={}); adopting", remotePath, bucketEntry.id)
+                    current
+                }
+            // The server answers 200 to a replace and still may not name the uploaded object (it accepts an older fileId
+            // too): only a file that names the uploaded object counts as replaced. The tombstone stays for the next attempt.
+            if (replaced.fileId != bucketEntry.id) {
+                val current = api.getFileMeta(existingRemoteId)
+                if (current.fileId != bucketEntry.id) {
+                    throw ProviderException(
+                        "the replace of $remotePath did not take: the server reports object ${current.fileId}, not the uploaded ${bucketEntry.id}",
+                    )
+                }
+                replaced = current
+            }
             finalItem = replaced.toCloudItem(parentPath)
         } else {
             // A create, or the create that follows the archive rename of a replace: the same answers to a 409 and to a
@@ -2159,81 +2176,93 @@ class InternxtProvider(
                         modificationTime = localMtime,
                     )
                 } catch (e: InternxtApiException) {
-                    // UD-366 defensive fallback: reconciler/DB drift can leave us POSTing a
-                    // path that already exists on remote.  Safe overwrite requires PROVEN
-                    // content identity; anything else keeps both copies.
-                    if (e.statusCode != 409) throw e
-                    log.warn(
-                        "UD-366: 409 on POST /files for {} (prior file {}) — " +
-                            "reconciler/DB drift or a create that had landed; inspecting remote for content-identity check",
-                        remotePath,
-                        if (archivedPrior) "archived" else "none",
-                    )
-                    // Get the raw InternxtFile (not CloudItem) so we keep fileId, the
-                    // bucket-entry content-address.  parentUuid is already resolved above.
-                    // The candidate is the live file getMetadata would return. A first-hit
-                    // of fullName or baseName adopted `Makefile.am` (or a non-live row)
-                    // when it was listed before the exact name, and a byte compare against
-                    // that wrong row either adopted the sibling or conflict-copied a file
-                    // that was already identical.
-                    val folderContent = api.getFolderContents(parentUuid)
-                    val wantedName = segments.last()
-                    var remoteFile: org.krost.unidrive.internxt.model.InternxtFile? = null
-                    when (val pick = pickCreateCollisionCandidate(folderContent.files, folderContent.children, wantedName, remotePath, log)) {
-                        is CreateCollisionPick.Refuse -> throw e
-                        is CreateCollisionPick.Candidate -> remoteFile = pick.file
-                        // KeepBoth leaves remoteFile null: the ladder below lands a conflict copy.
-                        CreateCollisionPick.KeepBoth -> {}
-                    }
-                    // Content-identity: bucket-entry fileId is Internxt's content-address.
-                    // Equal fileId AND equal size ⇒ provably same content → safe adopt.
-                    // Null fileId, size mismatch, or fileId mismatch → not provably identical
-                    // by the content-address alone. More than one live match is not
-                    // one file either (remoteFile stays null) → keep both.
-                    val remoteFileId = remoteFile?.fileId
-                    val remoteSize = remoteFile?.size?.toLongOrNull() ?: -1L
-                    // bucketEntry.id is never null, so an equal fileId is a present one.
-                    if (remoteFile != null && remoteFile.fileId == bucketEntry.id && remoteSize == fileSize) {
-                        log.info(
-                            "remote {} already has the uploaded content (fileId={}, size={}); adopting its file row",
-                            remotePath, bucketEntry.id, fileSize,
-                        )
-                        // The row already points at this bucket entry. Replacing it with the same fileId is refused by the API.
-                        remoteFile
-                    } else if (
-                        remoteFile != null &&
-                            remoteSize == fileSize &&
-                            sameContentAsRemote(remoteFile, remotePath, localPath, fileSize, tempFile)
-                    ) {
-                        // A fresh upload always gets a new bucket entry, so a different fileId says nothing about the
-                        // content: the bytes decide. Equal: the remote is the file already, adopted as it is (no
-                        // replace, no copy); the bucket entry just sent stays unreferenced.
-                        log.info(
-                            "409 on POST /files for {}: the remote file (uuid={}, size={}) has the same content as the local one; " +
-                                "adopted as the same file, no conflict copy",
-                            remotePath, remoteFile.uuid, fileSize,
-                        )
-                        remoteFile
-                    } else {
-                        // KEEP BOTH: leave remote untouched; land local under a conflict name.
+                    if (e.statusCode in INDETERMINATE_CREATE_STATUSES) {
+                        // #793: a 500/502/504 does not say whether the create committed, like a lost response: reconcile
+                        // by listing, never by a blind second create (it could duplicate a commit the listing lags behind).
                         log.warn(
-                            "UD-366: collision on {} — remote fileId={} size={} differs from local fileId={} size={}; " +
-                                "preserving remote untouched, uploading local as conflict copy",
-                            remotePath, remoteFileId, remoteSize, bucketEntry.id, fileSize,
+                            "POST /files for {} answered {} (requestId={}); listing the parent to check for a server-side commit",
+                            remotePath,
+                            e.statusCode,
+                            e.requestId,
                         )
-                        uploadConflictCopy(
-                            ConflictCopyCreate(
-                                bucket = bucket,
-                                folderUuid = parentUuid,
-                                plainName = plainName,
-                                ext = ext,
-                                size = fileSize,
-                                bucketEntryId = bucketEntry.id,
-                                modificationTime = localMtime,
-                                mnemonic = creds.mnemonic,
-                            ),
+                        landedOrThrow(e, parentUuid, segments.last(), bucketEntry.id, fileSize, remotePath)
+                    } else {
+                        // UD-366 defensive fallback: reconciler/DB drift can leave us POSTing a
+                        // path that already exists on remote.  Safe overwrite requires PROVEN
+                        // content identity; anything else keeps both copies.
+                        if (e.statusCode != 409) throw e
+                        log.warn(
+                            "UD-366: 409 on POST /files for {} (prior file {}) — " +
+                                "reconciler/DB drift or a create that had landed; inspecting remote for content-identity check",
+                            remotePath,
+                            if (archivedPrior) "archived" else "none",
                         )
-                    }
+                        // Get the raw InternxtFile (not CloudItem) so we keep fileId, the
+                        // bucket-entry content-address.  parentUuid is already resolved above.
+                        // The candidate is the live file getMetadata would return. A first-hit
+                        // of fullName or baseName adopted `Makefile.am` (or a non-live row)
+                        // when it was listed before the exact name, and a byte compare against
+                        // that wrong row either adopted the sibling or conflict-copied a file
+                        // that was already identical.
+                        val folderContent = api.getFolderContents(parentUuid)
+                        val wantedName = segments.last()
+                        var remoteFile: org.krost.unidrive.internxt.model.InternxtFile? = null
+                        when (val pick = pickCreateCollisionCandidate(folderContent.files, folderContent.children, wantedName, remotePath, log)) {
+                            is CreateCollisionPick.Refuse -> throw e
+                            is CreateCollisionPick.Candidate -> remoteFile = pick.file
+                            // KeepBoth leaves remoteFile null: the ladder below lands a conflict copy.
+                            CreateCollisionPick.KeepBoth -> {}
+                        }
+                        // Content-identity: bucket-entry fileId is Internxt's content-address.
+                        // Equal fileId AND equal size ⇒ provably same content → safe adopt.
+                        // Null fileId, size mismatch, or fileId mismatch → not provably identical
+                        // by the content-address alone. More than one live match is not
+                        // one file either (remoteFile stays null) → keep both.
+                        val remoteFileId = remoteFile?.fileId
+                        val remoteSize = remoteFile?.size?.toLongOrNull() ?: -1L
+                        // bucketEntry.id is never null, so an equal fileId is a present one.
+                        if (remoteFile != null && remoteFile.fileId == bucketEntry.id && remoteSize == fileSize) {
+                            log.info(
+                                "remote {} already has the uploaded content (fileId={}, size={}); adopting its file row",
+                                remotePath, bucketEntry.id, fileSize,
+                            )
+                            // The row already points at this bucket entry. Replacing it with the same fileId is refused by the API.
+                            remoteFile
+                        } else if (
+                            remoteFile != null &&
+                                remoteSize == fileSize &&
+                                sameContentAsRemote(remoteFile, remotePath, localPath, fileSize, tempFile)
+                        ) {
+                            // A fresh upload always gets a new bucket entry, so a different fileId says nothing about the
+                            // content: the bytes decide. Equal: the remote is the file already, adopted as it is (no
+                            // replace, no copy); the bucket entry just sent stays unreferenced.
+                            log.info(
+                                "409 on POST /files for {}: the remote file (uuid={}, size={}) has the same content as the local one; " +
+                                    "adopted as the same file, no conflict copy",
+                                remotePath, remoteFile.uuid, fileSize,
+                            )
+                            remoteFile
+                        } else {
+                            // KEEP BOTH: leave remote untouched; land local under a conflict name.
+                            log.warn(
+                                "UD-366: collision on {} — remote fileId={} size={} differs from local fileId={} size={}; " +
+                                    "preserving remote untouched, uploading local as conflict copy",
+                                remotePath, remoteFileId, remoteSize, bucketEntry.id, fileSize,
+                            )
+                            uploadConflictCopy(
+                                ConflictCopyCreate(
+                                    bucket = bucket,
+                                    folderUuid = parentUuid,
+                                    plainName = plainName,
+                                    ext = ext,
+                                    size = fileSize,
+                                    bucketEntryId = bucketEntry.id,
+                                    modificationTime = localMtime,
+                                    mnemonic = creds.mnemonic,
+                                ),
+                            )
+                        }
+                }
                 } catch (e: java.io.IOException) {
                     // The createFile response was lost (truncated / "server
                     // prematurely closed the connection") AFTER the server may have
@@ -2248,18 +2277,7 @@ class InternxtProvider(
                         remotePath,
                         e.message,
                     )
-                    val landed = findFileByName(parentUuid, segments.last()) ?: throw e
-                    val landedSize = landed.size?.toLongOrNull() ?: -1L
-                    if (landed.fileId == bucketEntry.id && landedSize == fileSize) {
-                        log.info(
-                            "createFile landed server-side despite the lost response for {} (uuid={}); adopting",
-                            remotePath,
-                            landed.uuid,
-                        )
-                        landed
-                    } else {
-                        throw e
-                    }
+                    landedOrThrow(e, parentUuid, segments.last(), bucketEntry.id, fileSize, remotePath)
                 }
             finalItem = created.toCloudItem(parentPath)
         }
@@ -2323,7 +2341,7 @@ class InternxtProvider(
         var currentUuid = authService.getValidCredentials().rootFolderId
         for ((index, segment) in segments.withIndex()) {
             val children =
-                api.getChildFoldersPaged(currentUuid).filter { it.isLive() && sanitizeName(it.plainName ?: it.name ?: "") == segment }
+                api.getChildFoldersPaged(currentUuid).filter { it.isLive() && !api.trashedFolders.contains(it.uuid) && sanitizeName(it.plainName ?: it.name ?: "") == segment }
             val child =
                 when (children.size) {
                     0 -> {
@@ -2344,6 +2362,9 @@ class InternxtProvider(
     // How long the second look at a missing upload parent waits first: a listing that does not show a folder just created or
     // just restored is seen to lag for 1-3 s (FolderUuidCache, archive#132). A test seam, like [clock].
     internal var parentRelistDelayMs: Long = PARENT_RELIST_DELAY_MS
+
+    // The free bytes of the volume holding [dir]; a test seam for the staging preflight (#441).
+    internal var usableSpaceOf: (Path) -> Long = { dir -> Files.getFileStore(dir).usableSpace }
 
     private suspend fun uploadEmpty(
         segments: List<String>,
@@ -2392,7 +2413,8 @@ class InternxtProvider(
             } catch (e: InternxtApiException) {
                 if (e.statusCode != 409) throw e
                 val folderContent = api.getFolderContents(parentUuid)
-                if (folderContent.children.any { sanitizeName(it.plainName ?: it.name ?: "") == segments.last() }) throw e
+                // A trashed folder of the name does not explain the refusal (#747): only a live one stands in the way.
+                if (folderContent.children.any { it.isLive() && sanitizeName(it.plainName ?: it.name ?: "") == segments.last() }) throw e
                 val remote = findFileByName(parentUuid, segments.last()) ?: throw e
                 if ((remote.size?.toLongOrNull() ?: -1L) == 0L) {
                     log.info("#485: remote {} is already an empty file (uuid={}); adopting", remotePath, remote.uuid)
@@ -2421,6 +2443,70 @@ class InternxtProvider(
                 }
             }
         return created.toCloudItem(parentPath)
+    }
+
+    // A create whose outcome is unknown (a lost response, a 500/502/504): the file landed when the parent lists it with
+    // exactly the content just uploaded (same bucket fileId and size), and is adopted; otherwise [cause] stands and the
+    // item fails, for the next pass to reconcile again (gkrost/unidrive-cli#793). A listing that fails proves nothing
+    // either way: the create's own failure is the one raised.
+    @Suppress("TooGenericExceptionCaught", "ThrowsCount")
+    private suspend fun landedOrThrow(
+        cause: Exception,
+        parentUuid: String,
+        name: String,
+        entryId: String,
+        fileSize: Long,
+        remotePath: String,
+    ): InternxtFile {
+        val listed =
+            try {
+                findFileByName(parentUuid, name)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log.warn("the listing that checks the create of {} failed too ({}); the create stays failed", remotePath, e.message)
+                cause.addSuppressed(e)
+                throw cause
+            }
+        val landed = listed ?: throw cause
+        val landedSize = landed.size?.toLongOrNull() ?: -1L
+        if (landed.fileId != entryId || landedSize != fileSize) throw cause
+        log.info("createFile landed server-side despite the failed answer for {} (uuid={}); adopting", remotePath, landed.uuid)
+        return landed
+    }
+
+    // A replace whose bucket entry was finished by an earlier attempt (resumed at FINISH_DONE). The file naming that
+    // object already (and the size) means the earlier replace landed: its meta row is the result, nothing is sent. A file
+    // naming another object may have been replaced by someone else since, and the server drops the replaced object: a
+    // replace naming ours would then leave the file without one (it accepts an older fileId with 200, live 2026-11-18).
+    // So the bridge must still hold ours; when it does not, the resume state is dropped and the attempt fails retryably,
+    // and the next one uploads afresh. Null: the replace is to be sent.
+    @Suppress("ThrowsCount")
+    private suspend fun resumedReplaceLanded(
+        existingRemoteId: String,
+        bucket: String,
+        entryId: String,
+        fileSize: Long,
+        remotePath: String,
+        pathHash: String,
+    ): InternxtFile? {
+        val current = api.getFileMeta(existingRemoteId)
+        if (current.fileId == entryId && current.size?.toLongOrNull() == fileSize) {
+            log.info("replace of {} had landed in an earlier attempt (fileId={}); adopting", remotePath, entryId)
+            return current
+        }
+        try {
+            api.getBridgeFileInfo(bucket, entryId)
+        } catch (e: InternxtApiException) {
+            if (!isBucketEntryNotFound(e)) throw e
+            withContext(Dispatchers.IO) { tombstoneStore.discard(pathHash) }
+            throw ProviderException(
+                "the object finished for $remotePath in an earlier attempt ($entryId) is gone and the file names " +
+                    "${current.fileId}; not replacing with it, the next attempt uploads afresh",
+                cause = e,
+            )
+        }
+        return null
     }
 
     // A create's 409 names a remote of the same size: read it (decrypted into the staging directory, deleted right after)
@@ -2762,21 +2848,8 @@ class InternxtProvider(
         val parentUuid = resolveFolder(parentPath)
         val creds = authService.getValidCredentials()
         val encryptedName = crypto.encryptName(name, "${creds.mnemonic}-$parentUuid")
-        val folder =
-            try {
-                api.createFolder(parentUuid, name, encryptedName)
-            } catch (e: InternxtApiException) {
-                if (e.statusCode != 409) throw e
-                // Folder already exists on the server — recover its UUID instead of failing.
-                val existing =
-                    api
-                        .getFolderContents(parentUuid)
-                        .children
-                        // UD-317: sanitise child name before matching; a trashed twin is never adopted.
-                        .find { it.isLive() && sanitizeName(it.plainName ?: it.name ?: "") == name }
-                        ?: throw e // 409 but no live folder of that name: re-throw original error
-                existing
-            }
+        // A 409 adopts the one live folder of the name; two are ambiguous (#747), and one this provider trashed is waited out (E3).
+        val folder = createFolderPastTrashLag(api, parentUuid, name, encryptedName, log) { throwAmbiguous(it, name, parentPath) }
         // UD-357: cache the new folder's UUID so the next resolveFolder call
         // doesn't race Internxt's read-after-write inconsistency on listing.
         // Use sanitizeName(name) so the lookup key matches what resolveFolder
@@ -4925,7 +4998,7 @@ class InternxtProvider(
             // window. On the first resolveFolder right after createFolder of
             // a new subfolder, the API listing still doesn't show it; the
             // cache (populated by createFolder) does.
-            val cached = folderCache.get(currentUuid, segment)
+            val cached = folderCache.get(currentUuid, segment)?.takeUnless(api.trashedFolders::contains) // E3: never one we trashed
             if (cached != null) {
                 // A folder renamed, moved or trashed elsewhere leaves the cache when a change feed names it
                 // (assembleFullDelta); folderStateById drops a folder it finds gone.
@@ -4938,7 +5011,7 @@ class InternxtProvider(
             // pinning every operation under this path to an arbitrary twin. Non-live
             // folders do not count: a trashed twin must neither be picked nor make a
             // live folder ambiguous (the same rule as getMetadata and listChildren).
-            val children = content.children.filter { it.isLive() && sanitizeName(it.plainName ?: it.name ?: "") == segment }
+            val children = content.children.filter { it.isLive() && !api.trashedFolders.contains(it.uuid) && sanitizeName(it.plainName ?: it.name ?: "") == segment }
             val child =
                 when (children.size) {
                     0 -> throw FolderNotFoundException(segment, path, "/" + segments.take(index + 1).joinToString("/"))
@@ -6082,14 +6155,17 @@ class InternxtProvider(
         // The modification time is the string the server sent when the row carries it (archive#1039): the version
         // token of the file is built from it, and the Instant's toString() drops a zero fraction. The fileId is the one
         // the row carries (gkrost/unidrive-cli#194): the contentId of the item is built from it.
+        // The staged name is the full recomposed name (#747): it is split the way an upload splits it ([splitLeaf]), so a
+        // name the drive keeps whole (`a.txt.txt`, `a.`) is rebuilt whole and listed as it was staged.
         internal fun CloudItem.toResumedFile(): InternxtFile {
             val raw = stagedModificationTime(hash)
+            val (stem, type) = splitLeaf(name)
             return InternxtFile(
                 uuid = id,
                 fileId = stagedFileIdOf(this),
-                plainName = name.substringBeforeLast('.', name),
-                name = name.substringBeforeLast('.', name),
-                type = name.substringAfterLast('.', ""),
+                plainName = stem,
+                name = stem,
+                type = type ?: "",
                 folderUuid = parentId,
                 size = size.toString(),
                 modificationTime = if (raw == null) modified?.toString() else raw.takeIf { it.isNotEmpty() },

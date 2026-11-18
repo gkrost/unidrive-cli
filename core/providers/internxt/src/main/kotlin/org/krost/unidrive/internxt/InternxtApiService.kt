@@ -342,6 +342,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
     // gkrost/unidrive-cli#392: every Drive answer that carries files records them, so a download of a listed file can skip
     // the meta call (see FileContentHints).
     internal val fileHints = FileContentHints()
+    internal val trashedFolders = RecentlyTrashedFolders()
     internal val fileMetaDedup = InFlightDedup<String, InternxtFile>()
     internal val folderMetaDedup = InFlightDedup<String, InternxtFolder>()
     internal val listFilesDedup = InFlightDedup<String, List<InternxtFile>>()
@@ -1264,6 +1265,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                 }
             }
         }
+        fileHints.forget(uuid) // the stored object goes with the file (#747)
     }
 
     /**
@@ -1330,6 +1332,8 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                 throw e
             }
         }
+        // A trashed file is not read by its hint any more (#747): an answer that names it again (a restore) is newer.
+        items.forEach { (uuid, type) -> if (type == "file") fileHints.forget(uuid) else trashedFolders.remember(uuid) }
     }
 
     /**
@@ -1383,33 +1387,22 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
         // 404 is treated as already-gone (idempotent delete) — short-circuits
         // before checkResponse so retryOnTransient never sees it as transient. The repeat of a
         // 500/502/504 whose origin committed answers that same 404, so the 5xx are retried too.
+        // The folder's own route, no body: drive-server-wip FolderController `@Delete('/:uuid')` (204), the route of the
+        // SDK's `deleteFolderByUuid`. `DELETE /folders` with an items body hit the collection route (`@Delete('/')`,
+        // orphan cleanup), which answers 400 without its `status` query: no permanent folder delete ever succeeded
+        // (live finding 2026-11-18).
         retryOnTransient(retryServerErrors = true) {
             withAuthRetry { creds ->
                 budgeted(driveBudget) {
-                    val requestBody =
-                        kotlinx.serialization.json.buildJsonObject {
-                            put(
-                                "items",
-                                kotlinx.serialization.json.buildJsonArray {
-                                    add(
-                                        kotlinx.serialization.json.buildJsonObject {
-                                            put("uuid", kotlinx.serialization.json.JsonPrimitive(uuid))
-                                            put("type", kotlinx.serialization.json.JsonPrimitive("folder"))
-                                        },
-                                    )
-                                },
-                            )
-                        }
                     val response =
-                        httpClient.delete("$baseUrl/folders") {
+                        httpClient.delete("$baseUrl/folders/$uuid") {
                             applyAuth(creds)
-                            contentType(ContentType.Application.Json)
-                            setBody(requestBody.toString())
                         }
                     if (response.status != HttpStatusCode.NotFound) checkResponse(response)
                 }
             }
         }
+        trashedFolders.remember(uuid) // listed live a while longer, like a trashed one (E3)
     }
 
     private fun isHttps(url: String): Boolean =
@@ -2157,8 +2150,9 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
         }
         if (!response.status.isSuccess()) {
             val body = response.bodyAsText()
+            val call = "${response.status} (${response.request.method.value} ${maskedRoute(response.request.url.encodedPath)})"
             throw InternxtApiException(
-                if (quoteBody) "API error: ${response.status} - ${ErrorBodyExcerpt.of(body)}" else "API error: ${response.status}",
+                if (quoteBody) "API error: $call - ${ErrorBodyExcerpt.of(body)}" else "API error: $call",
                 statusCode = response.status.value,
                 requestId = extractRequestId(response),
                 retryAfterMs = parseRetryAfterHeader(response.headers["Retry-After"], responseDateHeader = response.headers["Date"]) ?: parseRetryAfter(body),

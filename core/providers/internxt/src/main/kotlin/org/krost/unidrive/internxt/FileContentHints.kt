@@ -45,6 +45,10 @@ internal class FileContentHints(
         synchronized(entries) {
             val known = entries[file.uuid]
             if (known?.updatedAt != null && updatedAt != null && updatedAt.isBefore(known.updatedAt)) return
+            // A fence (no usable object) is lifted by a newer version only: an answer of the same version as a forgotten
+            // hint names the same dead object (#747).
+            val fencedAt = known?.updatedAt?.takeIf { known.file == null }
+            if (fencedAt != null && updatedAt != null && !updatedAt.isAfter(fencedAt)) return
             entries[file.uuid] = Entry(hint, updatedAt)
         }
     }

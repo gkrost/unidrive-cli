@@ -127,6 +127,8 @@ class InternxtDownloadRoundTripsTest {
                     )
                 }
             }
+            path.endsWith("/storage/trash/add") && request.method == HttpMethod.Post ->
+                respond("{}", HttpStatusCode.OK, jsonHeaders)
             host == "shard-host.invalid" && request.method == HttpMethod.Get -> {
                 val body = encrypted(objects.getValue(path.substringAfterLast('/')))
                 respond(
@@ -246,6 +248,38 @@ class InternxtDownloadRoundTripsTest {
         assertEquals(0, shardCalls())
     }
 
+    // #747 finding 11: a hint that led to a missing object is forgotten, so the next attempt asks the meta call first
+    // instead of reading the same dead object by the hint again.
+    @Test
+    fun `a hinted object found missing leaves no hint behind`() {
+        listedSize = "9"
+        metaSize = "9"
+        val provider = newProvider()
+        runTest { provider.listChildren("/") }
+        assertEquals("object-a", provider.api.fileHints.get(fileUuid)?.fileId, "the listing left a hint")
+
+        assertFailsWith<RemoteObjectMissingDownloadException> { runTest { provider.downloadById(fileUuid, "/a.bin", destination) } }
+        assertNull(provider.api.fileHints.get(fileUuid), "the dead hint is forgotten")
+
+        requestLog.clear()
+        assertFailsWith<RemoteObjectMissingDownloadException> { runTest { provider.downloadById(fileUuid, "/a.bin", destination) } }
+        assertTrue(requestLog.first().endsWith("/drive/files/$fileUuid/meta"), "the retry asks the meta call first: $requestLog")
+        assertNull(provider.api.fileHints.get(fileUuid), "the meta answer of the same version does not bring the hint back")
+    }
+
+    @Test
+    fun `a trashed file leaves no hint behind`() =
+        runTest {
+            listedSize = store("object-a", "content")
+            val provider = newProvider()
+            provider.listChildren("/")
+            assertEquals("object-a", provider.api.fileHints.get(fileUuid)?.fileId)
+
+            provider.delete("/a.bin", null)
+
+            assertNull(provider.api.fileHints.get(fileUuid))
+        }
+
     @Test
     fun `a listed empty file still downloads as an empty file`() =
         runTest {
@@ -290,6 +324,19 @@ class InternxtDownloadRoundTripsTest {
 
         hints.record(row("object-a", "2026-11-05T12:00:01.000Z"))
         assertNull(hints.get(fileUuid), "an answer from before the trash cannot fill the hint in again")
+    }
+
+    @Test
+    fun `an answer as old as a forgotten hint does not bring it back, a newer one does`() {
+        val hints = FileContentHints()
+        hints.record(row("object-a", "2026-11-05T12:00:01.000Z"))
+        hints.forget(fileUuid)
+
+        hints.record(row("object-a", "2026-11-05T12:00:01.000Z"))
+        assertNull(hints.get(fileUuid), "the same version cannot fill the forgotten hint in again")
+
+        hints.record(row("object-b", "2026-11-05T12:00:02.000Z"))
+        assertEquals("object-b", hints.get(fileUuid)?.fileId, "a newer version is recorded")
     }
 
     @Test

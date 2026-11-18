@@ -342,7 +342,7 @@ class InternxtSharedByMeTest {
             val e = assertFailsWith<InternxtApiException> { service.listSharedByMe() }
 
             assertEquals(400, e.statusCode)
-            assertEquals("API error: 400 Bad Request", e.message)
+            assertEquals("API error: 400 Bad Request (GET /drive/sharings/folders)", e.message)
             assertEquals("srv-sharings", e.requestId)
             assertEquals(1, sharings.requests.size)
             service.close()
@@ -447,7 +447,7 @@ class InternxtSharedByMeTest {
             val e = assertFailsWith<InternxtApiException> { service.listSharedByMe() }
 
             assertEquals(503, e.statusCode)
-            assertEquals("API error: 503 Service Unavailable", e.message)
+            assertEquals("API error: 503 Service Unavailable (GET /drive/sharings/folders)", e.message)
             assertEquals(3, sharings.requests.size)
             service.close()
         }
@@ -688,7 +688,7 @@ class InternxtSharedByMeTest {
 
             val e = assertFailsWith<InternxtApiException> { service.listFiles() }
 
-            assertEquals("""API error: 400 Bad Request - {"message":"limit must not be less than 1"}""", e.message)
+            assertEquals("""API error: 400 Bad Request (GET /drive/files) - {"message":"limit must not be less than 1"}""", e.message)
             service.close()
         }
 }

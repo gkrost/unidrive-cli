@@ -27,10 +27,11 @@ internal fun rootedInternxtProvider(
     stateDir: Path,
     engine: MockEngine,
     keepOverwritten: Boolean = false,
+    tune: (InternxtConfig) -> InternxtConfig = { it },
 ): InternxtProvider {
     val payload = Base64.getUrlEncoder().withoutPadding().encodeToString("""{"exp":9999999999}""".toByteArray())
     return InternxtProvider(
-        InternxtConfig(credentialProtector = null, tokenPath = stateDir, keepOverwritten = keepOverwritten),
+        tune(InternxtConfig(credentialProtector = null, tokenPath = stateDir, keepOverwritten = keepOverwritten)),
         httpClient = HttpClient(engine),
         credentials =
             InternxtCredentials(
@@ -92,8 +93,31 @@ internal class UploadDrive(
     /** Answers a `POST /files` with this status instead (null lets it through); [call] counts from 1. */
     @Volatile var createFault: ((call: Int, plainName: String) -> HttpStatusCode?)? = null
 
+    /** The body [createFault]'s answer carries instead of the generic one. */
+    @Volatile var createFaultBody: String? = null
+
     /** The file is stored although [createFault] answers an error: the commit landed and the response was lost. */
     @Volatile var storeBeforeFault: Boolean = false
+
+    /** Answers a replace (`PUT /files/{uuid}`) with this status instead (null lets it through); [call] counts from 1. */
+    @Volatile var replaceFault: ((call: Int) -> HttpStatusCode?)? = null
+
+    /** The replace is stored although [replaceFault] answers an error. */
+    @Volatile var storeBeforeReplaceFault: Boolean = false
+
+    /** The server answers a replace with 200 and keeps the old fileId (a write that did not take). */
+    @Volatile var replaceKeepsOldFileId: Boolean = false
+
+    /** The fileId of every replace sent, in order. */
+    val replaceFileIds = CopyOnWriteArrayList<String?>()
+    private val replaceCalls = AtomicInteger()
+
+    /** Answers every upload start (`files/start`) with this status and body instead (null lets it through). */
+    @Volatile var startRefusal: Pair<HttpStatusCode, String>? = null
+    val startCalls = AtomicInteger()
+
+    /** The stored objects the bridge holds (its file info answers); null: every object exists. */
+    @Volatile var bridgeObjects: MutableSet<String>? = null
 
     /**
      * Folder uuid -> how many listings of its parent still leave it out (the combined call and the cursor stream of the folders
@@ -103,6 +127,13 @@ internal class UploadDrive(
 
     /** Answers every cursor listing of a folder's children with this status instead (null lets it through). */
     @Volatile var pagedListingFault: HttpStatusCode? = null
+
+    /** Runs before every single `POST /folders` is answered; [call] counts from 1. A test changes the drive from here. */
+    @Volatile var onFolderCreate: ((call: Int) -> Unit)? = null
+    private val folderCreateCalls = AtomicInteger()
+
+    /** The uuids `POST /storage/trash/add` was asked to trash. The drive keeps listing them as they were (the trash lag). */
+    val trashed = CopyOnWriteArrayList<String>()
 
     /** The order in which a batch `POST /folders` answers its folders. */
     @Volatile var batchAnswerOrder: (List<UploadDriveFolder>) -> List<UploadDriveFolder> = { it }
@@ -153,11 +184,21 @@ internal class UploadDrive(
 
             fun notFound() = respond("""{"statusCode":404}""", HttpStatusCode.NotFound, jsonHeaders)
             when {
+                url.contains("/v2/buckets/") && url.contains("/files/start") && startCalls.incrementAndGet() > 0 && startRefusal != null ->
+                    respond(startRefusal!!.second, startRefusal!!.first, jsonHeaders)
                 url.contains("/v2/buckets/") && url.contains("/files/start") ->
                     respond("""{"uploads":[{"index":0,"uuid":"shard-uuid-1","url":"$shardUrl"}]}""", HttpStatusCode.OK, jsonHeaders)
                 url == shardUrl -> {
                     shardPutLengths += request.body.contentLength ?: -1L
                     respond("", HttpStatusCode.OK)
+                }
+                request.method == HttpMethod.Get && Regex("/buckets/[^/]+/files/([^/]+)/info").containsMatchIn(path) -> {
+                    val id = Regex("/files/([^/]+)/info").find(path)!!.groupValues[1]
+                    if (bridgeObjects?.contains(id) == false) {
+                        respond("""{"error":"Bucket entry $id not found"}""", HttpStatusCode.NotFound, jsonHeaders)
+                    } else {
+                        respond("""{"bucket":"6928426c1a2316b856c9ab81","id":"$id","index":"${"aa".repeat(32)}","shards":[]}""", HttpStatusCode.OK, jsonHeaders)
+                    }
                 }
                 url.contains("/v2/buckets/") && url.contains("/files/finish") ->
                     respond(
@@ -185,7 +226,7 @@ internal class UploadDrive(
                         )
                     if (fault != null && storeBeforeFault && !clash) files += stored
                     when {
-                        fault != null -> respond("""{"statusCode":${fault.value},"message":"injected"}""", fault, jsonHeaders)
+                        fault != null -> respond(createFaultBody ?: """{"statusCode":${fault.value},"message":"injected"}""", fault, jsonHeaders)
                         clash -> respond("""{"message":"File already exists","error":"Conflict","statusCode":409}""", HttpStatusCode.Conflict, jsonHeaders)
                         else -> {
                             files += stored
@@ -198,6 +239,7 @@ internal class UploadDrive(
                     val parent = b.getValue("parentFolderUuid").jsonPrimitive.content
                     val names = b["folders"]?.jsonArray?.map { it.jsonObject.getValue("plainName").jsonPrimitive.content }
                     if (names == null) {
+                        onFolderCreate?.invoke(folderCreateCalls.incrementAndGet())
                         val name = b.getValue("plainName").jsonPrimitive.content
                         if (folders.any { it.parentUuid == parent && it.plainName == name }) {
                             respond("""{"message":"Folder already exists","statusCode":409}""", HttpStatusCode.Conflict, jsonHeaders)
@@ -212,6 +254,10 @@ internal class UploadDrive(
                         respond(batchAnswerOrder(made).joinToString(",", "{\"result\":[", "]}") { folderJson(it) }, HttpStatusCode.OK, jsonHeaders)
                     }
                 }
+                request.method == HttpMethod.Post && path.endsWith("/storage/trash/add") -> {
+                    body().getValue("items").jsonArray.forEach { trashed += it.jsonObject.getValue("uuid").jsonPrimitive.content }
+                    respond("{}", HttpStatusCode.OK, jsonHeaders)
+                }
                 // Replace in place: the content of a file, its name untouched.
                 request.method == HttpMethod.Put && !path.endsWith("/meta") && path.substringBeforeLast('/').endsWith("/drive/files") -> {
                     val old = files.firstOrNull { it.uuid == path.substringAfterLast('/') }
@@ -219,9 +265,24 @@ internal class UploadDrive(
                         notFound()
                     } else {
                         val b = body()
-                        val replaced = old.copy(size = b.getValue("size").jsonPrimitive.content.toLong(), fileId = b["fileId"]?.jsonPrimitive?.contentOrNull ?: "")
-                        files[files.indexOf(old)] = replaced
-                        respond(fileJson(replaced), HttpStatusCode.OK, jsonHeaders)
+                        val newFileId = b["fileId"]?.jsonPrimitive?.contentOrNull
+                        replaceFileIds += newFileId
+                        val replaced = old.copy(size = b.getValue("size").jsonPrimitive.content.toLong(), fileId = newFileId ?: "")
+                        val fault = replaceFault?.invoke(replaceCalls.incrementAndGet())
+                        when {
+                            // The live server refuses a replace that names the file's current object.
+                            newFileId != null && newFileId == old.fileId ->
+                                respond("""{"message":"New file ID is the same as the old file ID","error":"Bad Request","statusCode":400}""", HttpStatusCode.BadRequest, jsonHeaders)
+                            fault != null -> {
+                                if (storeBeforeReplaceFault) files[files.indexOf(old)] = replaced
+                                respond("""{"statusCode":${fault.value},"message":"injected"}""", fault, jsonHeaders)
+                            }
+                            replaceKeepsOldFileId -> respond(fileJson(old), HttpStatusCode.OK, jsonHeaders)
+                            else -> {
+                                files[files.indexOf(old)] = replaced
+                                respond(fileJson(replaced), HttpStatusCode.OK, jsonHeaders)
+                            }
+                        }
                     }
                 }
                 request.method == HttpMethod.Put && path.endsWith("/meta") && "/files/" in path -> {

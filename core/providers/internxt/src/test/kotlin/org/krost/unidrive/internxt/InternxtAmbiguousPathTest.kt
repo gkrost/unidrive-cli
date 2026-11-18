@@ -118,9 +118,13 @@ class InternxtAmbiguousPathTest {
                 respond("""{"items":[]}""", HttpStatusCode.OK, jsonHeaders)
             }
             path.startsWith("/drive/files/") && method == HttpMethod.Delete -> respond("", HttpStatusCode.OK, jsonHeaders)
-            path == "/drive/folders" && method == HttpMethod.Delete -> {
-                purgeFolderBody = drainBody(request.body)
-                respond("", HttpStatusCode.OK, jsonHeaders)
+            // drive-server-wip FolderController: `DELETE /folders` is the collection route (orphan cleanup), refused 400
+            // without its `status` query; `DELETE /folders/:uuid` deletes one folder and answers 204 (live finding 2026-11-18).
+            path == "/drive/folders" && method == HttpMethod.Delete ->
+                respond("""{"message":"Bad Request","statusCode":400}""", HttpStatusCode.BadRequest, jsonHeaders)
+            path.startsWith("/drive/folders/") && method == HttpMethod.Delete -> {
+                purgeFolderBody = (request.body as? TextContent)?.text.orEmpty()
+                respond("", HttpStatusCode.NoContent, jsonHeaders)
             }
             path.startsWith("/drive/files/") && (method == HttpMethod.Patch || method == HttpMethod.Put) -> {
                 val uuid = path.removePrefix("/drive/files/").removeSuffix("/meta")
@@ -203,8 +207,8 @@ class InternxtAmbiguousPathTest {
             folderMetaByUuid["folder-a"] = folderJson("folder-a", "dup")
             val provider = newProvider()
             provider.deletePermanentlyById("folder-a", "/dup")
-            val body = purgeFolderBody
-            assertTrue(body != null && "folder-a" in body && """"folder"""" in body, "purge body: $body")
+            assertTrue("DELETE /drive/folders/folder-a" in requestLog, "the folder's own route, as the SDK's deleteFolderByUuid: $requestLog")
+            assertEquals("", purgeFolderBody.orEmpty(), "no body on the delete")
             assertEquals(null, trashBody)
         }
 

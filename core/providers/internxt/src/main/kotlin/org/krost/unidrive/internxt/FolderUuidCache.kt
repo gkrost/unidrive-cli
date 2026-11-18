@@ -73,6 +73,16 @@ class FolderUuidCache {
         map.entries.removeIf { it.value in gone || it.key.parentUuid in gone }
     }
 
+    /**
+     * Live finding E3: the folder at [segments] below [rootUuid] is gone in the cloud. The cached walk to it is followed
+     * (cache only, no request) and the folder it reaches is dropped like [invalidateFolder], so the next walk lists again.
+     */
+    fun invalidatePath(rootUuid: String, segments: List<String>) {
+        var current = rootUuid
+        for (segment in segments) current = get(current, segment) ?: return
+        if (segments.isNotEmpty()) invalidateFolder(current)
+    }
+
     /** For tests. Returns the number of cached entries. */
     fun size(): Int = map.size
 

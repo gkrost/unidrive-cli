@@ -166,7 +166,8 @@ internal fun pickCreateCollisionCandidate(
     remotePath: String,
     log: org.slf4j.Logger,
 ): CreateCollisionPick {
-    if (children.any { folder -> InternxtProvider.sanitizeName(folder.plainName ?: folder.name ?: "") == wantedName }) {
+    // A trashed folder of the name does not hold the path (#747): only a live one refuses the file create.
+    if (children.any { folder -> folder.isLive() && InternxtProvider.sanitizeName(folder.plainName ?: folder.name ?: "") == wantedName }) {
         // Path maps to a folder. Undefined for a file create; nothing here can prove content
         // identity with a folder, so the original refusal stands.
         log.warn(
