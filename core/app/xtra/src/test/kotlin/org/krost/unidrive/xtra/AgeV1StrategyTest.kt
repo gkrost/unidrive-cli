@@ -50,6 +50,22 @@ class AgeV1StrategyTest {
 
         assertNotNull(strategy.plaintextSizeOf(1024L))
     }
+
+    // The header's key slot is this algorithm's layout, not its key: the filler carries no key material, and it
+    // is answered without the identity — no passphrase demand belongs to the write path of an algorithm whose
+    // key lives inside the age file.
+    @Test
+    fun `the vestigial key slot fills without the identity or its passphrase`() {
+        val strategy = AgeV1Strategy(
+            lazy { error("the slot filler requested the identity store") },
+            { error("the slot filler requested a passphrase") },
+        )
+
+        val slot = strategy.wrapFileKey(ByteArray(32))
+        assertEquals(strategy.wrappedKeyLength, slot.size)
+        assertTrue(slot.all { it == 0.toByte() }, "the vestigial slot carries no key material")
+    }
+
     @Test
     fun `encrypt writes a standard age file and the round-trip restores the plaintext`() {
         val strategy = strategy()

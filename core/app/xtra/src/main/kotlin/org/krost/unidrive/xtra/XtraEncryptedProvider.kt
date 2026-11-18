@@ -45,18 +45,18 @@ import javax.crypto.AEADBadTagException
  * its decrypt), [contentMatchesLocal] yields no proof, and [reportsContentIds] is false (the row's content id
  * would name bytes the client does not hold).
  *
- * [keys] is lazy on purpose: the wrap happens for every provider of an opted-in profile, including commands that
- * never touch content (auth, status, quota, listings), and only those that upload or download may demand the
- * passphrase. A file without the XTRA header fails its download instead of passing plaintext through silently: a
- * download that answers what the caller believes encrypted, but is not, is the one outcome this layer must never
- * produce.
+ * The key material is the [strategy]'s, lazy on purpose: the wrap happens for every provider of an opted-in
+ * profile, including commands that never touch content (auth, status, quota, listings), and only those that
+ * upload or download may demand the passphrase — the strategy's key store alone, so an algorithm whose format
+ * carries no key through the header (age-v1) never touches the RSA pair. A file without the XTRA header fails
+ * its download instead of passing plaintext through silently, and refuses before any key demand: a download
+ * that answers what the caller believes encrypted, but is not, is the one outcome this layer must never produce.
  *
  * Both directions stage through a temp file, so a transfer peaks at twice the file's size; streaming without the
  * temp file needs the encrypted size upfront and stays out (see the design note in the module docs).
  */
 class XtraEncryptedProvider(
     private val inner: CloudProvider,
-    private val keys: Lazy<XtraKeyManager>,
     private val strategy: XtraEncryptionStrategy,
 ) : CloudProvider by inner {
     // The provider's content hash is the ciphertext's (the strategy seals with a per-file key and an AEAD tag of
@@ -91,10 +91,9 @@ class XtraEncryptedProvider(
         ifMatchETag: String?,
         onProgress: ((Long, Long) -> Unit)?,
     ): CloudItem {
-        val km = keys.value
         val fileKey = ByteArray(32).also { SecureRandom().nextBytes(it) }
         val iv = ByteArray(strategy.ivLength).also { SecureRandom().nextBytes(it) }
-        val wrappedKey = km.wrapKey(fileKey)
+        val wrappedKey = strategy.wrapFileKey(fileKey)
 
         val tmp = Files.createTempFile("xtra-", ".tmp")
         try {
@@ -117,7 +116,7 @@ class XtraEncryptedProvider(
         val tmp = Files.createTempFile("xtra-", ".tmp")
         try {
             inner.download(remotePath, tmp)
-            decrypt(strategy, keys, tmp, destination)
+            decrypt(strategy, tmp, destination)
             return Files.size(destination)
         } finally {
             Files.deleteIfExists(tmp)
@@ -132,7 +131,7 @@ class XtraEncryptedProvider(
         val tmp = Files.createTempFile("xtra-", ".tmp")
         try {
             inner.downloadById(remoteId, remotePath, tmp)
-            decrypt(strategy, keys, tmp, destination)
+            decrypt(strategy, tmp, destination)
             return Files.size(destination)
         } finally {
             Files.deleteIfExists(tmp)
@@ -153,7 +152,7 @@ class XtraEncryptedProvider(
         val tmp = Files.createTempFile("xtra-", ".tmp")
         try {
             val receipt = inner.downloadWithHash(remotePath, tmp, targetMtimeMillis)
-            return decryptToDestination(strategy, keys, tmp, destination, receipt, targetMtimeMillis)
+            return decryptToDestination(strategy, tmp, destination, receipt, targetMtimeMillis)
         } finally {
             Files.deleteIfExists(tmp)
         }
@@ -168,7 +167,7 @@ class XtraEncryptedProvider(
         val tmp = Files.createTempFile("xtra-", ".tmp")
         try {
             val receipt = inner.downloadByIdWithHash(remoteId, remotePath, tmp, targetMtimeMillis)
-            return decryptToDestination(strategy, keys, tmp, destination, receipt, targetMtimeMillis)
+            return decryptToDestination(strategy, tmp, destination, receipt, targetMtimeMillis)
         } finally {
             Files.deleteIfExists(tmp)
         }
@@ -176,17 +175,16 @@ class XtraEncryptedProvider(
 }
 
 // The helpers of [XtraEncryptedProvider], file-level so the class stays under detekt's function count. They take
-// the class's private strategy and lazy keys as parameters.
+// the class's private strategy as a parameter.
 
 private suspend fun decryptToDestination(
     strategy: XtraEncryptionStrategy,
-    keys: Lazy<XtraKeyManager>,
     encryptedFile: Path,
     destination: Path,
     receipt: DownloadReceipt,
     targetMtimeMillis: Long?,
 ): DownloadReceipt {
-    decrypt(strategy, keys, encryptedFile, destination)
+    decrypt(strategy, encryptedFile, destination)
     // The mtime the inner provider applied to its staged ciphertext does not survive the decryption (the
     // plaintext lands in a fresh file), so the wrapper applies the target itself — what the hash variants
     // answer for (the mirror restores the mtime itself only when the receipt says it was not applied).
@@ -205,11 +203,9 @@ private suspend fun decryptToDestination(
 
 private suspend fun decrypt(
     strategy: XtraEncryptionStrategy,
-    keys: Lazy<XtraKeyManager>,
     encryptedFile: Path,
     destination: Path,
 ) {
-    val km = keys.value
     FileInputStream(encryptedFile.toFile()).use { input ->
         when (val result = XtraHeader.read(input)) {
             is XtraHeader.ReadResult.NotEncrypted ->
@@ -217,7 +213,7 @@ private suspend fun decrypt(
             is XtraHeader.ReadResult.Corrupted ->
                 throw ProviderException("XTRA header corrupted: ${result.reason}")
             is XtraHeader.ReadResult.Valid ->
-                decryptStaged(strategy, input, km.unwrapKey(result.wrappedKey), result.iv, destination, encryptedFile)
+                decryptStaged(strategy, input, strategy.unwrapFileKey(result.wrappedKey), result.iv, destination, encryptedFile)
         }
     }
 }

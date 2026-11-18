@@ -14,15 +14,26 @@ import javax.crypto.spec.SecretKeySpec
  * last-segment flag ride in the nonce, so segments cannot be reordered, dropped or truncated undetected). This is
  * the on-disk format of algorithm 1; changing it needs a new algorithm id.
  *
+ * The strategy owns its key material: the installation's RSA pair ([XtraKeyManager], handed in lazy, so the
+ * passphrase demand waits for the first content operation) wraps each per-file key into the header's slot.
+ *
  * The nonce is the header's IV with the low bytes meaning counter and flag: bytes 4..10 hold the segment index
  * big-endian (7 bytes, 2^56 segments), byte 11 is 0 for a normal segment and 1 for the last one. The header's
  * fixed part (magic, version, algorithm id, the two length prefixes, the wrapped key and the IV) plus the tags
  * are the difference between a stored file's size and its plaintext's; [plaintextSizeOf] inverts it.
  */
-class AesGcmStrategy : XtraEncryptionStrategy {
+class AesGcmStrategy(
+    private val keys: Lazy<XtraKeyManager>,
+) : XtraEncryptionStrategy {
     override val algorithmId: Byte = 1
     override val ivLength: Int = 12
     override val wrappedKeyLength: Int = 256
+
+    // The header slot's key journey is this strategy's: RSA-OAEP in, RSA-OAEP out — the load behind the lazy is
+    // what demands the passphrase, and it fires on the first content operation only.
+    override fun wrapFileKey(fileKey: ByteArray): ByteArray = keys.value.wrapKey(fileKey)
+
+    override fun unwrapFileKey(wrapped: ByteArray): ByteArray = keys.value.unwrapKey(wrapped)
 
     override fun plaintextSizeOf(ciphertextSize: Long): Long? {
         val fixed = headerFixedBytes() + wrappedKeyLength + ivLength
