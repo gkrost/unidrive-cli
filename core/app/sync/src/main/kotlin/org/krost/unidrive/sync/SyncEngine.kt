@@ -240,6 +240,9 @@ open class SyncEngine(
     // gkrost/unidrive-cli#439: the monotonic millisecond clock the Pass 1 commit rule reads. Tests drive it
     // without sleeping. A property for the same reason as [conflictClock].
     internal var pass1CommitClock: () -> Long = { System.nanoTime() / 1_000_000 }
+
+    // #742 finding 6: the row lookup behind the remote_change log lines, batched. A property so a test can count the calls.
+    internal var remoteChangeRowLookup: (Collection<String>) -> Map<String, SyncEntry> = { paths -> Reconciler.entriesByPathsChunked(db, paths) }
     // #218: the patterns the matcher can build, as every command that reads exclude_patterns takes them.
     private val effectiveExcludePatterns =
         ExcludePatterns.accepted(
@@ -3440,11 +3443,12 @@ open class SyncEngine(
      * [FileEventTally.REMOTE_CHANGE_LINES_PER_PASS] lines are written (the rest are counted for the summary).
      */
     private fun logRemoteChanges(changes: Map<String, CloudItem>) {
-        var inspected = 0
-        for ((path, item) in changes) {
-            if (item.isFolder) continue
-            if (++inspected > FILE_EVENT_REMOTE_INSPECT_LIMIT) break
-            val row = db.getEntry(path)
+        // #742 finding 6: the rows of the inspected files come from one chunked lookup, not one query per file.
+        val inspected = changes.entries.asSequence().filter { !it.value.isFolder }.take(FILE_EVENT_REMOTE_INSPECT_LIMIT).toList()
+        if (inspected.isEmpty()) return
+        val rows = remoteChangeRowLookup(inspected.map { it.key })
+        for ((path, item) in inspected) {
+            val row = rows[path]
             val state =
                 when {
                     item.deleted -> if (row == null) continue else "deleted"
