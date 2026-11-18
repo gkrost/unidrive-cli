@@ -20,6 +20,8 @@ import kotlin.test.assertTrue
  * through the retry ladder: the same upload goes once space is freed, and retrying it at once only holds the slot.
  */
 class HydrationSpaceDeferralTest {
+    private lateinit var hydration: HydrationImpl
+
     private suspend fun kotlinx.coroutines.test.TestScope.uploadRefusedWith(failure: Exception): Pair<MemProvider, List<HydrationEvent>> {
         val provider = MemProvider().apply { uploadFailure = failure }
         val db = StateDatabase(TestScratch.directory("ud-space-db").resolve("state.db"), inMemory = true).also { it.initialize() }
@@ -30,7 +32,7 @@ class HydrationSpaceDeferralTest {
                 syncRoot = TestScratch.directory("ud-space-root"),
                 cacheRoot = TestScratch.directory("ud-space-cache"),
             )
-        val hydration = HydrationImpl(engine, db, recoveryUploadScope = this, maxUploadAttempts = 3, uploadRetryDelaysMs = listOf(1_000L, 1_000L))
+        hydration = HydrationImpl(engine, db, recoveryUploadScope = this, maxUploadAttempts = 3, uploadRetryDelaysMs = listOf(1_000L, 1_000L))
         val events = mutableListOf<HydrationEvent>()
         val collector = launch { hydration.events.collect { events.add(it) } }
         val created = assertIs<CreateResult.Ok>(hydration.create("conn", "h1", "/big.bin"))
@@ -49,6 +51,18 @@ class HydrationSpaceDeferralTest {
         assertEquals("local_space", completed.error?.message)
         assertEquals(1, provider.uploadAttempts.get(), "a deferral is not the retry ladder")
         assertTrue(events.filterIsInstance<HydrationEvent.Failed>().none { it.retryScheduled == true })
+    }
+
+    // Live drive: a deferral is not a failure. The status counts it as deferred, and the row carries no error.
+    @Test
+    fun `a space deferral counts as deferred, not failed, and leaves the row without error`() = runTest {
+        uploadRefusedWith(InsufficientRemoteSpaceException("Max space used"))
+
+        val health = hydration.uploadHealth()
+        assertEquals(0, health.failed, "a deferral is not a failure")
+        assertEquals(1, health.deferred)
+        val listed = assertIs<ListResult.Ok>(hydration.list("/"))
+        assertEquals(false, listed.entries.single { it.path == "/big.bin" }.hasError)
     }
 
     @Test

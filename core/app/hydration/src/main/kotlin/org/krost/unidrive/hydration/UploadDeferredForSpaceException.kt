@@ -4,6 +4,7 @@ import org.krost.unidrive.InsufficientLocalSpaceException
 import org.krost.unidrive.InsufficientRemoteSpaceException
 import org.krost.unidrive.PermanentUploadFailureException
 import org.krost.unidrive.ProviderException
+import org.krost.unidrive.sync.StateDatabase
 
 /**
  * An upload refused for space, carried through the upload queue as the refusal it is for now ([HydrationError.SpaceDeferred]):
@@ -21,3 +22,7 @@ internal fun spaceDeferralOf(e: ProviderException): UploadDeferredForSpaceExcept
         is InsufficientRemoteSpaceException -> UploadDeferredForSpaceException(HydrationError.SpaceDeferred.REMOTE_SPACE_TOKEN, e)
         else -> null
     }
+
+/** Whether the upload refusal recorded on [path] (`<mtime>|<size>|<retry at>|<reason>`) is a space deferral. */
+internal fun StateDatabase.holdsSpaceDeferral(path: String): Boolean =
+    uploadRefusal(path)?.split('|', limit = 4)?.getOrNull(3)?.let { HydrationError.SpaceDeferred.parse(it) } != null

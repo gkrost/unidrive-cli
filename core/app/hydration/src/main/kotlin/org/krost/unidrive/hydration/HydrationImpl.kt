@@ -1401,7 +1401,7 @@ class HydrationImpl(
     ): HydrationEvent.Completed {
         // archive#493: the provider refused the request itself; the same bytes and the same call would be refused again,
         // so the retry ladder would only hold a transfer slot through its whole backoff schedule.
-        runCatching { stateDb.markUploadFailed(path, java.time.Instant.now()) }
+        if (e !is UploadDeferredForSpaceException) runCatching { stateDb.markUploadFailed(path, java.time.Instant.now()) } // a deferral is no failure
         // Persisted with the content's stamp and retry deadline: replay and a resubmission of the same bytes skip the
         // provider until the deadline (archive#493). New content, an expired deadline, or any rewrite makes it eligible.
         // archive#580: a folder the provider's walk proved gone is reported (and remembered on the row) as its own token.
@@ -1412,7 +1412,7 @@ class HydrationImpl(
             runCatching { stateDb.markUploadRefused(path, "$stamp|$retryAt|$reason", keepCloudBaseline = true) }
         }
         _events.emit(HydrationEvent.Failed(path, err, retryScheduled = false))
-        log.warn("upload of {} refused by the provider, not retrying: {}", path, e.message ?: "upload refused")
+        log.warn("upload of {} refused by the provider, not retrying ({}): {}", path, err.message, e.message ?: "upload refused")
         tombstoneIfGone(err, path)
         tx?.finishRefused(reason, errorClass = e.javaClass.simpleName, message = e.message)
         return HydrationEvent.Completed(
@@ -2328,6 +2328,7 @@ class HydrationImpl(
         val asOfMs: Long? = null,
         val retrying: Int = 0,
         val nextTryAtMs: Long? = null,
+        val deferred: Int = 0, // live drive: pending uploads held back for space (local_space, remote_space), not failed
         // archive#1200: the attempts holding a transfer permit, by name. Read live, not from the cached snapshot.
         val running: RunningUploads = RunningUploads(),
     )
@@ -2391,11 +2392,12 @@ class HydrationImpl(
         val blocked: BlockedUploads,
         val retrying: Int,
         val nextTryAtMs: Long?,
+        val deferred: Int,
     ) {
         fun health(nowMs: Long) =
             UploadHealth(
                 pending, inFlight, failed, oldestSinceMs?.let { (nowMs - it).coerceAtLeast(0) }, blocked, takenAtMs,
-                retrying, nextTryAtMs,
+                retrying, nextTryAtMs, deferred = deferred,
             )
     }
 
@@ -2424,6 +2426,7 @@ class HydrationImpl(
     private fun takeUploadSnapshot(): UploadSnapshot {
         val pendingPaths = HashSet<String>()
         var failed = 0
+        var deferred = 0
         var oldestSinceMs: Long? = null
 
         fun since(atMs: Long) {
@@ -2431,7 +2434,7 @@ class HydrationImpl(
         }
         for (row in pendingUploadSplit().waiting) {
             pendingPaths += PathNormalizer.nfc(row.path)
-            if (row.lastErrorAt != null) failed++
+            if (row.lastErrorAt != null) failed++ else if (stateDb.holdsSpaceDeferral(row.path)) deferred++
             since(row.lastSynced.toEpochMilli())
         }
         // Slots without such a row: dirty overwrites. A slot of a row counted above adds nothing.
@@ -2445,7 +2448,7 @@ class HydrationImpl(
         }
         return UploadSnapshot(
             pendingPaths.size, uploadsInFlight.get(), failed, oldestSinceMs, System.currentTimeMillis(), takeBlocked(),
-            retryAt.size, retryAt.values.minOrNull(),
+            retryAt.size, retryAt.values.minOrNull(), deferred,
         )
     }
 
