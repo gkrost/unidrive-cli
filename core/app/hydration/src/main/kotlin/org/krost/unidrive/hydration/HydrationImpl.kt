@@ -3182,10 +3182,15 @@ class HydrationImpl(
             if (ghost != null && !ghost.isFolder) {
                 return runCatching {
                     mount.deleteRemote(normalised, permanent)
-                    discardStagedUploadBestEffort(normalised)
-                    evictCacheFile(normalised)
+                    // gkrost/unidrive-cli#746 finding 5: the delete committed; a cancel must not skip its cleanup.
+                    withContext(NonCancellable) {
+                        discardStagedUploadBestEffort(normalised)
+                        evictCacheFile(normalised)
+                    }
                     UnlinkResult.Ok
                 }.getOrElse { e ->
+                    // gkrost/unidrive-cli#746 finding 5: a cancelled caller is not a failed request.
+                    if (e is CancellationException) throw e
                     permanentRefusalOrNull(e)?.let { refusal -> return UnlinkResult.Failed(refusal) }
                     UnlinkResult.Failed(HydrationError.Generic(e.message ?: "unlink failed"))
                 }
@@ -3199,17 +3204,22 @@ class HydrationImpl(
                 stateDb.deleteEntry(normalised)
                 UnlinkResult.Ok
             }.getOrElse { e ->
+                if (e is CancellationException) throw e
                 UnlinkResult.Failed(HydrationError.Generic(e.message ?: "unlink failed"))
             }
         }
 
         return runCatching {
             mount.deleteRemote(normalised, permanent)
-            // A tracked file whose last edit's upload failed has a staged copy too.
-            discardStagedUploadBestEffort(normalised)
-            evictCacheFile(normalised)
+            // gkrost/unidrive-cli#746 finding 5: the delete committed; a cancel must not skip its cleanup.
+            withContext(NonCancellable) {
+                // A tracked file whose last edit's upload failed has a staged copy too.
+                discardStagedUploadBestEffort(normalised)
+                evictCacheFile(normalised)
+            }
             UnlinkResult.Ok
         }.getOrElse { e ->
+            if (e is CancellationException) throw e
             permanentRefusalOrNull(e)?.let { refusal -> return UnlinkResult.Failed(refusal) }
             UnlinkResult.Failed(HydrationError.Generic(e.message ?: "unlink failed"))
         }
@@ -3954,6 +3964,8 @@ class HydrationImpl(
                 }.getOrElse { e ->
                     // The cloud and the row moved: the record stays, and the next request or start finishes the rest.
                     renames.interrupted(intent)
+                    // gkrost/unidrive-cli#746 finding 5: a cancelled caller is not a failed request.
+                    if (e is CancellationException) throw e
                     RenameResult.Failed(HydrationError.Generic(e.message ?: "rename failed"))
                 }
             }
@@ -3977,6 +3989,7 @@ class HydrationImpl(
             }.getOrElse { e ->
                 // Whatever stopped it, the record stays: the next request or start finishes the rename.
                 renames.interrupted(intent)
+                if (e is CancellationException) throw e
                 RenameResult.Failed(HydrationError.Generic(e.message ?: "rename failed"))
             }
         }
