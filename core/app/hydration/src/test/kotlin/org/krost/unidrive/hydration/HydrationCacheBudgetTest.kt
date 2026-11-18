@@ -280,6 +280,66 @@ class HydrationCacheBudgetTest {
             assertEquals(true, env.db.getEntry("/a.txt")?.isHydrated)
         }
 
+    // ── gkrost/unidrive-cli#746 finding 4: the access map holds no path forever ─────────────────────
+
+    @Test
+    fun `unlinking a read file drops its access entry`() =
+        runTest {
+            val env = freshEnv()
+            env.syncedAndRead("a.txt")
+            val hydration = env.hydration(this, budget = Long.MAX_VALUE, graceMs = 60_000)
+            hydration.openForRead("conn", "h1", "/a.txt")
+            hydration.closeHandle("conn", "h1")
+            assertEquals(setOf("/a.txt"), hydration.lastAccessPaths, "precondition: the read noted its access")
+
+            assertIs<UnlinkResult.Ok>(hydration.unlink("/a.txt"))
+
+            assertEquals(emptySet(), hydration.lastAccessPaths)
+        }
+
+    @Test
+    fun `evicting a copy drops its access entry`() =
+        runTest {
+            val env = freshEnv()
+            env.syncedAndRead("a.txt")
+            val hydration = env.hydration(this, budget = 1, graceMs = 0)
+            hydration.openForRead("conn", "h1", "/a.txt")
+            hydration.closeHandle("conn", "h1")
+            hydration.evictCache()
+
+            assertEquals(false, env.db.getEntry("/a.txt")?.isHydrated, "precondition: the copy was evicted")
+            assertEquals(emptySet(), hydration.lastAccessPaths)
+        }
+
+    @Test
+    fun `renaming a read file moves its access entry to the new path`() =
+        runTest {
+            val env = freshEnv()
+            env.syncedAndRead("a.txt")
+            val hydration = env.hydration(this, budget = Long.MAX_VALUE, graceMs = 60_000)
+            hydration.openForRead("conn", "h1", "/a.txt")
+            hydration.closeHandle("conn", "h1")
+
+            assertIs<RenameResult.Ok>(hydration.rename("/a.txt", "/b.txt"))
+
+            assertEquals(setOf("/b.txt"), hydration.lastAccessPaths)
+        }
+
+    @Test
+    fun `a walk drops access entries of paths without a cache copy once their grace window passed`() =
+        runTest {
+            val env = freshEnv()
+            env.syncedAndRead("a.txt")
+            val hydration = env.hydration(this, budget = Long.MAX_VALUE, graceMs = 0)
+            // A hydrate of a path no row knows is noted before the row lookup refuses it.
+            hydration.hydrate("/nowhere.txt")
+            assertTrue("/nowhere.txt" in hydration.lastAccessPaths, "precondition: the unknown path was noted")
+
+            hydration.evictCache()
+
+            assertFalse("/nowhere.txt" in hydration.lastAccessPaths)
+        }
+
     // ── eviction ───────────────────────────────────────────────────────────────────────────────
 
     @Test

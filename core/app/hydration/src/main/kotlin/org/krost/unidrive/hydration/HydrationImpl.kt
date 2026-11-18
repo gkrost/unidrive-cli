@@ -600,6 +600,9 @@ class HydrationImpl(
         lastAccess[path] = System.currentTimeMillis()
     }
 
+    /** gkrost/unidrive-cli#746 finding 4: a test seam, the paths the access map holds now. */
+    internal val lastAccessPaths: Set<String> get() = lastAccess.keys.toSet()
+
     // Whether the cache file of [path] lies inside the profile's cache folder: the engine's resolution refuses one
     // that would not (SecurityException). A verb that would read, write or delete that file answers invalid_path
     // instead, before anything is touched. A name the platform cannot hold at all (InvalidPathException) is left to
@@ -2155,6 +2158,8 @@ class HydrationImpl(
     }
 
     private fun forgetCacheFile(path: String) {
+        // gkrost/unidrive-cli#746 finding 4: the access entry goes with the copy (unlink, eviction, dehydrate, reap).
+        lastAccess.remove(path)
         accountedBytes.compute(path) { _, previous ->
             if (previous != null) cacheBytes.addAndGet(-previous)
             null
@@ -2174,10 +2179,12 @@ class HydrationImpl(
         for (key in accountedBytes.keys) {
             if (key == path || key.startsWith(prefix)) forgetCacheFile(key)
         }
+        lastAccess.keys.removeIf { it == path || it.startsWith(prefix) }
     }
 
     // A rename moves the same bytes to the new path.
     private fun moveCacheAccounting(oldPath: String, newPath: String) {
+        lastAccess.remove(oldPath)?.let { lastAccess[newPath] = it }
         val bytes = accountedBytes.remove(oldPath) ?: return
         cacheBytes.addAndGet(-bytes)
         accountCacheFile(newPath, bytes)
@@ -2287,6 +2294,10 @@ class HydrationImpl(
             val stillThere = runCatching { Files.exists(mount.resolveCachePath(path)) }.getOrDefault(false)
             if (!stillThere) forgetCacheFile(path)
         }
+        // gkrost/unidrive-cli#746 finding 4: a path noted without a copy the walk found (a hydrate of an unknown path, a
+        // copy deleted outside this layer) leaves the access map once its grace window has passed.
+        val now = System.currentTimeMillis()
+        lastAccess.entries.removeIf { (path, at) -> path !in seen && now - at >= cacheAccessGraceMs }
     }
 
     // ── archive#658 health numbers for daemon.status ───────────────────────────────────────────────────
