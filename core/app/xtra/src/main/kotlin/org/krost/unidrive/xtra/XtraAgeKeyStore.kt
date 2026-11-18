@@ -48,6 +48,49 @@ class XtraAgeKeyStore(
         return X25519Identity.Companion.decode(encoded)
     }
 
+    /** The identity's own `AGE-SECRET-KEY-1` encoding: the string the standard `age` tool accepts as an identity file. */
+    fun exportIdentity(passphrase: CharArray): String = load(passphrase).encodeToString()
+
+    /** Re-wraps the same identity under [newPassphrase]; the identity itself (what decrypts the content) is unchanged. */
+    fun changePassphrase(currentPassphrase: CharArray, newPassphrase: CharArray) {
+        require(newPassphrase.size >= XtraKeyManager.MIN_PASSPHRASE_LENGTH) {
+            "Passphrase must be at least ${XtraKeyManager.MIN_PASSPHRASE_LENGTH} characters"
+        }
+        writeKeyFile(newPassphrase, load(currentPassphrase).encodeToString())
+    }
+
+    /** The import's probe: decodes the string or throws, so a wrong file is refused before it can replace an identity. */
+    fun probeIdentity(encoded: String) {
+        X25519Identity.Companion.decode(encoded)
+    }
+
+    fun importIdentity(
+        encoded: String,
+        passphrase: CharArray,
+        force: Boolean = false,
+    ) {
+        // Prove the import is an identity before it can replace one: the decode needs no passphrase (unlike the
+        // RSA key's probe load), so it happens inside, where a wrong file fails with the identity untouched.
+        X25519Identity.Companion.decode(encoded)
+        // This path wraps a new envelope, so the floor applies here, and before the backup: a short passphrase
+        // must leave the existing identity in place and write no .bak.
+        require(passphrase.size >= XtraKeyManager.MIN_PASSPHRASE_LENGTH) {
+            "Passphrase must be at least ${XtraKeyManager.MIN_PASSPHRASE_LENGTH} characters"
+        }
+        val replaced = exists()
+        // The identity file is the only copy of what decrypts the account's content, so an import never silently
+        // replaces one: a mistyped --input, or the other machine's older identity, would make every file this
+        // installation already encrypted undecryptable.
+        check(force || !replaced) { "An identity already exists at $keyPath; import with --force to replace it, after an export of it is safe" }
+        if (replaced) {
+            // A forced replace keeps the identity it retires beside the new one, so the files the old identity
+            // encrypted stay decryptable after the import turns out to be the wrong one.
+            val retired = keyPath.resolveSibling("${keyPath.fileName}.bak-${System.currentTimeMillis()}")
+            OwnerOnlyAtomicWrite.replace(retired, produce = { Files.readAllBytes(keyPath) })
+        }
+        writeKeyFile(passphrase, encoded)
+    }
+
     private fun writeKeyFile(
         passphrase: CharArray,
         encodedIdentity: String,
