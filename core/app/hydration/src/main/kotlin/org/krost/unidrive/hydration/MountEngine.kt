@@ -13,7 +13,6 @@ import org.krost.unidrive.TypedDeleteProvider
 import org.krost.unidrive.ContentProof
 import org.krost.unidrive.DownloadReceipt
 import org.krost.unidrive.FolderState
-import org.krost.unidrive.FolderNotEmptyException
 import org.krost.unidrive.ItemRemoteState
 import org.krost.unidrive.NameRefusedException
 import org.krost.unidrive.PermanentDownloadFailureException
@@ -1220,11 +1219,13 @@ class MountEngine private constructor(
      * refills them from the remote).
      * [onUnhydrated] is invoked for the first kind, so the hydration layer can publish the event;
      * it may suspend (gkrost/unidrive-cli#452: the layer's emit waits for event-buffer room).
+     * [stillUnused]: the caller's in-use test, asked again under the lock (gkrost/unidrive-cli#746 finding 1).
      */
     suspend fun evictCacheCopy(
         path: String,
+        stillUnused: () -> Boolean = { true },
         onUnhydrated: suspend (String) -> Unit = {},
-    ): Long? = deleteCacheCopyLocked(path, disposableOnly = true, reason = "budget", summary = "mount-evict", onUnhydrated = onUnhydrated)
+    ): Long? = deleteCacheCopyLocked(path, true, "budget", "mount-evict", onUnhydrated, stillUnused = stillUnused)
 
     /**
      * gkrost/unidrive-cli#452: the delete of an explicit `dehydrate`, through the same per-path lock as
@@ -1239,51 +1240,73 @@ class MountEngine private constructor(
     suspend fun forceEvictCacheCopy(
         path: String,
         observed: Pair<Long, Long>?,
-    ): Long? = deleteCacheCopyLocked(path, disposableOnly = false, reason = "dehydrate", summary = "mount-dehydrate", observed = observed)
+        observedKey: Any? = null,
+    ): Long? = deleteCacheCopyLocked(path, false, "dehydrate", "mount-dehydrate", vetted = CacheCopyIdentity(observed, observedKey))
 
     // The one cache-copy delete, under the path's hydration lock: the row re-read and the bytes re-checked
     // before the delete, the CACHE_EVICT event, and the row's bookkeeping. The budget pass asks the full
     // [cacheDisposition] first ([disposableOnly]); an explicit dehydrate only refuses a copy that is not the
-    // one its caller vetted ([observed]).
+    // one its caller vetted ([vetted]).
     private suspend fun deleteCacheCopyLocked(
         path: String,
         disposableOnly: Boolean,
         reason: String,
         summary: String,
         onUnhydrated: suspend (String) -> Unit = {},
-        observed: Pair<Long, Long>? = null,
+        vetted: CacheCopyIdentity? = null,
+        stillUnused: () -> Boolean = { true },
     ): Long? =
         hydrateLocks.withLock(path) {
-            // archive#728: one row read decides both the classification and the baseline question below: this
-            // is the re-check that counts, so it must not ask the database twice per evicted file.
-            val entry = db.getEntry(path) ?: return@withLock null
-            if (disposableOnly && dispositionOf(path, entry) == CacheDisposition.PROTECTED) return@withLock null
-            val cache = rowCachePath(path) ?: return@withLock null
-            val size = runCatching { Files.size(cache) }.getOrNull() ?: return@withLock null
-            val mtime = runCatching { Files.getLastModifiedTime(cache).toMillis() }.getOrNull() ?: return@withLock null
-            if (!disposableOnly && (mtime to size) != observed) return@withLock null
-            // The same test cacheDisposition used: the cache copy is the row's local file.
-            val cacheWasLocalFile =
-                entry.cacheBacked == true || (entry.cacheBacked == null && entry.localMtime == mtime && entry.localSize == size)
-            val evictionStarted = System.nanoTime()
-            try {
-                Files.delete(cache)
-            } catch (e: java.io.IOException) {
-                log.debug("#450: cannot evict the cache copy of {}: {}", path, e.message)
-                return@withLock null
-            }
-            val tally = FileEventTally()
-            FileEvents.event(FileEvents.Phase.CACHE_EVICT, path, bytes = size,
-                ms = (System.nanoTime() - evictionStarted) / 1_000_000, tally = tally, extra = listOf("reason" to reason))
-            FileEvents.summary(summary, tally)
-            if (cacheWasLocalFile) {
-                db.markUnhydrated(path)
-                onUnhydrated(path)
-            } else if (entry.cacheBacked == null) {
-                db.upsertEntry(entry.copy(cacheBacked = false))
-            }
+            if (!stillUnused()) return@withLock null
+            // gkrost/unidrive-cli#746 finding 6: the row re-read, the bytes compared and the delete under the swap lock too,
+            // the one open_write_begin's truncate and edit mark take: no edit starts between this check and the delete.
+            val deleted = withCacheSwapLock(path) { deleteVettedCopy(path, disposableOnly, reason, summary, vetted) }
+            val (size, unhydrated) = deleted ?: return@withLock null
+            if (unhydrated) onUnhydrated(path)
             size
         }
+
+    // The body of [deleteCacheCopyLocked] under both locks: the freed bytes and whether the row was marked not hydrated, or
+    // null when nothing was deleted.
+    private fun deleteVettedCopy(
+        path: String,
+        disposableOnly: Boolean,
+        reason: String,
+        summary: String,
+        vetted: CacheCopyIdentity?,
+    ): Pair<Long, Boolean>? {
+        // archive#728: one row read decides both the classification and the baseline question below: this
+        // is the re-check that counts, so it must not ask the database twice per evicted file.
+        val entry = db.getEntry(path) ?: return null
+        // gkrost/unidrive-cli#746 finding 6: a row that holds an edit owns its copy, whoever vetted it before.
+        if (entry.editBase != null) return null
+        if (disposableOnly && dispositionOf(path, entry) == CacheDisposition.PROTECTED) return null
+        val cache = rowCachePath(path) ?: return null
+        val size = runCatching { Files.size(cache) }.getOrNull() ?: return null
+        val mtime = runCatching { Files.getLastModifiedTime(cache).toMillis() }.getOrNull() ?: return null
+        if (!disposableOnly && (mtime to size) != vetted?.stat) return null
+        if (!disposableOnly && vetted?.key != null && fileKeyOf(cache) != vetted.key) return null // another file, same stat
+        // The same test cacheDisposition used: the cache copy is the row's local file.
+        val cacheWasLocalFile =
+            entry.cacheBacked == true || (entry.cacheBacked == null && entry.localMtime == mtime && entry.localSize == size)
+        val evictionStarted = System.nanoTime()
+        try {
+            Files.delete(cache)
+        } catch (e: java.io.IOException) {
+            log.debug("#450: cannot evict the cache copy of {}: {}", path, e.message)
+            return null
+        }
+        val tally = FileEventTally()
+        FileEvents.event(FileEvents.Phase.CACHE_EVICT, path, bytes = size,
+            ms = (System.nanoTime() - evictionStarted) / 1_000_000, tally = tally, extra = listOf("reason" to reason))
+        FileEvents.summary(summary, tally)
+        if (cacheWasLocalFile) {
+            db.markUnhydrated(path)
+        } else if (entry.cacheBacked == null) {
+            db.upsertEntry(entry.copy(cacheBacked = false))
+        }
+        return size to cacheWasLocalFile
+    }
 
     /**
      * The path the cloud knows [path] by: the row's own remote path when it has one (an entry the drive refused under
@@ -1760,8 +1783,35 @@ class MountEngine private constructor(
         // upload of them bases on the cloud's current version instead of conflicting again.
         val changedMidUpload = !adopted && sent != null && statBeforeUpload(cachePath)?.let { it != sent } == true
         if (!adopted && !changedMidUpload) Files.deleteIfExists(cachePath)
+        rebaseRowToCloud(path, remotePath, keepEdit = changedMidUpload)
+        if (changedMidUpload) {
+            log.warn(
+                "uploadFromCache: {} was written while it was being uploaded; the bytes the kept copy does not hold stay in the cache as an unsynced edit",
+                path,
+            )
+        }
+        auditLog?.emit(
+            action = "Upload",
+            path = path,
+            size = size,
+            oldHash = prevHash,
+            newHash = copy.hash,
+            result = "conflict:kept-both:$copyPath",
+        )
+        return UploadOutcome(sent = true, size = size, oldHash = prevHash, newHash = copy.hash, keptBothAs = copyPath, copyAdopted = adopted)
+    }
+
+    // Test drive 2/3: a lost edit goes to a conflict copy ([moveAway], between the cloud lookup and the row write); [path] takes the cloud's.
+    suspend fun rebaseToCloudAfterConflict(path: String, moveAway: () -> Unit) = rebaseRowToCloud(path, remotePathOf(path), false, moveAway)
+
+    private suspend fun rebaseRowToCloud(
+        path: String,
+        remotePath: String,
+        keepEdit: Boolean, // bytes written mid-upload stay as an edit
+        beforeWrite: () -> Unit = {},
+    ) {
         db.getEntry(path)?.let { row ->
-            val current = currentCloudItemOrNull(remotePath)?.takeIf { !it.isFolder && it.id == row.remoteId }
+            val current = currentCloudItemOrNull(remotePath)?.takeIf { !it.isFolder && it.id == row.remoteId }.also { beforeWrite() }
             db.upsertEntry(
                 row.copy(
                     remoteHash = current?.hash ?: row.remoteHash,
@@ -1778,26 +1828,11 @@ class MountEngine private constructor(
                     localSize = null,
                     localHash = null,
                     cacheBacked = null,
-                    editBase = if (changedMidUpload) (current?.version ?: row.remoteVersion).orEmpty() else null,
+                    editBase = if (keepEdit) (current?.version ?: row.remoteVersion).orEmpty() else null,
                 ),
                 keepMarks = true,
             )
         }
-        if (changedMidUpload) {
-            log.warn(
-                "uploadFromCache: {} was written while it was being uploaded; the bytes the kept copy does not hold stay in the cache as an unsynced edit",
-                path,
-            )
-        }
-        auditLog?.emit(
-            action = "Upload",
-            path = path,
-            size = size,
-            oldHash = prevHash,
-            newHash = copy.hash,
-            result = "conflict:kept-both:$copyPath",
-        )
-        return UploadOutcome(sent = true, size = size, oldHash = prevHash, newHash = copy.hash, keptBothAs = copyPath, copyAdopted = adopted)
     }
 
     // The kept copy's row, from the cache copy that holds its bytes (moved to the copy's cache path). False when the
@@ -1993,7 +2028,10 @@ class MountEngine private constructor(
     suspend fun deleteRemote(
         path: String,
         permanent: Boolean = false,
-    ) {
+        // gkrost/unidrive-cli#746 finding 3: for a folder, the rows below that the caller did not vet for this delete (made
+        // or written while the provider delete ran). They stay alive; the paths of those kept are returned.
+        keepBelow: ((SyncEntry) -> Boolean)? = null,
+    ): Set<String> {
         // Read before the delete: the folder check below needs the row, and once the
         // row is tombstoned the alive view no longer answers for it.
         val entryBefore = db.getEntry(path)
@@ -2026,10 +2064,20 @@ class MountEngine private constructor(
                 }
             }
         }
-        db.markDeleted(path, mountDelete = true)
-        // archive#87: a folder's rows below it are part of the same user delete — leave none of
-        // them EXISTS, or the next fresh mount plans their re-download (the live 133k case).
-        if (entryBefore?.isFolder == true) db.markDescendantsDeleted(path, mountDelete = true)
+        if (entryBefore?.isFolder != true) {
+            db.markDeleted(path, mountDelete = true)
+            return emptySet()
+        }
+        // One transaction: no row is written below the folder between the read of the rows to keep and the tombstones.
+        return db.batch {
+            val kept = keepBelow?.let { keep -> db.getEntriesByPrefix(path.trimEnd('/') + "/").filter(keep) }.orEmpty()
+            db.markDeleted(path, mountDelete = true)
+            // archive#87: a folder's rows below it are part of the same user delete — leave none of
+            // them EXISTS, or the next fresh mount plans their re-download (the live 133k case).
+            db.markDescendantsDeleted(path, mountDelete = true)
+            kept.forEach { db.upsertEntry(it) }
+            kept.mapTo(HashSet()) { it.path }
+        }
     }
 
     // A poll can lag another device's writes. A cascading delete must not erase a child the mount has never seen,
@@ -2049,7 +2097,7 @@ class MountEngine private constructor(
         // gkrost/unidrive-cli#717: a row a delta indexed after a client was last told the folder whole is a child that
         // client's comparison of the folder's cloud contents with the engine's listing cannot have seen; it refuses
         // before any listing, like one the listing itself names.
-        refuseIndexedAfterWholeListing(below, liveFolders.lastWholeListingMs(PathNormalizer.nfc(folder.path)))
+        refuseIndexedAfterWholeListing(below, liveFolders.lastWholeListing(PathNormalizer.nfc(folder.path)))
         // Read once, and only when a listed child has no row: the common delete never pays for the query.
         val ownDeletes by lazy {
             db.recovery.recentlyDeletedRemoteIds(Instant.now().minus(RemoteGather.LAGGING_LISTING_WINDOW))
@@ -2163,16 +2211,27 @@ class MountEngine private constructor(
      * Returns false, touching nothing, when no pending row lives at [newPath] any more (it was removed, or something
      * else gave it a cloud item): the item stays where it landed and the next enumeration decides about it.
      * Throws when the move fails; the item then stays at the old path and the row stays pending.
+     *
+     * gkrost/unidrive-cli#746 finding 2: the edit of a cloud-backed file, renamed while its upload ran. The rename moved the
+     * item, and the upload wrote it by its id, so the row at [newPath] already holds the landed item's id: nothing is moved,
+     * the row takes the landed version as its baseline (and its edit base with it), the same rebaseline as above.
      */
     suspend fun adoptLandedAfterRename(
         landed: LandedWithoutRow,
         newPath: String,
     ): Boolean {
         val row = db.getEntry(newPath) ?: return false
-        if (row.isFolder || row.remoteId?.startsWith("local:") == false) return false
+        val sameItem = row.remoteId == landed.item.id
+        if (row.isFolder || (!sameItem && row.remoteId?.startsWith("local:") == false)) return false
         val newRemote = remotePathOf(newPath, row)
         val moved =
-            if (landed.remotePath == newRemote) landed.item else provider.moveById(landed.item.id, landed.remotePath, newRemote)
+            if (sameItem) {
+                provider.currentIfSameBytes(landed.item, newRemote) // gkrost/unidrive-cli#746 finding 2: the move's newer token
+            } else if (landed.remotePath == newRemote) {
+                landed.item
+            } else {
+                provider.moveById(landed.item.id, landed.remotePath, newRemote)
+            }
         recordProviderContact()
         markRecentlyUploaded(newRemote)
         val cachePath = resolveCachePath(newPath)
@@ -2482,15 +2541,6 @@ data class UploadOutcome(
 )
 
 /**
- * archive#1217: an item an upload created after its row was gone: the [item] as the provider answered, the [remotePath] it
- * landed at, and the cache copy's (mtime, size) as they were sent ([sent], null when they could not be read).
- */
-data class LandedWithoutRow(
-    val item: CloudItem,
-    val remotePath: String,
-    val sent: Pair<Long, Long>?,
-)
-/**
  * A folder above the path was refused by name ([NameRefusedException]) and exists only in this mount, so the drive cannot
  * take anything below it. Raised without a request to the provider; permanent, so the upload queue does not retry it.
  */
@@ -2500,31 +2550,3 @@ class BlockedByParentException(
 
 /** The reason of an entry that waits for a blocked folder above it; the reason of the folder itself is [NameRefusedException.SIMILAR_NAME]. */
 const val BLOCKED_BY_PARENT = "blocked_by_parent"
-
-/** gkrost/unidrive-cli#452: what [MountEngine.existingFolderAt] proved the cloud holds at a create refused with 409. */
-sealed interface ExistingFolder {
-    /** The folder is there, and its row now names it. */
-    data class Adopted(val item: CloudItem) : ExistingFolder
-
-    /** A file holds the name. */
-    data object HeldByFile : ExistingFolder
-
-    /** Nothing provable: the caller's refusal stands. */
-    data object Unknown : ExistingFolder
-}
-
-/**
- * gkrost/unidrive-cli#635: the folder delete's snapshot guard refused: the listing has a child the rows do not account
- * for. [reason] names which ([UNOBSERVED], [CHANGED], [REPEATED_LISTING]) and [childPath] the listed item, so the refusal
- * that reaches the client as not_empty leaves a line in the log that says why.
- */
-class UnobservedChildException(
-    val reason: String,
-    val childPath: String,
-) : FolderNotEmptyException("Remote folder contains an unobserved or changed child") {
-    companion object {
-        const val UNOBSERVED = "remote_unobserved"
-        const val CHANGED = "remote_changed"
-        const val REPEATED_LISTING = "remote_listing_repeats"
-    }
-}

@@ -32,6 +32,27 @@ internal class MemProvider : CloudProvider {
     @Volatile var downloadReached: CompletableDeferred<Unit>? = null
     @Volatile var downloadRelease: CompletableDeferred<Unit>? = null
 
+    // When set, runs on the written staging file before download() returns (e.g. to pin its modification time).
+    @Volatile var downloadWritten: ((Path) -> Unit)? = null
+
+    // When set, an upload into a folder the remote does not hold is refused as a gone parent, as a path-walking provider does.
+    @Volatile var requireParents = false
+
+    // When set, every upload attempt is counted and fails with it.
+    @Volatile var uploadFailure: Exception? = null
+    val uploadAttempts = java.util.concurrent.atomic.AtomicInteger()
+
+    // The ifMatchETag of every upload, in order; with [enforceIfMatch] a replace whose token is not the item's hash is refused.
+    val uploadIfMatch = java.util.concurrent.CopyOnWriteArrayList<String?>()
+    @Volatile var enforceIfMatch = false
+
+    // When set, an upload that creates a new item (no existing remote id) suspends here first.
+    @Volatile var uploadGateForCreates: CompletableDeferred<Unit>? = null
+
+    // When set, delete() signals deleteReached and suspends on deleteRelease before deleting: holds a provider delete.
+    @Volatile var deleteReached: CompletableDeferred<Unit>? = null
+    @Volatile var deleteRelease: CompletableDeferred<Unit>? = null
+
     // The folders listChildren was asked for, in order; and what it answers instead of the folder's children, or throws.
     val listCalls = java.util.concurrent.CopyOnWriteArrayList<String>()
     @Volatile var listFailure: Exception? = null
@@ -87,7 +108,7 @@ internal class MemProvider : CloudProvider {
         return items.values.filter { it.path.substringBeforeLast('/') == parent }
     }
 
-    override suspend fun getMetadata(path: String): CloudItem = items[path] ?: error("not found: $path")
+    override suspend fun getMetadata(path: String): CloudItem = items[path] ?: throw org.krost.unidrive.ProviderException("Item not found: $path")
 
     override suspend fun download(remotePath: String, destination: Path): Long {
         downloads += remotePath
@@ -95,6 +116,7 @@ internal class MemProvider : CloudProvider {
         downloadRelease?.await()
         Files.createDirectories(destination.parent)
         Files.write(destination, remote.getValue(remotePath))
+        downloadWritten?.invoke(destination)
         return remote.getValue(remotePath).size.toLong()
     }
 
@@ -128,6 +150,18 @@ internal class MemProvider : CloudProvider {
         onProgress: ((Long, Long) -> Unit)?,
     ): CloudItem {
         uploadGate?.await()
+        if (existingRemoteId == null) uploadGateForCreates?.await()
+        uploadAttempts.incrementAndGet()
+        uploadFailure?.let { throw it }
+        uploadIfMatch += ifMatchETag
+        val stale = ifMatchETag != null && items[remotePath]?.hash != ifMatchETag
+        if (enforceIfMatch && existingRemoteId != null && stale) {
+            throw org.krost.unidrive.RemoteConflictException("precondition failed: $remotePath moved on")
+        }
+        val parent = remotePath.substringBeforeLast('/')
+        if (requireParents && parent.isNotEmpty() && items[parent]?.isFolder != true) {
+            throw org.krost.unidrive.ParentGoneException("parent folder not found: $parent", parent)
+        }
         val bytes = Files.readAllBytes(localPath)
         remote[remotePath] = bytes
         version++
@@ -146,12 +180,18 @@ internal class MemProvider : CloudProvider {
     }
 
     override suspend fun delete(remotePath: String, ifMatchETag: String?) {
+        deleteReached?.complete(Unit)
+        deleteRelease?.await()
         deleted += remotePath
         remote.remove(remotePath)
         items.remove(remotePath)
     }
 
+    // When set, createFolder throws it.
+    @Volatile var createFolderFailure: Exception? = null
+
     override suspend fun createFolder(path: String): CloudItem {
+        createFolderFailure?.let { throw it }
         val at = java.time.Instant.parse("2026-03-28T12:00:00Z")
         val item =
             CloudItem(

@@ -168,4 +168,28 @@ class HydrationCancellationTest {
 
         assertFailsWith<CancellationException> { env.hydration.rmdir("/docs") }
     }
+
+    // gkrost/unidrive-cli#746 finding 5: unlink's runCatching turned the cancellation into a failure reply too.
+    @Test
+    fun `a cancelled unlink is cancelled, not answered with a failure`() = runTest {
+        val env = freshEnv()
+        env.db.upsertEntry(
+            org.krost.unidrive.sync.model.SyncEntry(
+                path = "/docs/a.txt",
+                remoteId = "rid-a",
+                remoteHash = null,
+                remoteSize = 3L,
+                remoteModified = null,
+                localMtime = null,
+                localSize = null,
+                isFolder = false,
+                isPinned = false,
+                isHydrated = false,
+                lastSynced = Instant.now(),
+            ),
+        )
+        env.provider.throwOnDelete = CancellationException("the daemon is stopping")
+
+        assertFailsWith<CancellationException> { env.hydration.unlink("/docs/a.txt") }
+    }
 }

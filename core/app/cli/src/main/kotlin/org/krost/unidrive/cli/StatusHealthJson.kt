@@ -36,6 +36,12 @@ internal fun HydrationImpl.UploadHealth.toJson(): JsonObject =
         // archive#1095: uploads in a retry backoff, and when the earliest next attempt starts (null while none waits).
         put("retrying", retrying)
         put("next_try_at_ms", nextTryAtMs)
+        // Pending uploads held back for space (local_space, remote_space), not counted in failed. Present only while there are
+        // some, like `blocked`: a reply with nothing deferred is unchanged.
+        if (deferred > 0) put("deferred", deferred)
+        // Conflict copies made since this daemon started (a mount edit that lost to a newer cloud version): a since-start count,
+        // deliberately not kept across a restart (the copies themselves are files). Present only when some were made.
+        if (conflicts > 0) put("conflicts", conflicts)
         if (blocked.count > 0) put("blocked", blocked.toJson())
         if (running.count > 0) put("running", running.toJson())
     }

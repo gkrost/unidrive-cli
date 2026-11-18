@@ -14,6 +14,7 @@ import org.krost.unidrive.sync.PathNormalizer
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
 import org.slf4j.Logger
+import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -56,8 +57,11 @@ internal class LiveFolderList(
     private val log: Logger,
     private val maxConcurrent: Int = MAX_CONCURRENT,
     private val emptyTtlMs: Long = EMPTY_TTL_MS,
-    private val nowMs: () -> Long = System::currentTimeMillis,
+    // gkrost/unidrive-cli#739: the clock at its full resolution, the one a row's lastSynced is taken from.
+    private val now: () -> Instant = Instant::now,
 ) {
+    private fun nowMs(): Long = now().toEpochMilli()
+
     // One listing per folder at a time: a stripe of locks, so the set of folders needs no clean-up.
     private val folderLocks = Array(LOCK_STRIPES) { Mutex() }
     private val permits = Semaphore(maxConcurrent)
@@ -82,7 +86,7 @@ internal class LiveFolderList(
      * filled in part answers from state.db but may lack items.
      *
      * Asking is the act of answering a client's list, so a folder answered whole is noted as whole now
-     * (gkrost/unidrive-cli#717): [lastWholeListingMs] is when a client could last read the folder whole, and the rmdir
+     * (gkrost/unidrive-cli#717): [lastWholeListing] is when a client could last read the folder whole, and the rmdir
      * window guard refuses rows a delta indexed after it.
      */
     fun coverage(
@@ -96,15 +100,17 @@ internal class LiveFolderList(
         return listedAtMs(path)?.let { noted(path, ListingCoverage(true, it)) } ?: ListingCoverage(false, null)
     }
 
-    // gkrost/unidrive-cli#717: when this daemon last answered hydration.list with `complete` for a folder (epoch ms).
-    private val listedToClient = ConcurrentHashMap<String, Long>()
+    // gkrost/unidrive-cli#717: when this daemon last answered hydration.list with `complete` for a folder. gkrost/unidrive-cli#739:
+    // at the clock's full resolution, not in whole milliseconds: a row written in the listing's millisecond but before it
+    // read as indexed after a stamp cut down to that millisecond.
+    private val listedToClient = ConcurrentHashMap<String, Instant>()
 
     private fun noted(
         folder: String,
         coverage: ListingCoverage,
     ): ListingCoverage {
         if (listedToClient.size >= EMPTY_MEMORY_CAP) listedToClient.clear()
-        listedToClient[folder] = nowMs()
+        listedToClient[folder] = now()
         return coverage
     }
 
@@ -115,8 +121,11 @@ internal class LiveFolderList(
      * after it: a child the client's comparison of the folder's cloud contents with the engine's listing cannot
      * have seen.
      */
-    fun lastWholeListingMs(folder: String): Long? =
-        maxOf(listedAt[folder] ?: 0L, listedToClient[folder] ?: 0L).takeIf { it > 0L }
+    fun lastWholeListing(folder: String): Instant? {
+        val live = listedAt[folder]?.let(Instant::ofEpochMilli)
+        val told = listedToClient[folder]
+        return if (live == null || (told != null && told.isAfter(live))) told else live
+    }
 
     /**
      * The rows of [folder] after a live listing, or null when the folder is answered from state.db as it always was.

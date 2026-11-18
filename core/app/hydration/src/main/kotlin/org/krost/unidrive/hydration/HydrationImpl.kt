@@ -36,10 +36,6 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import org.krost.unidrive.FolderNotEmptyException
 import org.krost.unidrive.ItemRemoteState
-import org.krost.unidrive.RemoteContentRefusedDownloadException
-import org.krost.unidrive.RemoteIncompleteDownloadException
-import org.krost.unidrive.RemoteObjectMissingDownloadException
-import org.krost.unidrive.UnsupportedRemoteObjectDownloadException
 import org.krost.unidrive.engine.CachePaths
 import org.krost.unidrive.engine.MountHost
 import org.krost.unidrive.engine.RemoteEnumeration
@@ -465,6 +461,7 @@ class HydrationImpl(
         // gkrost/unidrive-cli#391: a cache copy the enumeration's reap removes (a delete seen in the cloud, a gone folder) leaves the
         // running total at once; before, it stayed in `cache.bytes` until the next walk, up to EVICTION_RECONCILE_INTERVAL_MS later.
         mount.onReapedCacheCopy { path -> forgetCacheFile(path) }
+        pause.onResume { recoveryUploadScope.launch { offerFailedPendingUploadsAgain() } } // test drive 2 E3
     }
 
     // archive#728: epoch ms of the last walk of the cache directory (0 = none yet). One walk per
@@ -600,6 +597,8 @@ class HydrationImpl(
         lastAccess[path] = System.currentTimeMillis()
     }
 
+    internal val lastAccessPaths: Set<String> get() = lastAccess.keys.toSet()
+
     // Whether the cache file of [path] lies inside the profile's cache folder: the engine's resolution refuses one
     // that would not (SecurityException). A verb that would read, write or delete that file answers invalid_path
     // instead, before anything is touched. A name the platform cannot hold at all (InvalidPathException) is left to
@@ -625,7 +624,7 @@ class HydrationImpl(
 
     override suspend fun openForRead(connectionId: String, handleId: String, path: String): OpenResult =
         when (val target = views.readTarget(path)) {
-            is HydrationViews.ReadTarget.Real -> openForReadAt(connectionId, handleId, target.path)
+            is HydrationViews.ReadTarget.Real -> stateDb.strictNameRefusal(target.path)?.let { OpenResult.Failed(it) } ?: openForReadAt(connectionId, handleId, target.path)
             HydrationViews.ReadTarget.Missing -> OpenResult.Failed(HydrationError.UnknownPath)
         }
 
@@ -846,6 +845,7 @@ class HydrationImpl(
         // row's now), so that the replay at the next start sends it from that base and nothing downloads over it.
         // An edit begun by open_write_begin has been noted since then.
         if (entry.remoteId != null) stateDb.markEdited(path, baseEtag ?: writeToken.orEmpty())
+        val precondition = baseEtag ?: stateDb.getEntry(path)?.editBase?.ifEmpty { null } // live drive F1: never unconditional
 
         // Crash-recovery replay: the co-daemon's cache_scanner fires open_write with
         // handle_id = "recovery-<n>" for each cache file whose mtime exceeds the
@@ -860,7 +860,7 @@ class HydrationImpl(
         // from the co-daemon's paired close_handle call cleans it up normally.
         if (handleId.startsWith("recovery-")) {
             registerHandle(connectionId, handleId, path)
-            launchSerializedUpload(path, cachePath, handleId, baseEtag)
+            launchSerializedUpload(path, cachePath, handleId, precondition)
             return OpenResult.Ok(cachePath)
         }
 
@@ -874,7 +874,7 @@ class HydrationImpl(
         // On failure: stamp the row so `unidrive doctor` can surface the unsynced gap.
         registerHandle(connectionId, handleId, path)
         rememberClientHandle(path, handleId)
-        launchSerializedUpload(path, cachePath, handleId, baseEtag)
+        launchSerializedUpload(path, cachePath, handleId, precondition)
         return OpenResult.Ok(cachePath)
     }
 
@@ -1200,7 +1200,7 @@ class HydrationImpl(
         // upload may otherwise record its refusal after open_write cleared it. Recovery replays keep the refusal.
         clearRefusalOfClientRetry(path, handleId)
         // archive#493: the provider refused exactly these bytes before; asking again would be refused again.
-        refusedEarlier(path, cachePath)?.let { reason ->
+        refusedEarlier(path, cachePath, engineOffer = handleId.startsWith("engine-"))?.let { reason ->
             val err = storedRefusalError(reason)
             _events.emit(HydrationEvent.Failed(path, err, retryScheduled = false))
             log.info("upload of {} not attempted: the provider refused this content before ({})", path, reason)
@@ -1214,7 +1214,7 @@ class HydrationImpl(
         // the next attempt retries that move instead of uploading the bytes a second time.
         var strayed: UploadOutcome? = null
         // gkrost/unidrive-cli#134: a parent_gone refusal gets one look at the folder before it stands; see [MountEngine.recoverGoneParent].
-        val parentLook = OneLookAtTheParent(mount)
+        val parentLook = OneLookAtTheParent(mount, ::remakeFolderOfKeptRow)
         var attempt = 0
         while (attempt < maxUploadAttempts) {
             attempt++
@@ -1228,7 +1228,7 @@ class HydrationImpl(
                 if (outcome.keptBothAs != null) return completeKeptBoth(path, handleId, outcome, tx)
                 // Kept while the move runs: a failed move is retried by the next attempt.
                 strayed = outcome.takeIf { followsRenames }
-                val adoptedAt = adoptedAfterRename(slot, path, strayed, retryingMove)
+                val adoptedAt = adoptedAfterRename(slot, path, strayed ?: outcome, retryingMove)
                 strayed = null
                 adoptedAt?.let {
                     path = it
@@ -1343,10 +1343,13 @@ class HydrationImpl(
         e: org.krost.unidrive.RemoteConflictException,
         tx: TransferHandle?,
     ): HydrationEvent.Completed {
-        runCatching { stateDb.markUploadFailed(path, java.time.Instant.now()) }
+        // Test drive 2, owner decision: the edit is kept as a conflict copy and the path takes the cloud's version ([ConflictCopies]).
+        val copy = conflictCopies.keepEditAside(this, path, ::forgetCacheFile)
+        if (copy == null) runCatching { stateDb.markUploadFailed(path, java.time.Instant.now()) }
         _events.emit(HydrationEvent.Failed(path, HydrationError.Conflict, retryScheduled = false))
-        log.warn("upload of {} hit a remote conflict, not retrying: {}", path, e.message ?: "conflict")
-        tx?.finish(TransferResult.CONFLICT, errorClass = e.javaClass.simpleName, message = e.message)
+        copy?.let { _events.emit(HydrationEvent.ViewInvalidated(paths = listOf(path, it))) }
+        log.warn("upload of {} hit a remote conflict, not retrying ({}): {}", path, copy?.let { "the edit is kept as $it" } ?: "the edit stays", e.message ?: "conflict")
+        tx?.finish(TransferResult.CONFLICT, errorClass = e.javaClass.simpleName, message = copy?.let { "the edit is kept as $it" } ?: e.message)
         return HydrationEvent.Completed(
             path = path,
             handleId = handleId,
@@ -1402,7 +1405,7 @@ class HydrationImpl(
     ): HydrationEvent.Completed {
         // archive#493: the provider refused the request itself; the same bytes and the same call would be refused again,
         // so the retry ladder would only hold a transfer slot through its whole backoff schedule.
-        runCatching { stateDb.markUploadFailed(path, java.time.Instant.now()) }
+        if (e !is UploadDeferredForSpaceException) runCatching { stateDb.markUploadFailed(path, java.time.Instant.now()) } // a deferral is no failure
         // Persisted with the content's stamp and retry deadline: replay and a resubmission of the same bytes skip the
         // provider until the deadline (archive#493). New content, an expired deadline, or any rewrite makes it eligible.
         // archive#580: a folder the provider's walk proved gone is reported (and remembered on the row) as its own token.
@@ -1413,8 +1416,9 @@ class HydrationImpl(
             runCatching { stateDb.markUploadRefused(path, "$stamp|$retryAt|$reason", keepCloudBaseline = true) }
         }
         _events.emit(HydrationEvent.Failed(path, err, retryScheduled = false))
-        log.warn("upload of {} refused by the provider, not retrying: {}", path, e.message ?: "upload refused")
+        log.warn("upload of {} refused by the provider, not retrying ({}): {}", path, err.message, e.message ?: "upload refused")
         tombstoneIfGone(err, path)
+        if (err is HydrationError.ParentGone) offerExhaustedUploadAgain(path) // test drive 2 E3: never stranded
         tx?.finishRefused(reason, errorClass = e.javaClass.simpleName, message = e.message)
         return HydrationEvent.Completed(
             path = path,
@@ -1457,6 +1461,7 @@ class HydrationImpl(
         tx: TransferHandle?,
         onPermitAcquired: () -> Unit,
     ): UploadOutcome {
+        rmdirWindow.awaitDeletesAbove(path) // live drive E3: never into a folder whose delete is in flight
         while (true) {
             if (pause.isPaused) {
                 // Waiting out a pause is not waiting for a transfer: the waiting slot is handed over now, or a long
@@ -1647,7 +1652,7 @@ class HydrationImpl(
             val cachePath = cacheCopy(pass, path) ?: continue
             if (path in reservedByReplace) continue // gkrost/unidrive-cli#311: a replace still owes this name; its file is reserved
             if (refusedForTwin(path)) continue // gkrost/unidrive-cli#24: one spelling's bytes under the name both share
-            if (refusedEarlier(path, cachePath) != null) { refused++; continue } // archive#493: not replayed at every start
+            if (refusedEarlier(path, cachePath, engineOffer = true) != null) { refused++; continue } // archive#493: not replayed at every start
             if (failedReplayDelayMs > 0 && stateDb.getEntry(path)?.lastErrorAt != null) {
                 deferred++
                 val fallbackId = "engine-replay-late-$deferred"
@@ -1658,7 +1663,7 @@ class HydrationImpl(
                     if (entry == null || entry.remoteId != null || !entry.isHydrated) return@launch // gone or uploaded
                     if (uploadSlots.containsKey(path) || !replayable(path)) return@launch
                     if (replaceReserves(path)) return@launch // gkrost/unidrive-cli#311: a replace still owes this name
-                    if (refusedEarlier(path, mount.resolveCachePath(path)) != null) return@launch // refused meanwhile
+                    if (refusedEarlier(path, mount.resolveCachePath(path), engineOffer = true) != null) return@launch // refused meanwhile
                     launchSerializedUpload(path, mount.resolveCachePath(path), lateReplayHandleOf(path, snapshot, fallbackId), baseEtag = null)
                 }
                 continue
@@ -1704,7 +1709,7 @@ class HydrationImpl(
                 val baselineSize = entry.localSize ?: continue
                 if (stamp == "$baselineMtime|$baselineSize") continue // clean: the cache copy is the baseline
             }
-            if (refusedEarlier(path, cachePath) != null) { refused++; continue }
+            if (refusedEarlier(path, cachePath, engineOffer = true) != null) { refused++; continue }
             if (failedReplayDelayMs > 0 && entry.lastErrorAt != null) {
                 dirtyDeferred++
                 val fallbackId = "engine-dirty-late-$dirtyDeferred"
@@ -1716,7 +1721,7 @@ class HydrationImpl(
                     if (uploadSlots.containsKey(path) || !replayable(path)) return@launch
                     if (replaceReserves(path)) return@launch // gkrost/unidrive-cli#311: a replace still owes this name
                     val cp = mount.resolveCachePath(path)
-                    if (refusedEarlier(path, cp) != null) return@launch
+                    if (refusedEarlier(path, cp, engineOffer = true) != null) return@launch
                     launchDirtyReplay(now, cp, lateReplayHandleOf(path, snapshot, fallbackId))
                 }
                 continue
@@ -1882,13 +1887,24 @@ class HydrationImpl(
             val waitingForUpload = if (entry.remoteId == null) entry.isHydrated else isDirtyReplayCandidate(entry)
             if (!waitingForUpload || uploadSlots.containsKey(path) || !replayable(path)) return@launch
             val cachePath = mount.resolveCachePath(path)
-            if (refusedEarlier(path, cachePath) != null) return@launch
+            if (refusedEarlier(path, cachePath, engineOffer = true) != null) return@launch
             val handleId = "engine-retry-$round"
             if (entry.remoteId == null) {
                 launchSerializedUpload(path, cachePath, handleId, baseEtag = null)
             } else {
                 launchDirtyReplay(entry, cachePath, handleId)
             }
+        }
+    }
+
+    // Test drive 2, E3: a resume offers again every never-uploaded file whose last upload failed and that nothing uploads now
+    // (a parent_gone refusal, a ladder that ran out while the daemon was paused); the provider's refusal of these exact bytes
+    // still holds them back (refusedEarlier).
+    private suspend fun offerFailedPendingUploadsAgain() {
+        for (row in pendingUploadSplit().waiting) {
+            if (row.lastErrorAt == null || uploadSlots.containsKey(row.path) || !replayable(row.path)) continue
+            val cachePath = mount.resolveCachePath(row.path)
+            if (refusedEarlier(row.path, cachePath, engineOffer = true) == null) launchSerializedUpload(row.path, cachePath, "engine-resume-retry", baseEtag = null)
         }
     }
 
@@ -1899,6 +1915,7 @@ class HydrationImpl(
         when (e) {
             is org.krost.unidrive.ParentGoneException -> HydrationError.ParentGone(e.parent)
             is org.krost.unidrive.PlanLimitException -> HydrationError.PlanLimit(e.detail)
+            is UploadDeferredForSpaceException -> HydrationError.SpaceDeferred(e.token)
             else -> HydrationError.Generic(e.message ?: "upload refused")
         }
 
@@ -1906,12 +1923,14 @@ class HydrationImpl(
     private fun storedRefusalError(reason: String): HydrationError =
         HydrationError.ParentGone.parse(reason)
             ?: HydrationError.PlanLimit.parse(reason)
+            ?: HydrationError.SpaceDeferred.parse(reason)
             ?: HydrationError.Generic("refused earlier: $reason")
 
     // gkrost/unidrive-cli#145: HTTP 402 Payment Required from an upload is the plan's refusal, whichever provider answered it and
     // whether or not it typed it: the same bytes are refused again until the plan changes. Anything else is returned unchanged.
+    // A typed space refusal is deferred under its own token ([spaceDeferralOf]).
     private fun planLimitOf(e: org.krost.unidrive.ProviderException): Exception =
-        if (e.httpStatus == HTTP_PAYMENT_REQUIRED && e !is org.krost.unidrive.PermanentUploadFailureException) {
+        spaceDeferralOf(e) ?: if (e.httpStatus == HTTP_PAYMENT_REQUIRED && e !is org.krost.unidrive.PermanentUploadFailureException) {
             org.krost.unidrive.PlanLimitException(e.message ?: "upload refused by the plan (402)", cause = e, requestId = e.requestId)
         } else {
             e
@@ -1938,7 +1957,9 @@ class HydrationImpl(
         runCatching { "${Files.getLastModifiedTime(cachePath).toMillis()}|${Files.size(cachePath)}" }.getOrNull()
 
     // The reason the provider refused this path's upload, when the refusal was for exactly the content the cache holds now.
-    private fun refusedEarlier(path: String, cachePath: Path): String? {
+    // [engineOffer]: the engine's own offer (a start's replay, a backoff round, a resume; `engine-` handles), which a parent_gone
+    // refusal does not hold back (test drive 2, E3: a gone folder can come back). The co-daemon's `recovery-` offers still are.
+    private fun refusedEarlier(path: String, cachePath: Path, engineOffer: Boolean = false): String? {
         val refusal = runCatching { stateDb.uploadRefusal(path) }.getOrNull() ?: return null
         val stamp = refusalStamp(cachePath) ?: return null
         if (!refusal.startsWith("$stamp|")) return null
@@ -1946,6 +1967,7 @@ class HydrationImpl(
         // Legacy refusals have no deadline: make them eligible once after upgrade.
         val retryAt = detail.substringBefore('|').toLongOrNull() ?: return null
         val reason = detail.substringAfter('|', "upload refused")
+        if (engineOffer && HydrationError.ParentGone.parse(reason) != null) return null
         return if (System.currentTimeMillis() < retryAt) reason else null
     }
 
@@ -2006,7 +2028,7 @@ class HydrationImpl(
         // gkrost/unidrive-cli#452: the event changes the subscriber's view of the path, so it must
         // not go through tryEmit: with the event buffer full a tryEmit drops it before any
         // subscriber queue. emit waits for buffer room instead of losing it.
-        val bytes = mount.evictCacheCopy(path) { _events.emit(HydrationEvent.Dehydrated(it)) }
+        val bytes = mount.evictCacheCopy(path, { !inUse(path) }) { _events.emit(HydrationEvent.Dehydrated(it)) }
         if (bytes != null) forgetCacheFile(path)
     }
 
@@ -2155,6 +2177,7 @@ class HydrationImpl(
     }
 
     private fun forgetCacheFile(path: String) {
+        lastAccess.remove(path) // gkrost/unidrive-cli#746 finding 4
         accountedBytes.compute(path) { _, previous ->
             if (previous != null) cacheBytes.addAndGet(-previous)
             null
@@ -2174,20 +2197,23 @@ class HydrationImpl(
         for (key in accountedBytes.keys) {
             if (key == path || key.startsWith(prefix)) forgetCacheFile(key)
         }
+        lastAccess.keys.removeIf { it == path || it.startsWith(prefix) }
     }
 
     // A rename moves the same bytes to the new path.
     private fun moveCacheAccounting(oldPath: String, newPath: String) {
+        lastAccess.remove(oldPath)?.let { lastAccess[newPath] = it }
         val bytes = accountedBytes.remove(oldPath) ?: return
         cacheBytes.addAndGet(-bytes)
         accountCacheFile(newPath, bytes)
     }
 
     // The checks only this layer can make: an open handle, a queued or in-flight upload (archive#301, archive#318),
-    // and the access grace window.
+    // a download someone still waits for (gkrost/unidrive-cli#746 finding 1), and the access grace window.
     private fun inUse(path: String): Boolean =
         openSets.values.any { it.containsValue(path) } ||
             uploadSlots.containsKey(path) ||
+            downloads.waiterCount(path) > 0 ||
             (lastAccess[path]?.let { System.currentTimeMillis() - it < cacheAccessGraceMs } ?: false)
 
     /**
@@ -2258,7 +2284,7 @@ class HydrationImpl(
             if (mount.cacheDisposition(f.path, rows[f.path]) != CacheDisposition.DISPOSABLE) continue
             // gkrost/unidrive-cli#452: as in reclaimOnLastClose — the event must not be dropped
             // by a full buffer before any subscriber queue; emit waits for room instead.
-            val bytes = mount.evictCacheCopy(f.path) { _events.emit(HydrationEvent.Dehydrated(it)) }
+            val bytes = mount.evictCacheCopy(f.path, { !inUse(f.path) }) { _events.emit(HydrationEvent.Dehydrated(it)) }
             if (bytes == null) continue
             freed += bytes
             evicted += f.path
@@ -2286,6 +2312,9 @@ class HydrationImpl(
             val stillThere = runCatching { Files.exists(mount.resolveCachePath(path)) }.getOrDefault(false)
             if (!stillThere) forgetCacheFile(path)
         }
+        // gkrost/unidrive-cli#746 finding 4: a path with no copy leaves the access map once its grace window has passed.
+        val now = System.currentTimeMillis()
+        lastAccess.entries.removeIf { (path, at) -> path !in seen && now - at >= cacheAccessGraceMs }
     }
 
     // ── archive#658 health numbers for daemon.status ───────────────────────────────────────────────────
@@ -2318,6 +2347,8 @@ class HydrationImpl(
         val asOfMs: Long? = null,
         val retrying: Int = 0,
         val nextTryAtMs: Long? = null,
+        val deferred: Int = 0, // live drive: pending uploads held back for space (local_space, remote_space), not failed
+        val conflicts: Int = 0, // conflict copies made since this daemon started (not kept across a restart)
         // archive#1200: the attempts holding a transfer permit, by name. Read live, not from the cached snapshot.
         val running: RunningUploads = RunningUploads(),
     )
@@ -2371,49 +2402,12 @@ class HydrationImpl(
         val parent: String?,
     )
 
-    /** One read of the rows and slots; [oldestSinceMs] is the stamp [UploadHealth.oldestPendingAgeMs] is measured from. */
-    private class UploadSnapshot(
-        val pending: Int,
-        val inFlight: Int,
-        val failed: Int,
-        val oldestSinceMs: Long?,
-        val takenAtMs: Long,
-        val blocked: BlockedUploads,
-        val retrying: Int,
-        val nextTryAtMs: Long?,
-    ) {
-        fun health(nowMs: Long) =
-            UploadHealth(
-                pending, inFlight, failed, oldestSinceMs?.let { (nowMs - it).coerceAtLeast(0) }, blocked, takenAtMs,
-                retrying, nextTryAtMs,
-            )
-    }
-
-    // The entries blocked by name and those below a blocked folder, read from the rows (nothing is kept in memory:
-    // a restart does not lose a block, and a row that is deleted or uploaded drops out by itself).
-    private fun takeBlocked(): BlockedUploads {
-        val direct = stateDb.blockedRows()
-        if (direct.isEmpty()) return BlockedUploads()
-        val items = LinkedHashMap<String, BlockedItem>()
-        for (b in direct) {
-            if (skipsReplay(b.path)) continue
-            items[PathNormalizer.nfc(b.path)] = BlockedItem(b.path, b.block.reason, b.block.sibling, parent = null)
-        }
-        for (b in direct) {
-            if (!b.isFolder) continue
-            for (e in stateDb.getEntriesByPrefix(b.path.trimEnd('/') + "/")) {
-                // A row with a remote id reached the drive some other way and is not waiting for the folder.
-                if (e.remoteId != null || skipsReplay(e.path)) continue
-                items.putIfAbsent(PathNormalizer.nfc(e.path), BlockedItem(e.path, BLOCKED_BY_PARENT, sibling = null, parent = b.path))
-            }
-        }
-        val sorted = items.values.sortedBy { it.path }
-        return BlockedUploads(sorted.size, sorted.take(BLOCKED_ITEMS_CAP))
-    }
+    private fun takeBlocked(): BlockedUploads = stateDb.blockedUploads(::skipsReplay)
 
     private fun takeUploadSnapshot(): UploadSnapshot {
         val pendingPaths = HashSet<String>()
         var failed = 0
+        var deferred = 0
         var oldestSinceMs: Long? = null
 
         fun since(atMs: Long) {
@@ -2421,7 +2415,7 @@ class HydrationImpl(
         }
         for (row in pendingUploadSplit().waiting) {
             pendingPaths += PathNormalizer.nfc(row.path)
-            if (row.lastErrorAt != null) failed++
+            if (row.lastErrorAt != null) failed++ else if (stateDb.holdsSpaceDeferral(row.path)) deferred++
             since(row.lastSynced.toEpochMilli())
         }
         // Slots without such a row: dirty overwrites. A slot of a row counted above adds nothing.
@@ -2435,7 +2429,7 @@ class HydrationImpl(
         }
         return UploadSnapshot(
             pendingPaths.size, uploadsInFlight.get(), failed, oldestSinceMs, System.currentTimeMillis(), takeBlocked(),
-            retryAt.size, retryAt.values.minOrNull(),
+            retryAt.size, retryAt.values.minOrNull(), deferred, conflictCopies.count,
         )
     }
 
@@ -2570,7 +2564,7 @@ class HydrationImpl(
         connectionId: String?,
     ): HydrateResult =
         when (val target = views.readTarget(path)) {
-            is HydrationViews.ReadTarget.Real -> hydrateAt(target.path, connectionId)
+            is HydrationViews.ReadTarget.Real -> stateDb.strictNameRefusal(target.path)?.let { HydrateResult.Failed(it) } ?: hydrateAt(target.path, connectionId)
             HydrationViews.ReadTarget.Missing -> HydrateResult.Failed(HydrationError.UnknownPath)
         }
 
@@ -2651,7 +2645,8 @@ class HydrationImpl(
         reportingDownloadProgress(path, waiter.handleId) {
             downloads.await(path, waiter) {
                 try {
-                    SharedRead(mount.ensureHydratedReporting(path, tx), tx)
+                    // gkrost/unidrive-cli#746 finding 1: the fresh copy is in use before the reader registers its handle.
+                    SharedRead(mount.ensureHydratedReporting(path, tx), tx).also { touch(path) }
                 } catch (e: Exception) {
                     tx.endDownloadFailed(e)
                     throw e
@@ -2718,6 +2713,9 @@ class HydrationImpl(
     private suspend fun dehydrateAt(path: String): DehydrateResult {
         if (!resolvesInsideCache(path)) return DehydrateResult.Failed(HydrationError.InvalidPath)
         if (renames.blocks(path)) return DehydrateResult.Busy // archive#1040 M4: the copy has not followed its rename yet
+        // gkrost/unidrive-cli#746 finding 6: stat BEFORE vetting, so a write landing meanwhile no longer matches it.
+        val observed = runCatching { Transfers.statBeforeUpload(mount.resolveCachePath(path)) }.getOrNull()
+        val observedKey = runCatching { fileKeyOf(mount.resolveCachePath(path)) }.getOrNull()
         val entry = stateDb.getEntry(path)
             ?: return DehydrateResult.Failed(HydrationError.UnknownPath)
 
@@ -2759,7 +2757,7 @@ class HydrationImpl(
             // nothing was deleted; the exists-check tells a copy that was already gone (fine: the row is marked
             // not hydrated either way) from one the delete could not take (an error, or the copy changed under
             // the lock) — the old deleteIfExists answered Ok for the first and Failed for the second too.
-            val freed = mount.forceEvictCacheCopy(path, observed = Transfers.statBeforeUpload(cachePath))
+            val freed = mount.forceEvictCacheCopy(path, observed = observed, observedKey = observedKey)
             if (freed == null && Files.exists(cachePath)) {
                 // #517 review: the locked delete was refused (the copy changed while the lock was waited for,
                 // or the delete errored) and the copy stays — it must stay ACCOUNTED for too. Forgetting it
@@ -2931,7 +2929,9 @@ class HydrationImpl(
         return ListResult.Entry(
             path = e.path,
             size = size,
-            mtimeEpochMillis = e.localMtime ?: e.lastSynced.toEpochMilli(),
+            // Live drive: a clean cloud-backed file lists its cloud mtime, not the time its cache copy was (re-)downloaded.
+            mtimeEpochMillis = e.remoteModified?.takeIf { e.remoteId != null && e.editBase == null && !pendingUpload }?.toEpochMilli()
+                ?: e.localMtime ?: e.lastSynced.toEpochMilli(),
             isHydrated = e.isHydrated,
             isFolder = e.isFolder,
             remoteModifiedEpochMillis = e.remoteModified?.toEpochMilli(),
@@ -3126,10 +3126,9 @@ class HydrationImpl(
         if (entry.isFolder) return UnlinkResult.PathIsFolder
 
         // WB-3 (archive#87): the file's own upload is queued or in flight — deleting the row and the cache
-        // copy under it would orphan the cloud copy the upload is about to create (the row is gone
-        // when the upload lands). Answer busy, the same refusal dehydrate has given since archive#301; the
-        // client cancels the upload (cancelUpload) and retries, or retries after the completed event.
-        if (hasUploadSlot(normalised)) return UnlinkResult.Busy
+        // copy under it would orphan the cloud copy the upload is about to create (the row is gone when the upload lands). Answer
+        // busy, as dehydrate has since archive#301; the client cancels the upload (cancelUpload) and retries, or retries later.
+        if (hasUploadSlot(normalised) && !dropsWaitingUpload(entry)) return UnlinkResult.Busy
 
         // Never-uploaded file (remote_id is null): the file only ever existed
         // locally — created through the mount, upload not yet done. There is
@@ -3179,10 +3178,11 @@ class HydrationImpl(
             if (ghost != null && !ghost.isFolder) {
                 return runCatching {
                     mount.deleteRemote(normalised, permanent)
-                    discardStagedUploadBestEffort(normalised)
-                    evictCacheFile(normalised)
+                    // gkrost/unidrive-cli#746 finding 5: the delete committed; a cancel must not skip its cleanup.
+                    withContext(NonCancellable) { discardStagedUploadBestEffort(normalised); evictCacheFile(normalised) }
                     UnlinkResult.Ok
                 }.getOrElse { e ->
+                    e.rethrowIfCancellation()
                     permanentRefusalOrNull(e)?.let { refusal -> return UnlinkResult.Failed(refusal) }
                     UnlinkResult.Failed(HydrationError.Generic(e.message ?: "unlink failed"))
                 }
@@ -3196,29 +3196,26 @@ class HydrationImpl(
                 stateDb.deleteEntry(normalised)
                 UnlinkResult.Ok
             }.getOrElse { e ->
+                e.rethrowIfCancellation()
                 UnlinkResult.Failed(HydrationError.Generic(e.message ?: "unlink failed"))
             }
         }
 
         return runCatching {
             mount.deleteRemote(normalised, permanent)
-            // A tracked file whose last edit's upload failed has a staged copy too.
-            discardStagedUploadBestEffort(normalised)
-            evictCacheFile(normalised)
+            // A tracked file whose last edit's upload failed has a staged copy too. gkrost/unidrive-cli#746 finding 5: NonCancellable.
+            withContext(NonCancellable) { discardStagedUploadBestEffort(normalised); evictCacheFile(normalised) }
             UnlinkResult.Ok
         }.getOrElse { e ->
+            e.rethrowIfCancellation()
             permanentRefusalOrNull(e)?.let { refusal -> return UnlinkResult.Failed(refusal) }
             UnlinkResult.Failed(HydrationError.Generic(e.message ?: "unlink failed"))
         }
     }
 
-    // archive#1178: a provider without the permanent-delete capability is a typed refusal, not a failed delete.
-    private fun permanentRefusalOrNull(e: Throwable): HydrationError? =
-        if (e is org.krost.unidrive.UnsupportedCapabilityException && e.capability == org.krost.unidrive.Capability.PermanentDelete) {
-            HydrationError.PermanentUnsupported
-        } else {
-            null
-        }
+    // Test drive 3: paused, a never-uploaded file's upload only waits and nothing of it is in the cloud: cancelled, the file may go.
+    private suspend fun dropsWaitingUpload(entry: org.krost.unidrive.sync.model.SyncEntry): Boolean =
+        entry.remoteId == null && pause.isPaused && cancelUpload(entry.path)
 
     // WB-3 (archive#87): the staged copy goes with a delete, but failing to remove it must not fail a
     // delete that already happened (the cloud copy is trashed, or the row is about to go): the
@@ -3251,8 +3248,7 @@ class HydrationImpl(
         val normalised = path.trimEnd('/').let { if (it == "") "/" else it }
         if (mount.isReadOnlyPath(normalised)) return RmdirResult.Failed(HydrationError.ReadOnly)
         if (renames.blocks(normalised)) return RmdirResult.Busy // archive#1040 M4, see unlinkRow
-        val entry = stateDb.getEntry(normalised)
-            ?: return RmdirResult.Failed(HydrationError.UnknownPath)
+        val entry = stateDb.getEntry(normalised) ?: return rmdirRowless(normalised, recursive, permanent, discardLocal)
         if (!entry.isFolder) return RmdirResult.PathIsFile
 
         // WB-3 (archive#87): the delete tombstones every row below the folder and evicts its cache tree.
@@ -3270,20 +3266,31 @@ class HydrationImpl(
         // changed while the daemon was stopped): the delete would tombstone that row and evict its cache file, the
         // only copy. The user deletes such a file on its own first, or the client says it did (discardLocal,
         // gkrost/unidrive-cli#445: "discard_local":true): then those bytes go with the tree.
+        // gkrost/unidrive-cli#746 finding 3: a row made below during the provider delete, or a vetted-clean one that took
+        // unsynced bytes, an upload or an open handle meanwhile, keeps its row and its copy.
+        var vetted: Set<String> = emptySet()
+        var vettedClean: Set<String> = emptySet()
         if (!recursive) {
             if (stateDb.hasEntriesBelow(below)) return refusedNotEmpty(log, normalised, recursive, "alive_descendants")
-        } else if (discardLocal) {
-            val discarded = stateDb.getEntriesByPrefix(below).count { holdsUnsyncedBytes(it) }
-            if (discarded > 0) log.info("rmdir of {}: discard_local, {} file(s) below with bytes only this computer had", normalised, discarded)
         } else {
-            stateDb.getEntriesByPrefix(below).firstOrNull { holdsUnsyncedBytes(it) }?.let {
-                return refusedNotEmpty(log, normalised, recursive, "unsynced_bytes", it.path)
+            val rows = stateDb.getEntriesByPrefix(below)
+            val unsynced = rows.filter { holdsUnsyncedBytes(it) }
+            if (!discardLocal) {
+                unsynced.firstOrNull()?.let { return refusedNotEmpty(log, normalised, recursive, "unsynced_bytes", it.path) }
+            } else if (unsynced.isNotEmpty()) {
+                log.info("rmdir of {}: discard_local, {} file(s) below with bytes only this computer had", normalised, unsynced.size)
             }
+            vetted = rows.mapTo(HashSet()) { it.path }
+            vettedClean = vetted - unsynced.mapTo(HashSet()) { it.path }
+        }
+        val keepBelow = { row: org.krost.unidrive.sync.model.SyncEntry ->
+            row.path !in vetted ||
+                (row.path in vettedClean && (holdsUnsyncedBytes(row) || hasUploadSlot(row.path) || openSets.values.any { it.containsValue(row.path) }))
         }
 
         return runCatching {
-            mount.deleteRemote(normalised, permanent)
-            evictCacheTree(normalised)
+            val kept = rmdirWindow.deleting(normalised) { mount.deleteRemote(normalised, permanent, keepBelow) }
+            evictCacheTree(normalised, kept)
             RmdirResult.Ok
         }.getOrElse { e ->
             // gkrost/unidrive-cli#452 (extends #438 item 9): a cancelled caller is not a failed request — the
@@ -3315,6 +3322,27 @@ class HydrationImpl(
     }
 
 
+
+    // Test drive 2: `rm -rf` of a folder whose row is gone (an rmdir that kept rows below) clears those rows as unlink does.
+    private suspend fun rmdirRowless(folder: String, recursive: Boolean, permanent: Boolean, discardLocal: Boolean): RmdirResult {
+        val rows = stateDb.getEntriesByPrefix(if (folder == "/") "/" else "$folder/")
+        if (rows.isEmpty()) return RmdirResult.Failed(HydrationError.UnknownPath)
+        if (!recursive) return refusedNotEmpty(log, folder, recursive, "alive_descendants")
+        if (!discardLocal) rows.firstOrNull { holdsUnsyncedBytes(it) }?.let { return refusedNotEmpty(log, folder, recursive, "unsynced_bytes", it.path) }
+        for (row in rows.filter { !it.isFolder }) {
+            when (val unlinked = unlinkRow(row.path, permanent)) {
+                UnlinkResult.Ok -> Unit
+                UnlinkResult.Busy -> return RmdirResult.Busy
+                is UnlinkResult.Failed -> return RmdirResult.Failed(unlinked.error)
+                else -> return RmdirResult.Failed(HydrationError.Generic("rmdir failed"))
+            }
+        }
+        for (row in rows.filter { it.isFolder }.sortedByDescending { it.path }) {
+            if (row.remoteId == null) stateDb.deleteEntry(row.path) else mount.deleteRemote(row.path, permanent)
+        }
+        evictCacheTree(folder)
+        return RmdirResult.Ok
+    }
 
     // The enumeration's reap and refresh.run's reset ask this same question before they drop a row or its cache copy;
     // an upload in flight is answered separately (rmdir's busy), so no slot is consulted here.
@@ -3377,16 +3405,27 @@ class HydrationImpl(
     // a no-op and a partial failure must not abort the op (the cloud delete
     // already succeeded). Deletes children before parents so the directory
     // empties before it is removed.
-    private fun evictCacheTree(path: String) {
+    private val rmdirWindow = RmdirWindow() // gkrost/unidrive-cli#746 finding 3, live drive E3
+    private val conflictCopies = ConflictCopies(stateDb, mount, log) // test drive 2: a lost edit is kept as a conflict copy
+
+    private suspend fun remakeFolderOfKeptRow(gone: String): Boolean =
+        rmdirWindow.remakeIfKept(gone, { stateDb.getEntry(it) != null }) { mkdirParents(it).let { r -> r == MkdirResult.Ok || r == MkdirResult.Existed } }
+
+    // gkrost/unidrive-cli#746 finding 3: the copies of [keep] (rows the delete left alive) stay.
+    private fun evictCacheTree(path: String, keep: Set<String> = emptySet()) {
+        val keepFiles = keep.mapNotNullTo(HashSet()) { runCatching { mount.resolveCachePath(it).toAbsolutePath().normalize() }.getOrNull() }
         runCatching {
             val root = mount.resolveCachePath(path)
             if (!Files.exists(root)) return
             // A junction or link below goes as the entry itself, never with what it leads to.
-            LinkedEntries.deleteTree(root) { p -> runCatching { Files.deleteIfExists(p) } }
+            LinkedEntries.deleteTree(root) { p ->
+                if (p.toAbsolutePath().normalize() !in keepFiles) runCatching { Files.deleteIfExists(p) }
+            }
         }
         // archive#728: the whole subtree left the accounting with the folder. (A partial failure over-counts
         // until the next walk, which finds the leftovers and reconciles them.)
         forgetCachePrefix(path)
+        keep.forEach { accountCacheFileOnDisk(it) }
     }
 
     private fun prepareEmptyCache(path: String): java.nio.file.Path {
@@ -3950,8 +3989,7 @@ class HydrationImpl(
                     RenameResult.Ok
                 }.getOrElse { e ->
                     // The cloud and the row moved: the record stays, and the next request or start finishes the rest.
-                    renames.interrupted(intent)
-                    RenameResult.Failed(HydrationError.Generic(e.message ?: "rename failed"))
+                    interruptedRename(intent, e)
                 }
             }
             // #452: the copy moves before the row does, so a failure or a stop in between left the file's only copy at the
@@ -3973,8 +4011,7 @@ class HydrationImpl(
                 RenameResult.Ok
             }.getOrElse { e ->
                 // Whatever stopped it, the record stays: the next request or start finishes the rename.
-                renames.interrupted(intent)
-                RenameResult.Failed(HydrationError.Generic(e.message ?: "rename failed"))
+                interruptedRename(intent, e)
             }
         }
 
@@ -3996,6 +4033,13 @@ class HydrationImpl(
         if (sourceEntry.isFolder) adoptGhostChildren(oldNorm, newNorm)
         rekeyUploadSlot(oldNorm, newNorm)
         return RenameResult.Ok
+    }
+
+    // gkrost/unidrive-cli#746 finding 5: the rename record stays either way; a cancelled caller is not a failed request.
+    private fun interruptedRename(intent: RenameIntent, e: Throwable): RenameResult {
+        renames.interrupted(intent)
+        if (e is CancellationException) throw e
+        return RenameResult.Failed(HydrationError.Generic(e.message ?: "rename failed"))
     }
 
     /**
@@ -4206,53 +4250,4 @@ class HydrationImpl(
         handles.values.forEach { accountCacheFileOnDisk(it) }
     }
 
-    // archive#652: the end of a download's logical transfer. A read served from the cache, and a cold read refused for a pause
-    // before it began, never started their handle and leave no row. A download the pause aborted ends interrupted: the
-    // client reads again later, which is a new transfer.
-    private fun TransferHandle?.endDownload(bytes: Long) {
-        if (this != null && hasStarted) finish(TransferResult.SUCCESS, bytesDone = bytes)
-    }
-
-    private fun TransferHandle?.endDownloadFailed(e: Exception) {
-        if (this == null || !hasStarted) return
-        when (e) {
-            is TransferPausedException -> finish(TransferResult.INTERRUPTED, errorClass = "paused")
-            is CancellationException -> finish(TransferResult.INTERRUPTED, errorClass = "cancelled")
-            else -> finish(TransferResult.FAILED, errorClass = e.javaClass.simpleName, message = e.message)
-        }
-    }
-
-    // One classification for a failed download, shared by the open_read path and the hydrate verb:
-    // a refusal for a pause (archive#778) carries the paused token, a stored object of a different size than the
-    // drive reports (archive#536) carries its own token with the numbers, a download whose content failed its
-    // integrity check (archive#940) content_refused and an object this client cannot read as stored
-    // unsupported_object (archive#941), both with a short reason that names no file; a genuinely-gone read the
-    // not_found token, everything else stays Generic (→ EIO).
-    private fun downloadFailureOf(e: Exception, fallback: String): HydrationError = when {
-        // archive#778: the daemon is paused (or paused while this download ran): not a failure of the download.
-        e is TransferPausedException -> HydrationError.Paused
-        e is RemoteIncompleteDownloadException -> HydrationError.RemoteIncomplete(e.storedBytes, e.declaredBytes)
-        e is RemoteObjectMissingDownloadException -> HydrationError.RemoteObjectMissing
-        e is RemoteContentRefusedDownloadException -> HydrationError.ContentRefused(e.reason)
-        e is UnsupportedRemoteObjectDownloadException -> HydrationError.UnsupportedObject(e.reason)
-        DownloadFailures.isNotFound(e) -> HydrationError.NotFound
-        else -> HydrationError.Generic(e.message ?: fallback)
-    }
-}
-
-// gkrost/unidrive-cli#134: the one look at a missing folder that one submission gets ([MountEngine.recoverGoneParent]); a refusal
-// that comes again after it stands.
-private class OneLookAtTheParent(
-    private val mount: MountEngine,
-) {
-    private var looked = false
-
-    suspend fun putBack(
-        path: String,
-        goneFolder: String,
-    ): Boolean {
-        if (looked) return false
-        looked = true
-        return mount.recoverGoneParent(path, goneFolder)
-    }
 }

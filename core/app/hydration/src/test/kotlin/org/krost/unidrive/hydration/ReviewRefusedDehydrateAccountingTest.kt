@@ -88,5 +88,35 @@ class ReviewRefusedDehydrateAccountingTest {
                 "the retained copy stays accounted for — forgetting it here reported a cache that was not the truth",
             )
         }
+
+    // The same refusal when the fresh copy happens to carry the vetted copy's size AND modification time (a download that
+    // ends in the millisecond of the earlier one, as a fast runner does): the swap put another file there, and the locked
+    // delete must see that, not only a (mtime, size) pair that a different file can share.
+    @Test
+    fun `a refused dehydrate sees a swapped-in copy with the vetted size and mtime`() =
+        runTest {
+            val env = freshEnv()
+            env.provider.seed("/a.bin", ByteArray(3000) { (it * 3 + 1).toByte() })
+            kotlinx.coroutines.runBlocking { MountEngine.over(env.engine).enumerateRemoteIntoState(true) }
+            val hydration = env.hydration(this)
+            assertIs<HydrateResult.Ok>(hydration.hydrate("/a.bin"))
+            val cache = env.engine.resolveCachePath("/a.bin")
+            val vettedMtime = Files.getLastModifiedTime(cache)
+
+            env.db.markUnhydrated("/a.bin")
+            env.provider.downloadWritten = { Files.setLastModifiedTime(it, vettedMtime) }
+            env.provider.downloadReached = CompletableDeferred()
+            env.provider.downloadRelease = CompletableDeferred()
+            val hydrate = async { MountEngine.over(env.engine).ensureHydratedReporting("/a.bin") }
+            env.provider.downloadReached?.await()
+
+            val dehydrate = async { hydration.dehydrate("/a.bin") }
+            advanceUntilIdle()
+            env.provider.downloadRelease?.complete(Unit)
+            hydrate.await()
+
+            assertIs<DehydrateResult.Failed>(dehydrate.await(), "the copy on disk is not the file the stat vetted")
+            assertTrue(Files.exists(cache), "the swapped-in copy stays")
+        }
 }
 // trace run
