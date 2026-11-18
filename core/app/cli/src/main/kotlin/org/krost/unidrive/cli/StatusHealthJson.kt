@@ -404,11 +404,21 @@ internal fun daemonCapabilitiesJson(
     uploadIgnore: Boolean,
     viewNamespaces: ViewNamespaces,
     shareCapable: Boolean,
+    // issue#796: the vault verbs exist (vault.enc present); `vault.unlock` and `vault.lock` answer.
+    vaultUnlockable: Boolean = false,
 ): String =
     (
         profileMode.capabilities + NOTIFICATIONS_STATUS_CAPABILITY +
             (if (hydration) listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY, HYDRATION_STAT_CAPABILITY, CANCEL_READ_CAPABILITY, HANDLE_STATUS_CAPABILITY, HYDRATION_LOCATE_CAPABILITY, SUBSCRIBE_REPLAY_CAPABILITY, LIST_COMPLETE_CAPABILITY, RMDIR_DISCARD_LOCAL_CAPABILITY, OPEN_READ_ETAG_CAPABILITY, RMDIR_NOT_EMPTY_REASON_CAPABILITY) else emptyList()) +
             (if (uploadIgnore) listOf(IGNORE_EXPLAIN_BATCH_CAPABILITY) else emptyList()) +
             (if (viewNamespaces.isEmpty()) emptyList() else listOf("views", "view_page")) +
-            (if (shareCapable) listOf(SHARE_CREATE_CAPABILITY) else emptyList())
+            (if (shareCapable) listOf(SHARE_CREATE_CAPABILITY) else emptyList()) +
+            (if (vaultUnlockable) listOf(VAULT_UNLOCK_CAPABILITY) else emptyList())
     ).joinToString(",", "[", "]") { ndjsonString(it) }
+
+/**
+ * The `daemon.status` capability that says the daemon answers `vault.unlock` and `vault.lock`
+ * (issue#796) — present exactly where `vault.enc` exists, locked or not.
+ */
+internal const val VAULT_UNLOCK_CAPABILITY = "vault-unlock:v1"
+

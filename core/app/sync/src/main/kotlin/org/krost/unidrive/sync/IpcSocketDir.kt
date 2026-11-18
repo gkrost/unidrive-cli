@@ -23,6 +23,34 @@ import java.nio.file.attribute.PosixFilePermissions
 internal object IpcSocketDir {
     const val WINDOWS_DIR_NAME = "unidrive-ipc"
 
+    /**
+     * The environment variable that names the socket folder, instead of the temp folder's `unidrive-ipc`. A folder a
+     * temp cleanup does not touch (gkrost/unidrive-cli#794); it must lie where every client looks too, so set it for the
+     * daemon and for the clients alike. Not `%LOCALAPPDATA%` on Windows: a process with package identity (an MSIX app) sees
+     * that folder through a copy-on-write view, and a socket written there is invisible to a process outside the package;
+     * the user profile folder and `%TEMP%` are not redirected.
+     */
+    const val OVERRIDE_ENV = "UNIDRIVE_IPC_DIR"
+
+    /** The folder [OVERRIDE_ENV] names, or null when it is unset or blank. A relative path is a mistake worth a message. */
+    fun overrideDirectory(raw: String? = System.getenv(OVERRIDE_ENV)): Path? {
+        val value = raw?.trim().orEmpty()
+        if (value.isEmpty()) return null
+        val dir = Path.of(value)
+        check(dir.isAbsolute) { "$OVERRIDE_ENV must be an absolute folder, not '$value'" }
+        return dir
+    }
+
+    /** Makes (or checks) the folder [OVERRIDE_ENV] names, owner-only like the default one. */
+    fun ensureOverrideDir(
+        dir: Path,
+        windows: Boolean,
+    ): Path {
+        if (windows) return ensureWindowsFolder(dir)
+        dir.parent?.let { Files.createDirectories(it) }
+        return ensurePosixFolder(dir, OwnerOnly.posixUid())
+    }
+
     private const val PERMISSION_BITS = 0b111_111_111
     private const val OWNER_ONLY_MODE = 0b111_000_000
 
@@ -63,8 +91,14 @@ internal object IpcSocketDir {
         tmpDir: Path,
         uid: Int,
         ops: PosixDirOps = RealPosixDirOps,
+    ): Path = ensurePosixFolder(tmpDir.resolve(posixFallbackName(uid)), uid, ops)
+
+    /** Makes [dir] (its parent must exist) or checks the one that is there: a real directory of [uid], mode 700. */
+    fun ensurePosixFolder(
+        dir: Path,
+        uid: Int,
+        ops: PosixDirOps = RealPosixDirOps,
     ): Path {
-        val dir = tmpDir.resolve(posixFallbackName(uid))
         if (ops.facts(dir) == null) {
             try {
                 ops.createPrivate(dir)
@@ -79,8 +113,10 @@ internal object IpcSocketDir {
         return dir
     }
 
-    fun ensureWindowsDir(tmpDir: Path): Path {
-        val dir = tmpDir.resolve(WINDOWS_DIR_NAME)
+    fun ensureWindowsDir(tmpDir: Path): Path = ensureWindowsFolder(tmpDir.resolve(WINDOWS_DIR_NAME))
+
+    /** Makes [dir] (and its parents) or checks the one that is there: a plain directory with an accepted owner, then owner-only. */
+    fun ensureWindowsFolder(dir: Path): Path {
         Files.createDirectories(dir)
         val attrs = Files.readAttributes(dir, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
         if (!attrs.isDirectory || attrs.isSymbolicLink || attrs.isOther) {

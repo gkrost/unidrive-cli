@@ -365,6 +365,16 @@ data class RawGeneral(
     // (sync_state key `streaming_reconciliation_enabled`). CLI flag wins
     // over this key.
     val streaming_reconciliation: Boolean? = null,
+    // issue#796: absolute install path of the unlock helper (docs/dev/specs/unlock-helper-protocol.md),
+    // the platform-neutral step between the systemd credential and the console prompt in the
+    // passphrase chain (vault and X-tra). Never a PATH lookup: the value must be absolute, and a
+    // configured path that is missing or not a regular file is an error that names it, not a skip.
+    val unlock_helper: String? = null,
+    // issue#796: true = a headless daemon run that cannot resolve the vault passphrase at start
+    // exits 78 (the hosting-contract refusal the shipped systemd units treat as a clean stop)
+    // instead of starting locked. False/unset = the daemon starts locked and waits for
+    // `vault.unlock` when vault.enc exists and no passphrase source answers.
+    val require_vault: Boolean? = null,
 )
 
 @Serializable

@@ -19,7 +19,7 @@ import java.nio.file.Path
  * ([XtraEncryptedProvider]); commands that only list, authenticate or report never need the passphrase. The
  * key file lives beside config.toml (the token path's parent): one key per installation.
  */
-internal fun wrapWithXtra(
+internal fun Main.wrapWithXtra(
     rp: RawProvider?,
     provider: CloudProvider,
     tokenPath: Path,
@@ -44,7 +44,7 @@ internal fun wrapWithXtra(
                     }
                     store
                 },
-                ::xtraPassphrase,
+                this::xtraPassphrase,
             )
             else -> {
                 System.err.println("Error: unknown xtra_algorithm \"$algorithm\" (known: aes-gcm, age-v1).")
@@ -62,20 +62,32 @@ internal fun wrapWithXtra(
     )
 }
 
-/** The X-tra passphrase, resolved like the vault's: env, a systemd credential, or a console prompt. */
-internal fun xtraPassphrase(): CharArray {
-    System.getenv(XTRA_PASSPHRASE_ENV)?.let { return it.toCharArray() }
-    System.getenv("CREDENTIALS_DIRECTORY")?.let { dir ->
-        val credential = Path.of(dir).resolve("unidrive-xtra-pass")
-        if (Files.isRegularFile(credential)) return Files.readString(credential).trimEnd('\r', '\n').toCharArray()
+/**
+ * The X-tra passphrase, resolved through the same chain as the vault's: env, a systemd
+ * credential, the unlock helper (secret kind `xtra`), then a console prompt.
+ */
+internal fun Main.xtraPassphrase(): CharArray =
+    when (val resolution = resolvePassphrase(
+        secretKind = "xtra",
+        envName = XTRA_PASSPHRASE_ENV,
+        credentialName = "unidrive-xtra-pass",
+        configDir = baseConfigDir,
+        helperConfig = rawGeneral().unlock_helper,
+        prompt = "X-tra passphrase: ",
+    )) {
+        is PassphraseResolution.Secret -> resolution.chars
+        is PassphraseResolution.Refused ->
+            if (resolution.consoleWasPresent) {
+                System.err.println("Error: could not read passphrase.")
+                error("no X-tra passphrase available")
+            } else if (daemonVaultLocked) {
+                error("no X-tra passphrase available: ${resolution.detail}")
+            } else {
+                System.err.println("Error: xtra_encryption is on but no passphrase is available (${resolution.detail}).")
+                System.err.println(
+                    "Configure UNIDRIVE_XTRA_PASS, a systemd credential named unidrive-xtra-pass, " +
+                        "or [general] unlock_helper (docs/dev/specs/unlock-helper-protocol.md).",
+                )
+                error("no X-tra passphrase available")
+            }
     }
-    val console = System.console() ?: run {
-        System.err.println("Error: xtra_encryption is on but no passphrase is available.")
-        System.err.println("Configure UNIDRIVE_XTRA_PASS or a systemd credential named unidrive-xtra-pass.")
-        error("no X-tra passphrase available")
-    }
-    return console.readPassword("X-tra passphrase: ") ?: run {
-        System.err.println("Error: could not read passphrase.")
-        error("no X-tra passphrase available")
-    }
-}

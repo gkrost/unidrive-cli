@@ -100,7 +100,8 @@ open class Main : Runnable {
     @Spec
     lateinit var spec: CommandSpec
 
-    private val baseConfigDir: Path
+    // internal: the daemon-vault start resolution (issue#796) lives beside this class, in DaemonVaultStart.kt.
+    internal val baseConfigDir: Path
         get() = SyncConfig.defaultConfigDir(explicitOverride = configDir?.let { Paths.get(it) })
 
     // @Volatile: the daemon reuses this instance across threads, so a cached value must publish safely.
@@ -108,7 +109,7 @@ open class Main : Runnable {
     private var _profile: ProfileInfo? = null
 
     @Volatile
-    private var _vaultData: Map<String, Map<String, String>>? = null
+    internal var vaultDataCache: Map<String, Map<String, String>>? = null
 
     /**
      * UD-213: clear the memoised profile + vault caches so the next call to
@@ -120,7 +121,7 @@ open class Main : Runnable {
      */
     fun invalidateProfileCaches() {
         _profile = null
-        _vaultData = null
+        vaultDataCache = null
     }
 
     fun resolveCurrentProfile(): ProfileInfo {
@@ -255,37 +256,47 @@ open class Main : Runnable {
         throw IllegalStateException("unreachable")
     }
 
+    /**
+     * issue#796: true while this daemon's vault data is not available (a locked start, or after
+     * `vault.lock`). Then [loadVaultData] throws [VaultLockedException] instead of exiting: a verb
+     * handler asking for the vault must get a refusal, not a dead daemon. The daemon-vault start
+     * resolution beside this class (DaemonVaultStart.kt) sets it.
+     */
+    @Volatile
+    internal var daemonVaultLocked: Boolean = false
+
     private fun loadVaultData(): Map<String, Map<String, String>> {
-        val cached = _vaultData
+        val cached = vaultDataCache
         if (cached != null) return cached
         val vault = Vault(baseConfigDir.resolve("vault.enc"))
         if (!vault.exists()) {
-            return emptyMap<String, Map<String, String>>().also { _vaultData = it }
+            return emptyMap<String, Map<String, String>>().also { vaultDataCache = it }
         }
-        val envPass = System.getenv("UNIDRIVE_VAULT_PASS")
-        val systemdCredentialPath =
-            System.getenv("CREDENTIALS_DIRECTORY")?.let { Path.of(it).resolve("unidrive-vault-pass") }
         val passphrase =
-            if (envPass != null) {
-                envPass.toCharArray()
-            } else if (systemdCredentialPath != null && Files.isRegularFile(systemdCredentialPath)) {
-                Files.readString(systemdCredentialPath).trimEnd('\r', '\n').toCharArray()
-            } else {
-                val console = System.console()
-                if (console == null) {
-                    // A daemon must not silently continue without vaulted credentials: that turns
-                    // an operator configuration error into provider auth failures and restart loops.
-                    // Exit 78 is already treated as a clean stop by the shipped systemd units.
-                    System.err.println("Error: vault.enc exists but no passphrase is available.")
-                    System.err.println("Configure UNIDRIVE_VAULT_PASS or a systemd credential named unidrive-vault-pass.")
-                    System.exit(MODE_REFUSAL_EXIT)
-                    throw IllegalStateException("unreachable")
-                }
-                console.readPassword("Vault passphrase: ") ?: run {
-                    System.err.println("Error: could not read passphrase.")
-                    System.exit(1)
-                    throw IllegalStateException("unreachable")
-                }
+            when (val resolution = vaultPassphraseResolution()) {
+                is PassphraseResolution.Secret -> resolution.chars
+                is PassphraseResolution.Refused ->
+                    if (resolution.consoleWasPresent) {
+                        System.err.println("Error: could not read passphrase.")
+                        System.exit(1)
+                        throw IllegalStateException("unreachable")
+                    } else if (daemonVaultLocked) {
+                        // A daemon that locked itself (a start with no unlock source, or vault.lock)
+                        // never exits from here: the caller is a verb handler, and the answer is the
+                        // refusal of that verb, not the death of the daemon (issue#796).
+                        throw VaultLockedException("the vault is locked; unlock it first (vault.unlock)")
+                    } else {
+                        // A daemon must not silently continue without vaulted credentials: that turns
+                        // an operator configuration error into provider auth failures and restart loops.
+                        // Exit 78 is already treated as a clean stop by the shipped systemd units.
+                        System.err.println("Error: vault.enc exists but no passphrase is available (${resolution.detail}).")
+                        System.err.println(
+                            "Configure UNIDRIVE_VAULT_PASS, a systemd credential named unidrive-vault-pass, " +
+                                "or [general] unlock_helper (docs/dev/specs/unlock-helper-protocol.md).",
+                        )
+                        System.exit(MODE_REFUSAL_EXIT)
+                        throw IllegalStateException("unreachable")
+                    }
             }
         val data =
             try {
@@ -299,9 +310,10 @@ open class Main : Runnable {
                 System.exit(1)
                 throw IllegalStateException("unreachable")
             }
-        _vaultData = data
+        vaultDataCache = data
         return data
     }
+
 
     private fun mergeVaultCreds(profile: ProfileInfo): RawProvider? {
         // issue#786: config secret fields are protected at rest; decode before anything — including the

@@ -110,7 +110,7 @@ class XtraImportCommand : Runnable {
         val data = Files.readAllBytes(src)
         // The passphrase the imported key must work under is this installation's — the daemon loads the imported
         // key with xtraPassphrase(), so it is resolved here, before the probe, where its own error stands.
-        val passphrase = xtraPassphrase()
+        val passphrase = xtraCmd.parent.xtraPassphrase()
         // Prove the import is a key before it can replace one: it must load from a temp path, so a wrong file
         // fails here with the installation's key untouched.
         val probe = Files.createTempFile("xtra-import-", ".key")

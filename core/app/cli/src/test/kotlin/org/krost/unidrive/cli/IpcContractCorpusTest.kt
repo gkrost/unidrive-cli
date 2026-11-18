@@ -107,6 +107,11 @@ class IpcContractCorpusTest {
             "auth.logout",
             // The sign-in verbs (§4.11) against the corpus profile: refusals and a sign-in with fake credentials.
             "auth.begin", "auth.complete", "auth.login", "auth.check",
+            // The vault verbs (issue#796): the corpus daemon runs unlocked, so vault.unlock answers
+            // the param shapes and already_unlocked, and vault.lock locks it and stays locked —
+            // nothing between vault.lock and daemon.shutdown reads the paused state. The
+            // lock → status → unlock cycle is sessions/vault-lock.ndjson against its own daemon.
+            "vault.unlock", "vault.lock",
             "daemon.shutdown",
         )
 
@@ -176,12 +181,17 @@ class IpcContractCorpusTest {
             // provider's snapshot values are machine-dependent, so daemon.status here carries
             // no `quota` field; the quota-present shape is pinned in DaemonRuntimeTest.
             providerHasQuota = false,
+            // issue#796: the corpus daemon has a vault (the verbs are registered, the capability
+            // advertised), starting unlocked — the scripted attempt knows one passphrase.
         )
         // history.list's corpus is replayed against four rows with fixed ids and instants.
         // A clock near the rows keeps the retention (90 days) from taking the old rows away from under the corpus.
         runtime.openHistory = { profile, file ->
             TransferHistory.open(profile, file, clock = { 1_700_000_100_000L }).also { seedHistoryCorpus(file) }
         }
+        // issue#796: the corpus daemon has a vault (the verbs are registered, the capability
+        // advertised), starting unlocked — the scripted attempt knows one passphrase.
+        runtime.vault = scriptedVault()
         // The sign-in verbs (§4.11) sign an Internxt-typed profile in; the library sign-in is a fake that knows one
         // password, one bad two-factor code and one other user (no network, no real account).
         runtime.signInTarget = ProfileTarget("contract_profile", "internxt", tempDir)
@@ -228,6 +238,81 @@ class IpcContractCorpusTest {
             runtime.close()
             daemonJob.join()
             LifecycleHooks.internxtLogin = realLogin
+            runCatching { tempDir.toFile().deleteRecursively() }
+        }
+    }
+
+    /**
+     * `sessions/vault-lock.ndjson`: request/reply pairs replayed in order on ONE connection against a live
+     * mount daemon with a vault (issue#796): the `vault.lock` that drops the data and pauses the dependents,
+     * the status that shows `locked` and the `vault_locked` pause, the refused wrong passphrase, the unlock
+     * that resumes them, the status without either. `events/vault-locked.ndjson` and `events/resumed.ndjson`
+     * are the lines the same lock and unlock push to a subscriber.
+     */
+    @Test
+    fun vault_lock_session_matches_corpus_over_live_socket() = runBlocking {
+        val pairs = loadSession("vault-lock")
+        val expectedLockedEvent = loadEventLine("vault-locked")
+        val expectedResumedEvent = loadEventLine("resumed")
+        val tempDir = TestScratch.directory("ipc-contract-vault-lock")
+        val socketPath = tempDir.resolve("daemon.sock")
+        val runtime = DaemonRuntime(
+            profileMode = ProfileMode.MOUNT,
+            profileName = "contract_profile",
+            lockFile = tempDir.resolve(".lock"),
+            dbPath = tempDir.resolve("state.db"),
+            syncRoot = tempDir,
+            socketPath = socketPath,
+            providerFactory = { StubProvider() },
+            providerHasQuota = false,
+        )
+        runtime.vault = scriptedVault()
+        val daemonJob = launch { runtime.start() }
+        try {
+            awaitDaemonSocket(socketPath)
+            val endpoint = IpcEndpoint(socketPath, tempDir, "contract_profile")
+            val subscriber = IpcAuthClient.connect(endpoint, IpcAuth.Scope.FULL)
+            val session = IpcAuthClient.connect(endpoint, IpcAuth.Scope.FULL)
+            try {
+                subscriber.configureBlocking(false)
+                session.configureBlocking(false)
+                subscriber.write(ByteBuffer.wrap(("""{"verb":"sync.subscribe"}""" + "\n").toByteArray()))
+                readFirstLine(subscriber, timeoutMs = 5_000)
+                // sync.subscribe registers after its reply; a request on the same connection comes after that.
+                subscriber.write(ByteBuffer.wrap(("""{"verb":"daemon.status"}""" + "\n").toByteArray()))
+                readFirstLine(subscriber, timeoutMs = 5_000)
+
+                for ((request, expectedReply) in pairs) {
+                    session.write(ByteBuffer.wrap((request + "\n").toByteArray()))
+                    val reply = readFirstLine(session, timeoutMs = 5_000)
+                    assertJsonMatches(
+                        expected = Json.parseToJsonElement(expectedReply),
+                        actual = Json.parseToJsonElement(reply),
+                        at = "vault-lock: reply to $request",
+                    )
+                    val verb = ((Json.parseToJsonElement(request) as JsonObject)["verb"] as JsonPrimitive).content
+                    if (verb == "vault.lock" && expectedReply.contains("\"ok\":true")) {
+                        assertJsonMatches(
+                            expected = Json.parseToJsonElement(expectedLockedEvent),
+                            actual = Json.parseToJsonElement(readFirstLine(subscriber, timeoutMs = 5_000)),
+                            at = "vault-locked event",
+                        )
+                    }
+                    if (verb == "vault.unlock" && expectedReply.contains("\"ok\":true")) {
+                        assertJsonMatches(
+                            expected = Json.parseToJsonElement(expectedResumedEvent),
+                            actual = Json.parseToJsonElement(readFirstLine(subscriber, timeoutMs = 5_000)),
+                            at = "resumed event",
+                        )
+                    }
+                }
+            } finally {
+                subscriber.close()
+                session.close()
+            }
+        } finally {
+            runtime.close()
+            daemonJob.join()
             runCatching { tempDir.toFile().deleteRecursively() }
         }
     }
@@ -1376,6 +1461,20 @@ class IpcContractCorpusTest {
         return lines.single()
     }
 
+    /** The vault seam of the corpus daemons (issue#796): unlocked, one scripted passphrase. */
+    private fun scriptedVault() =
+        DaemonVault(
+            gate = VaultGate.unlocked(),
+            unlockAttempt = { pass ->
+                if (pass.contentEquals(CORPUS_VAULT_PASSPHRASE.toCharArray())) {
+                    VaultUnlockOutcome.Ok(emptyMap())
+                } else {
+                    VaultUnlockOutcome.BadPassphrase
+                }
+            },
+            dropData = {},
+        )
+
     private fun loadSession(name: String): List<Pair<String, String>> {
         val stream = checkNotNull(javaClass.getResourceAsStream("/ipc-contract/sessions/$name.ndjson")) {
             "missing session transcript '$name'"
@@ -1937,3 +2036,7 @@ private fun assertVolatileShape(expected: JsonElement, actual: JsonElement, at: 
 // pins that it is a number-or-null literal, not which of the two a fresh daemon shows.
 // profile_dir (auth, unidrive-cli#387) is the profile folder of the machine that runs the daemon.
 private val VOLATILE_FIELDS = setOf("cache_path", "uptime_ms", "clients_connected", "job_id", "engine_version", "engine_build_time_ms", "bytes", "since_ms", "as_of_ms", "profile_dir")
+
+// The passphrase the scripted vault attempts of the corpus daemons accept (issue#796); the wrong one
+// answers vault_bad_passphrase.
+private const val CORPUS_VAULT_PASSPHRASE = "fixture-vault-pass-1"

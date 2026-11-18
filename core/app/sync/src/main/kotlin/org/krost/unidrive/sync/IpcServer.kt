@@ -47,6 +47,10 @@ class IpcServer(
     // How long close() waits for the server's own transport threads to finish before it interrupts them (#531).
     internal var transportShutdownWaitMs: Long = TRANSPORT_SHUTDOWN_WAIT_MS
 
+    // How often start()'s IpcSocketWatcher checks that the socket file is still there and binds it again (0 = never,
+    // gkrost/unidrive-cli#794). Not a constructor parameter: the tests set it before start(), like the wait above.
+    internal var socketWatchIntervalMs: Long = SOCKET_WATCH_INTERVAL_MS
+
     // Captured at construction so a later companion-object change can't accidentally
     // re-read the env var mid-flight. Multiply once into nanos so writeNonBlocking
     // does no per-call arithmetic.
@@ -121,6 +125,16 @@ class IpcServer(
     private var ownsSocketFiles = false
     private var acceptJob: Job? = null
     private var broadcastJob: Job? = null
+    private var socketWatchJob: Job? = null
+    private var socketWatcher: IpcSocketWatcher? = null
+
+    // gkrost/unidrive-cli#794: how often the watcher had to bind the socket file again, and the guard between a rebind and close().
+    internal val socketRebinds: Int
+        get() = socketWatcher?.rebinds ?: 0
+    private val rebindLock = Any()
+
+    @Volatile
+    private var closing = false
     private var ownedTransport: java.util.concurrent.ExecutorService? = null
 
     // Connections that issued `sync.subscribe`. Filtered by the broadcast loop
@@ -328,14 +342,7 @@ class IpcServer(
         val selector = IpcReadSelector()
         readSelector = selector
 
-        val transport: kotlinx.coroutines.CoroutineDispatcher = transportDispatcher ?: run {
-            val es = java.util.concurrent.Executors.newFixedThreadPool(
-                TRANSPORT_POOL_SIZE,
-                ipcIoThreadFactory(),
-            )
-            ownedTransport = es
-            es.asCoroutineDispatcher()
-        }
+        val transport: kotlinx.coroutines.CoroutineDispatcher = transportDispatcher ?: newTransportDispatcher()
         log.info(
             "IPC: transport pool size={} write_timeout_ms={} idle_timeout_ms={} max_clients={}",
             TRANSPORT_POOL_SIZE,
@@ -344,11 +351,12 @@ class IpcServer(
             maxClients,
         )
 
-        acceptJob =
+        // The accept loop of one bound listener; the socket watcher starts a new one when it binds the file again.
+        fun launchAcceptLoop(listener: ServerSocketChannel): Job =
             scope.launch(transport) {
                 while (isActive) {
                     try {
-                        val sc = server.accept()
+                        val sc = listener.accept()
                         if (clients.size >= maxClients) {
                             log.warn("IPC: max clients ({}) reached, refusing connection", maxClients)
                             refuse(sc, scope, transport)
@@ -446,6 +454,10 @@ class IpcServer(
                     }
                 }
             }
+        acceptJob = launchAcceptLoop(server)
+        val watcher = IpcSocketWatcher(socketPath, socketWatchIntervalMs, { closing }) { installListener(it) { next -> launchAcceptLoop(next) } }
+        socketWatcher = watcher
+        if (socketWatchIntervalMs > 0) socketWatchJob = scope.launch(transport) { watcher.run() }
 
         broadcastJob =
             scope.launch(transport) {
@@ -473,10 +485,15 @@ class IpcServer(
     }
 
     fun close() {
+        closing = true
+        socketWatchJob?.cancel()
         channel.close()
-        acceptJob?.cancel()
-        broadcastJob?.cancel()
-        runCatching { serverChannel?.close() }
+        // With the watcher's rebind excluded: it never installs a new listener after this block.
+        synchronized(rebindLock) {
+            acceptJob?.cancel()
+            broadcastJob?.cancel()
+            runCatching { serverChannel?.close() }
+        }
         for (entry in clients) {
             runCatching { entry.channel.close() }
             closeListeners.forEach { it(entry.id) }
@@ -494,7 +511,7 @@ class IpcServer(
         // second close() cannot delete a successor's socket.
         if (ownsSocketFiles) {
             ownsSocketFiles = false
-            deleteSocketFiles(socketPath)
+            IpcSocketFiles.deleteSocketFiles(socketPath)
         }
         ownedTransport?.let { es ->
             es.shutdown()
@@ -512,6 +529,27 @@ class IpcServer(
             }
             ownedTransport = null
         }
+    }
+
+    /** The socket watcher's swap (gkrost/unidrive-cli#794): the new listener replaces the old one, unless close() came first. */
+    private fun installListener(
+        next: ServerSocketChannel,
+        startAcceptLoop: (ServerSocketChannel) -> Job,
+    ): Boolean =
+        synchronized(rebindLock) {
+            if (closing) return@synchronized false
+            val old = serverChannel
+            acceptJob?.cancel()
+            serverChannel = next
+            acceptJob = startAcceptLoop(next)
+            runCatching { old?.close() }
+            true
+        }
+
+    private fun newTransportDispatcher(): kotlinx.coroutines.CoroutineDispatcher {
+        val es = java.util.concurrent.Executors.newFixedThreadPool(TRANSPORT_POOL_SIZE, ipcIoThreadFactory())
+        ownedTransport = es
+        return es.asCoroutineDispatcher()
     }
 
     private fun reclaimStaleSocket() {
@@ -952,7 +990,8 @@ class IpcServer(
 
         internal fun readIdleTimeoutFromEnv(): Long = parseIdleTimeoutMs(System.getenv("UNIDRIVE_IPC_IDLE_TIMEOUT_MS"))
 
-        private const val MAX_SOCKET_PATH_LENGTH = 90
+        // gkrost/unidrive-cli#794: how often a running server checks that its socket file is still there.
+        const val SOCKET_WATCH_INTERVAL_MS = 5_000L
         private const val MAX_REQUEST_BYTES = 64 * 1024
         private const val TRANSPORT_POOL_SIZE = 4
         internal const val TRANSPORT_SHUTDOWN_WAIT_MS = 5_000L
@@ -1073,115 +1112,30 @@ class IpcServer(
             }
         }
 
-        fun socketBaseName(profileName: String): String =
-            "unidrive-${canonicalDiskName(profileName, defaultSocketDirectory())}.sock"
+        // Where the socket lies and what it is called: IpcSocketPaths (this file's size is ratcheted, gkrost/unidrive-cli#534).
+        fun socketBaseName(profileName: String): String = IpcSocketPaths.socketBaseName(profileName)
 
-        /**
-         * archive#135: the one canonical on-disk name for a profile — verbatim when it is short
-         * enough for every consumer, the 8-hex SHA-1 truncation when the socket path would
-         * exceed [MAX_SOCKET_PATH_LENGTH]. `hydrationCacheRoot` derives its directory from
-         * the same function, so the socket and the cache never disagree about what
-         * identifies a profile on disk. The `.meta` sidecar keeps already-deployed hashed
-         * sockets resolvable.
-         */
-        fun canonicalDiskName(profileName: String): String {
-            return canonicalDiskName(profileName, defaultSocketDirectory())
-        }
+        /** The one canonical on-disk name for a profile (archive#135): see [IpcSocketPaths.canonicalDiskName]. */
+        fun canonicalDiskName(profileName: String): String = IpcSocketPaths.canonicalDiskName(profileName)
 
-        internal fun canonicalDiskName(profileName: String, socketDirectory: Path): String {
-            if (socketDirectory.resolve("unidrive-$profileName.sock").toString().length <= MAX_SOCKET_PATH_LENGTH) return profileName
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-1").digest(profileName.toByteArray(Charsets.UTF_8)), 0, 4)
-        }
+        internal fun canonicalDiskName(profileName: String, socketDirectory: Path): String =
+            IpcSocketPaths.canonicalDiskName(profileName, socketDirectory)
 
-        private fun writeMetaFile(
-            socketPath: Path,
-            profileName: String,
-        ) {
-            Files.writeString(metaPathFor(socketPath), "$profileName\n")
-        }
+        /** Removes the socket file and its `.meta` sibling of a daemon that is gone (archive#419): see [IpcSocketFiles.removeStaleSocketFiles]. */
+        fun removeStaleSocketFiles(socketPath: Path) = IpcSocketFiles.removeStaleSocketFiles(socketPath)
 
-        private fun metaPathFor(socketPath: Path): Path = socketPath.resolveSibling("${socketPath.fileName}.meta")
-
-        private fun deleteSocketFiles(socketPath: Path) {
-            runCatching { Files.deleteIfExists(socketPath) }
-            runCatching { Files.deleteIfExists(metaPathFor(socketPath)) }
-        }
-
-        /**
-         * archive#419: remove the socket file at [socketPath] and its `.meta` sibling after the
-         * daemon that owned them is gone, ignoring failures. [close] never runs when the
-         * daemon is hard-killed (`daemon stop` on Windows is TerminateProcess, which skips
-         * shutdown hooks), so `daemon stop` calls this once the process has exited. A socket
-         * that still accepts a connection belongs to a live daemon and is left alone —
-         * the same probe [reclaimStaleSocket] uses on start.
-         */
-        fun removeStaleSocketFiles(socketPath: Path) {
-            runCatching {
-                if (Files.exists(socketPath)) {
-                    try {
-                        SocketChannel.open(UnixDomainSocketAddress.of(socketPath)).close()
-                        return // somebody is listening: not ours to delete
-                    } catch (_: ConnectException) {
-                        // Stale socket — nobody listening
-                    } catch (_: java.net.SocketException) {
-                        // Stale socket — Windows "Invalid argument"
-                    }
-                    // Other IOExceptions abort via runCatching — never delete a socket we can't classify
-                }
-                deleteSocketFiles(socketPath)
-            }
-        }
-
-        fun defaultSocketPath(profileName: String): Path =
-            defaultSocketPath(
-                profileName,
-                Path.of(System.getProperty("java.io.tmpdir")),
-                Os.isWindows(),
-            )
+        fun defaultSocketPath(profileName: String): Path = IpcSocketPaths.defaultSocketPath(profileName)
 
         internal fun defaultSocketPath(
             profileName: String,
             tmpDir: Path,
             windows: Boolean,
-        ): Path {
-            val dir = defaultSocketDirectory(tmpDir, windows)
-            if (windows) {
-                // Windows AF_UNIX sockets don't work in %LOCALAPPDATA% directly
-                // but do work in %TEMP% (which is %LOCALAPPDATA%\Temp)
-                IpcSocketDir.ensureWindowsDir(tmpDir)
-                return resolveAndMeta(dir, profileName)
-            }
-            // Linux / macOS: /run/user/$UID/, else the per-user folder in the temp dir
-            // (a fixed name, so clients find the socket there too).
-            val uid = OwnerOnly.posixUid()
-            val runDir = Path.of("/run/user/$uid")
-            if (!Files.isDirectory(runDir)) IpcSocketDir.ensurePosixFallbackDir(tmpDir, uid)
-            return resolveAndMeta(dir, profileName)
-        }
+            override: Path? = IpcSocketDir.overrideDirectory(),
+        ): Path = IpcSocketPaths.defaultSocketPath(profileName, tmpDir, windows, override)
 
-        internal fun defaultSocketDirectory(): Path =
-            defaultSocketDirectory(
-                Path.of(System.getProperty("java.io.tmpdir")),
-                Os.isWindows(),
-            )
+        internal fun defaultSocketDirectory(): Path = IpcSocketPaths.defaultSocketDirectory()
 
-        private fun defaultSocketDirectory(tmpDir: Path, windows: Boolean): Path {
-            if (windows) return tmpDir.resolve(IpcSocketDir.WINDOWS_DIR_NAME)
-            val runDir = Path.of("/run/user/${OwnerOnly.posixUid()}")
-            return if (Files.isDirectory(runDir)) runDir else tmpDir.resolve(IpcSocketDir.posixFallbackName(OwnerOnly.posixUid()))
-        }
-
-        private fun resolveAndMeta(
-            dir: Path,
-            profileName: String,
-        ): Path {
-            val result = dir.resolve("unidrive-${canonicalDiskName(profileName, dir)}.sock")
-            // Write .meta file when name was hashed so UI can recover the profile name
-            if (result.fileName.toString() != "unidrive-$profileName.sock") {
-                writeMetaFile(result, profileName)
-            }
-            return result
-        }
+        internal fun diskNameDirectory(): Path = IpcSocketPaths.diskNameDirectory()
     }
 }
 
