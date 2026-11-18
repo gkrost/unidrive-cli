@@ -598,6 +598,68 @@ class ProfileJsonCommandTest {
         assertEquals(twoProfiles, config())
     }
 
+    // -- profile set / list: the X-tra keys ----------------------------------------------------------
+
+    @Test
+    fun `a profile without the xtra keys lists their defaults`() {
+        writeConfig(twoProfiles)
+
+        val work = listed("work")
+        assertFalse(work.getValue("xtra_encryption").jsonPrimitive.boolean)
+        assertEquals("aes-gcm", work.getValue("xtra_algorithm").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `set xtra_encryption turns it on and off, reports the old value and leaves the rest byte for byte`() {
+        writeConfig(twoProfiles)
+
+        assertEquals(0, run("profile", "set", "work", "xtra_encryption", "true", "--json"), stderr())
+        val r = json()
+        assertTrue(r.getValue("ok").jsonPrimitive.boolean)
+        assertTrue(r.getValue("value").jsonPrimitive.boolean)
+        assertFalse(r.getValue("previous").jsonPrimitive.boolean)
+        assertTrue(r.getValue("restart_required").jsonPrimitive.boolean, "the daemon wraps the provider at start")
+        assertEquals(twoProfiles.replace(withPoll, withPoll + "xtra_encryption = true\n"), config())
+        assertTrue(listed("work").getValue("xtra_encryption").jsonPrimitive.boolean)
+
+        assertEquals(0, run("profile", "set", "work", "xtra_encryption", "false", "--json"), stderr())
+        assertTrue(json().getValue("previous").jsonPrimitive.boolean)
+        assertEquals(twoProfiles.replace(withPoll, withPoll + "xtra_encryption = false\n"), config())
+
+        assertEquals(0, run("profile", "set", "work", "xtra_encryption", "--unset", "--json"), stderr())
+        assertEquals(twoProfiles, config())
+    }
+
+    @Test
+    fun `set xtra_algorithm takes both algorithms, reports the old one and leaves the rest byte for byte`() {
+        writeConfig(twoProfiles)
+
+        assertEquals(0, run("profile", "set", "work", "xtra_algorithm", "age-v1", "--json"), stderr())
+        val r = json()
+        assertTrue(r.getValue("ok").jsonPrimitive.boolean)
+        assertEquals("age-v1", r.getValue("value").jsonPrimitive.content)
+        assertEquals("aes-gcm", r.getValue("previous").jsonPrimitive.content)
+        assertTrue(r.getValue("restart_required").jsonPrimitive.boolean, "the daemon wraps the provider at start")
+        assertEquals(twoProfiles.replace(withPoll, withPoll + "xtra_algorithm = \"age-v1\"\n"), config())
+        assertEquals("age-v1", listed("work").getValue("xtra_algorithm").jsonPrimitive.content)
+
+        assertEquals(0, run("profile", "set", "work", "xtra_algorithm", "aes-gcm", "--json"), stderr())
+        assertEquals("age-v1", json().getValue("previous").jsonPrimitive.content)
+
+        assertEquals(0, run("profile", "set", "work", "xtra_algorithm", "--unset", "--json"), stderr())
+        assertEquals(twoProfiles, config())
+    }
+
+    @Test
+    fun `set xtra_algorithm refuses anything but the two names`() {
+        writeConfig(twoProfiles)
+        for (bad in listOf("rsa", "age", "3des", "")) {
+            assertEquals(1, run("profile", "set", "work", "xtra_algorithm", bad, "--json"), "value '$bad'")
+            assertEquals("invalid_value", json().getValue("error").jsonPrimitive.content, "value '$bad'")
+        }
+        assertEquals(twoProfiles, config())
+    }
+
     // -- profile set / list: the name of the read-only trash folder --------------------------------
 
     @Test

@@ -65,6 +65,8 @@ internal object ProfileSettings {
     const val FAVORITES_FOLDER_NAME = "favorites_folder_name"
     const val FAVORITES_VIEW = "favorites_view"
     const val AUTHORITY_URL = "authority_url"
+    const val XTRA_ENCRYPTION = "xtra_encryption"
+    const val XTRA_ALGORITHM = "xtra_algorithm"
 
     /** Upper bound of the `ignore_rules` input, in characters; far above any real rule list. */
     const val IGNORE_RULES_MAX_CHARS = 64 * 1024
@@ -226,6 +228,20 @@ internal object ProfileSettings {
                 toToml = { _, raw -> authorityUrlToml(AUTHORITY_URL, raw) },
                 read = { rp -> rp.authority_url?.let(::JsonPrimitive) ?: JsonNull },
             ),
+            Spec(
+                key = XTRA_ENCRYPTION,
+                description = "client-side encryption of this profile's file content: true or false (default false); the key must already exist beside config.toml (unidrive xtra init, or xtra init-age for age-v1)",
+                needsDaemonRestart = true,
+                toToml = { _, raw -> booleanToml(XTRA_ENCRYPTION, raw) },
+                read = { rp -> JsonPrimitive(rp.xtra_encryption ?: false) },
+            ),
+            Spec(
+                key = XTRA_ALGORITHM,
+                description = "the X-tra content algorithm when xtra_encryption is on: aes-gcm or age-v1 (default aes-gcm); switching does not re-encrypt files already stored",
+                needsDaemonRestart = true,
+                toToml = { _, raw -> xtraAlgorithmToml(raw) },
+                read = { rp -> JsonPrimitive(rp.xtra_algorithm ?: "aes-gcm") },
+            ),
         )
 
     private val byKey = SPECS.associateBy { it.key }
@@ -280,6 +296,13 @@ internal object ProfileSettings {
             "true" -> "true"
             "false" -> "false"
             else -> throw ProfileCommandError("invalid_value", "$SHOW_BACKUPS must be auto, true or false, got '$raw'")
+        }
+
+    private fun xtraAlgorithmToml(raw: String): String =
+        when (raw.trim().lowercase()) {
+            "aes-gcm" -> "\"aes-gcm\""
+            "age-v1" -> "\"age-v1\""
+            else -> throw ProfileCommandError("invalid_value", "$XTRA_ALGORITHM must be aes-gcm or age-v1, got '$raw'")
         }
 
     /**
@@ -437,7 +460,7 @@ internal fun writeConfigAtomically(
     name = "set",
     description = [
         "Change one documented key of a profile in config.toml (label, sync_path, hydration_cache_max_bytes, " +
-            "daemon_poll_seconds, honor_gitignore, ignore_rules, trash_folder_name, backups_folder_name, show_backups, shared_folder_name, shared_view, recents_folder_name, recents_view, recents_limit, favorites_folder_name, favorites_view, authority_url). " +
+            "daemon_poll_seconds, honor_gitignore, ignore_rules, trash_folder_name, backups_folder_name, show_backups, shared_folder_name, shared_view, recents_folder_name, recents_view, recents_limit, favorites_folder_name, favorites_view, xtra_encryption, xtra_algorithm, authority_url). " +
             "ignore_rules takes its rules from standard input, " +
             "one per line (an empty input clears them), not from an argument. Credentials and fixed keys (type, mode, sync_root) are refused. " +
             "A running daemon does not reload the config: restart it.",
