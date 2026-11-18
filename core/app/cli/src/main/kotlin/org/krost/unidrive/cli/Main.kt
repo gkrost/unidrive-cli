@@ -855,6 +855,7 @@ fun main(rawArgs: Array<String>) {
     val mainInstance = Main()
     val cmd = CommandLine(mainInstance)
     cmd.executionExceptionHandler = cliExecutionExceptionHandler
+    cmd.executionStrategy = pinSqliteNativeDirStrategy(mainInstance)
     val services =
         org.krost.unidrive.cli.ext.internal
             .CliServicesImpl(mainInstance)
@@ -870,6 +871,41 @@ fun main(rawArgs: Array<String>) {
         System.exit(1)
     }
 }
+
+/** The system property sqlite-jdbc extracts its native library under (it falls back to `java.io.tmpdir`). */
+internal const val SQLITE_TMPDIR_PROPERTY = "org.sqlite.tmpdir"
+
+/**
+ * gkrost/unidrive-cli#706: sqlite-jdbc copies its native library into `org.sqlite.tmpdir` in every JVM that opens a
+ * state.db, lists that folder first to clean up older copies, and leaves a copy behind whenever the JVM is halted. In
+ * the system temp dir (one machine had 1.25 million entries and 332 leaked copies) that listing cost 13-19 s per start.
+ * Pins the folder to `<config dir>/.sqlite-native`, which every unidrive process of this config shares and which stays
+ * small; the dot keeps it apart from profile folders, whose names cannot start with one. The folder beside the jar is
+ * not used: it is read-only under MSIX. An operator's own `-Dorg.sqlite.tmpdir` wins; a folder that cannot be made
+ * leaves the driver's default.
+ */
+internal fun pinSqliteNativeDir(configDir: Path) {
+    if (System.getProperty(SQLITE_TMPDIR_PROPERTY) != null) return
+    val dir = configDir.resolve(".sqlite-native").toAbsolutePath()
+    try {
+        Files.createDirectories(dir)
+    } catch (_: Exception) {
+        return
+    }
+    if (!Files.isWritable(dir)) return
+    System.setProperty(SQLITE_TMPDIR_PROPERTY, dir.toString())
+}
+
+/**
+ * Runs the parsed command (picocli's default, [CommandLine.RunLast]) after [pinSqliteNativeDir]: after parsing, so
+ * `-c` is honoured, and before any command can open a state.db. The daemon goes through `main` too (launcher,
+ * autospawn, the Windows client), so this covers it.
+ */
+internal fun pinSqliteNativeDirStrategy(main: Main): CommandLine.IExecutionStrategy =
+    CommandLine.IExecutionStrategy { parseResult ->
+        pinSqliteNativeDir(main.baseConfigDir)
+        CommandLine.RunLast().execute(parseResult)
+    }
 
 /**
  * Schedule a fallback `Runtime.halt()` after a grace period. Backstop for
