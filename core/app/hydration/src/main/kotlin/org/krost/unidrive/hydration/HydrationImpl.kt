@@ -2402,26 +2402,6 @@ class HydrationImpl(
         val parent: String?,
     )
 
-    /** One read of the rows and slots; [oldestSinceMs] is the stamp [UploadHealth.oldestPendingAgeMs] is measured from. */
-    private class UploadSnapshot(
-        val pending: Int,
-        val inFlight: Int,
-        val failed: Int,
-        val oldestSinceMs: Long?,
-        val takenAtMs: Long,
-        val blocked: BlockedUploads,
-        val retrying: Int,
-        val nextTryAtMs: Long?,
-        val deferred: Int,
-        val conflicts: Int,
-    ) {
-        fun health(nowMs: Long) =
-            UploadHealth(
-                pending, inFlight, failed, oldestSinceMs?.let { (nowMs - it).coerceAtLeast(0) }, blocked, takenAtMs,
-                retrying, nextTryAtMs, deferred = deferred, conflicts = conflicts,
-            )
-    }
-
     private fun takeBlocked(): BlockedUploads = stateDb.blockedUploads(::skipsReplay)
 
     private fun takeUploadSnapshot(): UploadSnapshot {
@@ -3273,8 +3253,7 @@ class HydrationImpl(
         val normalised = path.trimEnd('/').let { if (it == "") "/" else it }
         if (mount.isReadOnlyPath(normalised)) return RmdirResult.Failed(HydrationError.ReadOnly)
         if (renames.blocks(normalised)) return RmdirResult.Busy // archive#1040 M4, see unlinkRow
-        val entry = stateDb.getEntry(normalised)
-            ?: return RmdirResult.Failed(HydrationError.UnknownPath)
+        val entry = stateDb.getEntry(normalised) ?: return rmdirRowless(normalised, recursive, permanent, discardLocal)
         if (!entry.isFolder) return RmdirResult.PathIsFile
 
         // WB-3 (archive#87): the delete tombstones every row below the folder and evicts its cache tree.
@@ -3348,6 +3327,27 @@ class HydrationImpl(
     }
 
 
+
+    // Test drive 2: `rm -rf` of a folder whose row is gone (an rmdir that kept rows below) clears those rows as unlink does.
+    private suspend fun rmdirRowless(folder: String, recursive: Boolean, permanent: Boolean, discardLocal: Boolean): RmdirResult {
+        val rows = stateDb.getEntriesByPrefix(if (folder == "/") "/" else "$folder/")
+        if (rows.isEmpty()) return RmdirResult.Failed(HydrationError.UnknownPath)
+        if (!recursive) return refusedNotEmpty(log, folder, recursive, "alive_descendants")
+        if (!discardLocal) rows.firstOrNull { holdsUnsyncedBytes(it) }?.let { return refusedNotEmpty(log, folder, recursive, "unsynced_bytes", it.path) }
+        for (row in rows.filter { !it.isFolder }) {
+            when (val unlinked = unlinkRow(row.path, permanent)) {
+                UnlinkResult.Ok -> Unit
+                UnlinkResult.Busy -> return RmdirResult.Busy
+                is UnlinkResult.Failed -> return RmdirResult.Failed(unlinked.error)
+                else -> return RmdirResult.Failed(HydrationError.Generic("rmdir failed"))
+            }
+        }
+        for (row in rows.filter { it.isFolder }.sortedByDescending { it.path }) {
+            if (row.remoteId == null) stateDb.deleteEntry(row.path) else mount.deleteRemote(row.path, permanent)
+        }
+        evictCacheTree(folder)
+        return RmdirResult.Ok
+    }
 
     // The enumeration's reap and refresh.run's reset ask this same question before they drop a row or its cache copy;
     // an upload in flight is answered separately (rmdir's busy), so no slot is consulted here.

@@ -108,7 +108,7 @@ internal class MemProvider : CloudProvider {
         return items.values.filter { it.path.substringBeforeLast('/') == parent }
     }
 
-    override suspend fun getMetadata(path: String): CloudItem = items[path] ?: error("not found: $path")
+    override suspend fun getMetadata(path: String): CloudItem = items[path] ?: throw org.krost.unidrive.ProviderException("Item not found: $path")
 
     override suspend fun download(remotePath: String, destination: Path): Long {
         downloads += remotePath
