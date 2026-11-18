@@ -8,6 +8,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import org.krost.unidrive.testing.TestScratch
 
@@ -40,6 +41,15 @@ class AgeV1StrategyTest {
         strategy.decrypt(ByteArrayInputStream(ciphertext), out, ByteArray(strategy.wrappedKeyLength), ByteArray(strategy.ivLength))
     }.toByteArray()
 
+    @Test
+    fun `metadata sizing does not load the identity or request its passphrase`() {
+        val strategy = AgeV1Strategy(
+            lazy { error("metadata requested the identity store") },
+            { error("metadata requested a passphrase") },
+        )
+
+        assertNotNull(strategy.plaintextSizeOf(1024L))
+    }
     @Test
     fun `encrypt writes a standard age file and the round-trip restores the plaintext`() {
         val strategy = strategy()

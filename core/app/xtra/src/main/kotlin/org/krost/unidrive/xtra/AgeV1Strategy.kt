@@ -43,13 +43,14 @@ class AgeV1Strategy(
     // the slot's length is part of the stored layout [plaintextSizeOf] inverts.
     override val wrappedKeyLength: Int = RSA_WRAPPED_KEY_LENGTH
 
-    // The age file's constant overhead — the header's length for our single X25519 stanza plus the payload's
-    // 16-byte nonce — measured once from a zero-byte encrypt minus that empty payload's own final chunk's tag
-    // (kage seals an empty payload as one empty final chunk, the same convention as the AES-GCM strategy's), so
-    // a kage version change cannot silently shift the size arithmetic the listings' inversion depends on.
+    // The age file's constant overhead — the header's length for one X25519 stanza plus the payload's 16-byte
+    // nonce — measured from a zero-byte encrypt with a throwaway public recipient, minus that empty payload's
+    // final chunk tag. kage seals an empty payload as one empty final chunk, the same convention as AES-GCM. Using
+    // a throwaway recipient keeps metadata sizing independent of the protected installation identity and its
+    // passphrase callback; a kage format change still moves the measured overhead and its size arithmetic.
     private val ageFileOverhead: Long by lazy {
         val out = ByteArrayOutputStream()
-        Age.encryptStream(listOf(recipient()), ByteArrayInputStream(ByteArray(0)), out, false)
+        Age.encryptStream(listOf(X25519Identity.Companion.new().recipient()), ByteArrayInputStream(ByteArray(0)), out, false)
         out.size().toLong() - TAG_BYTES
     }
 
