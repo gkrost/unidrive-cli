@@ -2146,6 +2146,28 @@ class InternxtProvider(
             // A create, or the create that follows the archive rename of a replace: the same answers to a 409 and to a
             // lost response. A replace whose create had landed would otherwise fail with the prior content already
             // archived, and its retry would archive the archive.
+            // A create whose outcome is unknown (a lost response, a 500/502/504): the file landed when the parent lists it with
+            // exactly the content just uploaded (same bucket fileId and size), and is adopted; otherwise [cause] stands and the
+            // item fails, for the next pass to reconcile again (gkrost/unidrive-cli#793). A listing that fails proves nothing
+            // either way: the create's own failure is the one raised.
+            @Suppress("TooGenericExceptionCaught", "ThrowsCount")
+            suspend fun landedOrThrow(cause: Exception): org.krost.unidrive.internxt.model.InternxtFile {
+                val listed =
+                    try {
+                        findFileByName(parentUuid, segments.last())
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        log.warn("the listing that checks the create of {} failed too ({}); the create stays failed", remotePath, e.message)
+                        cause.addSuppressed(e)
+                        throw cause
+                    }
+                val landed = listed ?: throw cause
+                val landedSize = landed.size?.toLongOrNull() ?: -1L
+                if (landed.fileId != bucketEntry.id || landedSize != fileSize) throw cause
+                log.info("createFile landed server-side despite the failed answer for {} (uuid={}); adopting", remotePath, landed.uuid)
+                return landed
+            }
             val encryptedName = crypto.encryptName(plainName, "${creds.mnemonic}-$parentUuid")
             val created =
                 try {
@@ -2160,81 +2182,93 @@ class InternxtProvider(
                         modificationTime = localMtime,
                     )
                 } catch (e: InternxtApiException) {
-                    // UD-366 defensive fallback: reconciler/DB drift can leave us POSTing a
-                    // path that already exists on remote.  Safe overwrite requires PROVEN
-                    // content identity; anything else keeps both copies.
-                    if (e.statusCode != 409) throw e
-                    log.warn(
-                        "UD-366: 409 on POST /files for {} (prior file {}) — " +
-                            "reconciler/DB drift or a create that had landed; inspecting remote for content-identity check",
-                        remotePath,
-                        if (archivedPrior) "archived" else "none",
-                    )
-                    // Get the raw InternxtFile (not CloudItem) so we keep fileId, the
-                    // bucket-entry content-address.  parentUuid is already resolved above.
-                    // The candidate is the live file getMetadata would return. A first-hit
-                    // of fullName or baseName adopted `Makefile.am` (or a non-live row)
-                    // when it was listed before the exact name, and a byte compare against
-                    // that wrong row either adopted the sibling or conflict-copied a file
-                    // that was already identical.
-                    val folderContent = api.getFolderContents(parentUuid)
-                    val wantedName = segments.last()
-                    var remoteFile: org.krost.unidrive.internxt.model.InternxtFile? = null
-                    when (val pick = pickCreateCollisionCandidate(folderContent.files, folderContent.children, wantedName, remotePath, log)) {
-                        is CreateCollisionPick.Refuse -> throw e
-                        is CreateCollisionPick.Candidate -> remoteFile = pick.file
-                        // KeepBoth leaves remoteFile null: the ladder below lands a conflict copy.
-                        CreateCollisionPick.KeepBoth -> {}
-                    }
-                    // Content-identity: bucket-entry fileId is Internxt's content-address.
-                    // Equal fileId AND equal size ⇒ provably same content → safe adopt.
-                    // Null fileId, size mismatch, or fileId mismatch → not provably identical
-                    // by the content-address alone. More than one live match is not
-                    // one file either (remoteFile stays null) → keep both.
-                    val remoteFileId = remoteFile?.fileId
-                    val remoteSize = remoteFile?.size?.toLongOrNull() ?: -1L
-                    // bucketEntry.id is never null, so an equal fileId is a present one.
-                    if (remoteFile != null && remoteFile.fileId == bucketEntry.id && remoteSize == fileSize) {
-                        log.info(
-                            "remote {} already has the uploaded content (fileId={}, size={}); adopting its file row",
-                            remotePath, bucketEntry.id, fileSize,
-                        )
-                        // The row already points at this bucket entry. Replacing it with the same fileId is refused by the API.
-                        remoteFile
-                    } else if (
-                        remoteFile != null &&
-                            remoteSize == fileSize &&
-                            sameContentAsRemote(remoteFile, remotePath, localPath, fileSize, tempFile)
-                    ) {
-                        // A fresh upload always gets a new bucket entry, so a different fileId says nothing about the
-                        // content: the bytes decide. Equal: the remote is the file already, adopted as it is (no
-                        // replace, no copy); the bucket entry just sent stays unreferenced.
-                        log.info(
-                            "409 on POST /files for {}: the remote file (uuid={}, size={}) has the same content as the local one; " +
-                                "adopted as the same file, no conflict copy",
-                            remotePath, remoteFile.uuid, fileSize,
-                        )
-                        remoteFile
-                    } else {
-                        // KEEP BOTH: leave remote untouched; land local under a conflict name.
+                    if (e.statusCode in INDETERMINATE_CREATE_STATUSES) {
+                        // #793: a 500/502/504 does not say whether the create committed, like a lost response: reconcile
+                        // by listing, never by a blind second create (it could duplicate a commit the listing lags behind).
                         log.warn(
-                            "UD-366: collision on {} — remote fileId={} size={} differs from local fileId={} size={}; " +
-                                "preserving remote untouched, uploading local as conflict copy",
-                            remotePath, remoteFileId, remoteSize, bucketEntry.id, fileSize,
+                            "POST /files for {} answered {} (requestId={}); listing the parent to check for a server-side commit",
+                            remotePath,
+                            e.statusCode,
+                            e.requestId,
                         )
-                        uploadConflictCopy(
-                            ConflictCopyCreate(
-                                bucket = bucket,
-                                folderUuid = parentUuid,
-                                plainName = plainName,
-                                ext = ext,
-                                size = fileSize,
-                                bucketEntryId = bucketEntry.id,
-                                modificationTime = localMtime,
-                                mnemonic = creds.mnemonic,
-                            ),
+                        landedOrThrow(e)
+                    } else {
+                        // UD-366 defensive fallback: reconciler/DB drift can leave us POSTing a
+                        // path that already exists on remote.  Safe overwrite requires PROVEN
+                        // content identity; anything else keeps both copies.
+                        if (e.statusCode != 409) throw e
+                        log.warn(
+                            "UD-366: 409 on POST /files for {} (prior file {}) — " +
+                                "reconciler/DB drift or a create that had landed; inspecting remote for content-identity check",
+                            remotePath,
+                            if (archivedPrior) "archived" else "none",
                         )
-                    }
+                        // Get the raw InternxtFile (not CloudItem) so we keep fileId, the
+                        // bucket-entry content-address.  parentUuid is already resolved above.
+                        // The candidate is the live file getMetadata would return. A first-hit
+                        // of fullName or baseName adopted `Makefile.am` (or a non-live row)
+                        // when it was listed before the exact name, and a byte compare against
+                        // that wrong row either adopted the sibling or conflict-copied a file
+                        // that was already identical.
+                        val folderContent = api.getFolderContents(parentUuid)
+                        val wantedName = segments.last()
+                        var remoteFile: org.krost.unidrive.internxt.model.InternxtFile? = null
+                        when (val pick = pickCreateCollisionCandidate(folderContent.files, folderContent.children, wantedName, remotePath, log)) {
+                            is CreateCollisionPick.Refuse -> throw e
+                            is CreateCollisionPick.Candidate -> remoteFile = pick.file
+                            // KeepBoth leaves remoteFile null: the ladder below lands a conflict copy.
+                            CreateCollisionPick.KeepBoth -> {}
+                        }
+                        // Content-identity: bucket-entry fileId is Internxt's content-address.
+                        // Equal fileId AND equal size ⇒ provably same content → safe adopt.
+                        // Null fileId, size mismatch, or fileId mismatch → not provably identical
+                        // by the content-address alone. More than one live match is not
+                        // one file either (remoteFile stays null) → keep both.
+                        val remoteFileId = remoteFile?.fileId
+                        val remoteSize = remoteFile?.size?.toLongOrNull() ?: -1L
+                        // bucketEntry.id is never null, so an equal fileId is a present one.
+                        if (remoteFile != null && remoteFile.fileId == bucketEntry.id && remoteSize == fileSize) {
+                            log.info(
+                                "remote {} already has the uploaded content (fileId={}, size={}); adopting its file row",
+                                remotePath, bucketEntry.id, fileSize,
+                            )
+                            // The row already points at this bucket entry. Replacing it with the same fileId is refused by the API.
+                            remoteFile
+                        } else if (
+                            remoteFile != null &&
+                                remoteSize == fileSize &&
+                                sameContentAsRemote(remoteFile, remotePath, localPath, fileSize, tempFile)
+                        ) {
+                            // A fresh upload always gets a new bucket entry, so a different fileId says nothing about the
+                            // content: the bytes decide. Equal: the remote is the file already, adopted as it is (no
+                            // replace, no copy); the bucket entry just sent stays unreferenced.
+                            log.info(
+                                "409 on POST /files for {}: the remote file (uuid={}, size={}) has the same content as the local one; " +
+                                    "adopted as the same file, no conflict copy",
+                                remotePath, remoteFile.uuid, fileSize,
+                            )
+                            remoteFile
+                        } else {
+                            // KEEP BOTH: leave remote untouched; land local under a conflict name.
+                            log.warn(
+                                "UD-366: collision on {} — remote fileId={} size={} differs from local fileId={} size={}; " +
+                                    "preserving remote untouched, uploading local as conflict copy",
+                                remotePath, remoteFileId, remoteSize, bucketEntry.id, fileSize,
+                            )
+                            uploadConflictCopy(
+                                ConflictCopyCreate(
+                                    bucket = bucket,
+                                    folderUuid = parentUuid,
+                                    plainName = plainName,
+                                    ext = ext,
+                                    size = fileSize,
+                                    bucketEntryId = bucketEntry.id,
+                                    modificationTime = localMtime,
+                                    mnemonic = creds.mnemonic,
+                                ),
+                            )
+                        }
+                }
                 } catch (e: java.io.IOException) {
                     // The createFile response was lost (truncated / "server
                     // prematurely closed the connection") AFTER the server may have
@@ -2249,18 +2283,7 @@ class InternxtProvider(
                         remotePath,
                         e.message,
                     )
-                    val landed = findFileByName(parentUuid, segments.last()) ?: throw e
-                    val landedSize = landed.size?.toLongOrNull() ?: -1L
-                    if (landed.fileId == bucketEntry.id && landedSize == fileSize) {
-                        log.info(
-                            "createFile landed server-side despite the lost response for {} (uuid={}); adopting",
-                            remotePath,
-                            landed.uuid,
-                        )
-                        landed
-                    } else {
-                        throw e
-                    }
+                    landedOrThrow(e)
                 }
             finalItem = created.toCloudItem(parentPath)
         }
@@ -5476,6 +5499,9 @@ class InternxtProvider(
                 updatedAt = tryParseInternxtInstant(file.updatedAt),
             )
         }
+
+        // gkrost/unidrive-cli#793: the answers to a file create that leave its outcome unknown (the write ladder does not repeat them).
+        internal val INDETERMINATE_CREATE_STATUSES = setOf(500, 502, 504)
 
         internal fun InternxtFile.isLive(): Boolean = status == "EXISTS" && !isTombstoned()
 
