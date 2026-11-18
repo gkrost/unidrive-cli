@@ -1264,6 +1264,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                 }
             }
         }
+        fileHints.forget(uuid) // the stored object goes with the file (#747)
     }
 
     /**
@@ -1330,6 +1331,8 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                 throw e
             }
         }
+        // A trashed file is not read by its hint any more (#747): an answer that names it again (a restore) is newer.
+        items.filter { it.second == "file" }.forEach { fileHints.forget(it.first) }
     }
 
     /**

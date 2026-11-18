@@ -708,6 +708,9 @@ class InternxtProvider(
                     log.debug("download of {}: the listed object {} was replaced by {}; reading the current one", remotePath, hinted.fileId, current.fileId)
                     return downloadStoredObject(current, remotePath, destination, targetMtimeMillis)
                 }
+                // The hinted object is really the current one and it failed (#747): the next attempt asks the meta call
+                // first instead of reading the same dead object by the hint again.
+                api.fileHints.forget(fileUuid)
             }
             throw e
         }
