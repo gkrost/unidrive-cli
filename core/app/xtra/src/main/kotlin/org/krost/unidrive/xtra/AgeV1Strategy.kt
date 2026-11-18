@@ -31,7 +31,7 @@ class AgeV1Strategy(
     private val passphrase: () -> CharArray,
 ) : XtraEncryptionStrategy {
     // The kage types stay inside this module: the caller hands the key store and the passphrase, the identity
-    // is loaded (or, on first use, generated) here.
+    // is loaded here.
     private val identity: Lazy<X25519Identity> = lazy { keyStore.value.load(passphrase()) }
 
     override val algorithmId: Byte = 2
