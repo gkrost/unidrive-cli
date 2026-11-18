@@ -19,7 +19,7 @@ class DaemonConflictLogTest {
         val loser = TestScratch.directory("ud-768-src").resolve("doc.txt")
         Files.writeString(loser, "losing bytes")
 
-        val entry = daemonConflictLog("work", configDir, dataRoot).record("/doc.txt", "MODIFIED", "MODIFIED", "LAST_WRITER_WINS", loser)
+        val entry = daemonConflictLog("work", configDir, dataRoot.resolve("work")).record("/doc.txt", "MODIFIED", "MODIFIED", "LAST_WRITER_WINS", loser)
 
         assertTrue(Files.readString(configDir.resolve("conflicts.jsonl")).contains("\"/doc.txt\""))
         val backup = dataRoot.resolve("work").resolve("conflict-backups").resolve(entry.backupFile!!)

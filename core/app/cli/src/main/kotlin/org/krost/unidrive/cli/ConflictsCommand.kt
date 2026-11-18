@@ -1,6 +1,5 @@
 package org.krost.unidrive.cli
 
-import org.krost.unidrive.io.Os
 import org.krost.unidrive.sync.ConflictLog
 import picocli.CommandLine
 import picocli.CommandLine.Command
@@ -9,7 +8,6 @@ import picocli.CommandLine.Option
 import picocli.CommandLine.Parameters
 import picocli.CommandLine.ParentCommand
 import picocli.CommandLine.Spec
-import java.nio.file.Paths
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -30,19 +28,7 @@ class ConflictsCommand : Runnable {
 
     fun conflictLog(): ConflictLog {
         val profile = parent.resolveCurrentProfile()
-        val dataDir =
-            if (Os.isWindows()) {
-                val localAppData = System.getenv("LOCALAPPDATA") ?: System.getProperty("user.home")
-                Paths.get(localAppData, "unidrive", profile.name)
-            } else {
-                Paths.get(
-                    System.getenv("HOME") ?: System.getProperty("user.home"),
-                    ".local",
-                    "share",
-                    "unidrive",
-                    profile.name,
-                )
-            }
+        val dataDir = profileDataDir(profile.name)
         return ConflictLog(
             logFile = parent.providerConfigDir().resolve("conflicts.jsonl"),
             backupDir = dataDir.resolve("conflict-backups"),

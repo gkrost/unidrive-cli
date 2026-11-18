@@ -1266,20 +1266,14 @@ internal fun stateRecoveryJson(r: StateDbRecovery): String =
 
 /**
  * #768: the daemon's conflict log, where `unidrive sync` writes it and `unidrive conflicts` reads it: the journal in the
- * profile's config folder [configDir], the loser backups in `<dataRoot>/<profile>/conflict-backups` (LOCALAPPDATA on
- * Windows, ~/.local/share elsewhere).
+ * profile's config folder [configDir], the loser backups in the profile's data folder [dataDir] ([profileDataDir]).
  */
 internal fun daemonConflictLog(
     profileName: String,
     configDir: Path,
-    dataRoot: Path =
-        if (Os.isWindows()) {
-            java.nio.file.Paths.get(System.getenv("LOCALAPPDATA") ?: System.getProperty("user.home"), "unidrive")
-        } else {
-            java.nio.file.Paths.get(System.getenv("HOME") ?: System.getProperty("user.home"), ".local", "share", "unidrive")
-        },
+    dataDir: Path = profileDataDir(profileName),
 ): ConflictLog =
     ConflictLog(
         logFile = configDir.resolve("conflicts.jsonl"),
-        backupDir = dataRoot.resolve(profileName).resolve("conflict-backups"),
+        backupDir = dataDir.resolve("conflict-backups"),
     )

@@ -5,7 +5,6 @@ import org.krost.unidrive.authenticateAndLog
 import org.krost.unidrive.cli.ext.CliExtension
 import org.krost.unidrive.cli.ext.CliExtensionRegistrar
 import org.krost.unidrive.cli.ext.CliServices
-import org.krost.unidrive.io.Os
 import org.krost.unidrive.sync.ConflictLog
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
@@ -13,7 +12,6 @@ import picocli.CommandLine.Parameters
 import picocli.CommandLine.ParentCommand
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.Paths
 
 /**
  * CLI surface for the tracking-set engine.
@@ -216,19 +214,7 @@ class TsSyncCommand : Runnable {
             // The conflict journal follows the legacy convention the `unidrive conflicts`
             // command reads (same split as SyncCommand): conflicts.jsonl in the profile's
             // provider config dir, backups under the profile data dir.
-            val conflictDataDir =
-                if (Os.isWindows()) {
-                    val localAppData = System.getenv("LOCALAPPDATA") ?: System.getProperty("user.home")
-                    Paths.get(localAppData, "unidrive", ctx.profileName)
-                } else {
-                    Paths.get(
-                        System.getenv("HOME") ?: System.getProperty("user.home"),
-                        ".local",
-                        "share",
-                        "unidrive",
-                        ctx.profileName,
-                    )
-                }
+            val conflictDataDir = org.krost.unidrive.cli.profileDataDir(ctx.profileName)
             val conflictLog =
                 ConflictLog(
                     logFile = ctx.configDir.resolve("conflicts.jsonl"),
