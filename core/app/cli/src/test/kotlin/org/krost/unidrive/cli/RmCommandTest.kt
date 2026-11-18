@@ -344,6 +344,56 @@ class RmCommandTest {
         }
     }
 
+    /** A recursive `rm` of /dir against a daemon whose rmdir answers [rmdirReply]; returns the JSON refusal. */
+    private fun refusedRecursiveRm(rmdirReply: String): JsonObject {
+        seedTree()
+        var reply: JsonObject? = null
+        withFakeDaemon(unlinkReply = """{"ok":false,"error":"path_is_folder"}""", rmdirReply = rmdirReply) {
+            assertEquals(1, rm("-r", "--yes", "--json", "/dir"))
+            reply = jsonReply()
+        }
+        return reply!!
+    }
+
+    private fun JsonObject.message(): String = getValue("message").jsonPrimitive.content
+
+    @Test
+    fun `a refusal for unsynced bytes stays unsynced_below and names the file`() {
+        val r = refusedRecursiveRm("""{"ok":false,"error":"not_empty","reason":"unsynced_bytes","child":"/dir/new.txt"}""")
+        assertEquals("unsynced_below", r.str("error"))
+        assertTrue("/dir/new.txt" in r.message(), r.message())
+    }
+
+    @Test
+    fun `a refusal for a child the engine has not seen yet is remote_unobserved, not unsynced_below`() {
+        val r = refusedRecursiveRm("""{"ok":false,"error":"not_empty","reason":"remote_unobserved","child":"/dir/late.txt"}""")
+        assertEquals("remote_unobserved", r.str("error"))
+        assertTrue("not seen yet" in r.message(), r.message())
+        assertTrue("try again shortly" in r.message(), r.message())
+        assertFalse("has not received" in r.message(), "a listing lag is not unsynced local changes: ${r.message()}")
+    }
+
+    @Test
+    fun `a refusal for a child that changed in the cloud is remote_changed`() {
+        val r = refusedRecursiveRm("""{"ok":false,"error":"not_empty","reason":"remote_changed","child":"/dir/a.txt"}""")
+        assertEquals("remote_changed", r.str("error"))
+        assertTrue("/dir/a.txt" in r.message(), r.message())
+    }
+
+    @Test
+    fun `a refusal because the provider still lists children is provider_not_empty`() {
+        val r = refusedRecursiveRm("""{"ok":false,"error":"not_empty","reason":"provider_not_empty"}""")
+        assertEquals("provider_not_empty", r.str("error"))
+        assertTrue("try again shortly" in r.message(), r.message())
+    }
+
+    @Test
+    fun `a refusal reason the cli does not know is passed through verbatim`() {
+        val r = refusedRecursiveRm("""{"ok":false,"error":"not_empty","reason":"some_future_reason"}""")
+        assertEquals("some_future_reason", r.str("error"))
+        assertTrue("some_future_reason" in r.message(), r.message())
+    }
+
     @Test
     fun `a daemon that holds the profile but does not answer is refused and nothing is deleted`() {
         seedTree()
