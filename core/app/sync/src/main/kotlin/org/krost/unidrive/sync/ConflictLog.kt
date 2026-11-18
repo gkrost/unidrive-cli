@@ -6,7 +6,6 @@ import org.krost.unidrive.io.engineRelative
 import kotlinx.serialization.json.Json
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardOpenOption
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -40,7 +39,8 @@ open class ConflictLog(
 
     /**
      * Record a conflict resolution.
-     * If [loserFile] is non-null, copies it to [backupDir] with a timestamped name.
+     * If [loserFile] is non-null, copies it to [backupDir] with a timestamped name; a copy that fails throws.
+     * The journal line is best effort (#779): a write error is logged once per episode and does not throw.
      */
     open fun record(
         path: String,
@@ -77,9 +77,11 @@ open class ConflictLog(
                 backupFile = backupName,
             )
 
-        Files.createDirectories(logFile.parent)
-        val line = json.encodeToString(Entry.serializer(), entry) + "\n"
-        Files.writeString(logFile, line, StandardOpenOption.CREATE, StandardOpenOption.APPEND)
+        // #779: the journal line is a diary of what happened. Callers record after a keep-aside has moved the file, so a
+        // write error here (full disk, unwritable folder) is logged once and dropped: failing the action now would leave
+        // its side effect done, and the retry would make a second conflict copy. The backup above is data: its error
+        // still fails the caller, which records before it replaces the loser.
+        appendJournalLine(logFile, json.encodeToString(Entry.serializer(), entry), "conflict journal")
         return entry
     }
 
