@@ -461,6 +461,7 @@ class HydrationImpl(
         // gkrost/unidrive-cli#391: a cache copy the enumeration's reap removes (a delete seen in the cloud, a gone folder) leaves the
         // running total at once; before, it stayed in `cache.bytes` until the next walk, up to EVICTION_RECONCILE_INTERVAL_MS later.
         mount.onReapedCacheCopy { path -> forgetCacheFile(path) }
+        pause.onResume { recoveryUploadScope.launch { offerFailedPendingUploadsAgain() } } // test drive 2 E3
     }
 
     // archive#728: epoch ms of the last walk of the cache directory (0 = none yet). One walk per
@@ -1199,7 +1200,7 @@ class HydrationImpl(
         // upload may otherwise record its refusal after open_write cleared it. Recovery replays keep the refusal.
         clearRefusalOfClientRetry(path, handleId)
         // archive#493: the provider refused exactly these bytes before; asking again would be refused again.
-        refusedEarlier(path, cachePath)?.let { reason ->
+        refusedEarlier(path, cachePath, engineOffer = handleId.startsWith("engine-"))?.let { reason ->
             val err = storedRefusalError(reason)
             _events.emit(HydrationEvent.Failed(path, err, retryScheduled = false))
             log.info("upload of {} not attempted: the provider refused this content before ({})", path, reason)
@@ -1417,6 +1418,7 @@ class HydrationImpl(
         _events.emit(HydrationEvent.Failed(path, err, retryScheduled = false))
         log.warn("upload of {} refused by the provider, not retrying ({}): {}", path, err.message, e.message ?: "upload refused")
         tombstoneIfGone(err, path)
+        if (err is HydrationError.ParentGone) offerExhaustedUploadAgain(path) // test drive 2 E3: never stranded
         tx?.finishRefused(reason, errorClass = e.javaClass.simpleName, message = e.message)
         return HydrationEvent.Completed(
             path = path,
@@ -1650,7 +1652,7 @@ class HydrationImpl(
             val cachePath = cacheCopy(pass, path) ?: continue
             if (path in reservedByReplace) continue // gkrost/unidrive-cli#311: a replace still owes this name; its file is reserved
             if (refusedForTwin(path)) continue // gkrost/unidrive-cli#24: one spelling's bytes under the name both share
-            if (refusedEarlier(path, cachePath) != null) { refused++; continue } // archive#493: not replayed at every start
+            if (refusedEarlier(path, cachePath, engineOffer = true) != null) { refused++; continue } // archive#493: not replayed at every start
             if (failedReplayDelayMs > 0 && stateDb.getEntry(path)?.lastErrorAt != null) {
                 deferred++
                 val fallbackId = "engine-replay-late-$deferred"
@@ -1661,7 +1663,7 @@ class HydrationImpl(
                     if (entry == null || entry.remoteId != null || !entry.isHydrated) return@launch // gone or uploaded
                     if (uploadSlots.containsKey(path) || !replayable(path)) return@launch
                     if (replaceReserves(path)) return@launch // gkrost/unidrive-cli#311: a replace still owes this name
-                    if (refusedEarlier(path, mount.resolveCachePath(path)) != null) return@launch // refused meanwhile
+                    if (refusedEarlier(path, mount.resolveCachePath(path), engineOffer = true) != null) return@launch // refused meanwhile
                     launchSerializedUpload(path, mount.resolveCachePath(path), lateReplayHandleOf(path, snapshot, fallbackId), baseEtag = null)
                 }
                 continue
@@ -1707,7 +1709,7 @@ class HydrationImpl(
                 val baselineSize = entry.localSize ?: continue
                 if (stamp == "$baselineMtime|$baselineSize") continue // clean: the cache copy is the baseline
             }
-            if (refusedEarlier(path, cachePath) != null) { refused++; continue }
+            if (refusedEarlier(path, cachePath, engineOffer = true) != null) { refused++; continue }
             if (failedReplayDelayMs > 0 && entry.lastErrorAt != null) {
                 dirtyDeferred++
                 val fallbackId = "engine-dirty-late-$dirtyDeferred"
@@ -1719,7 +1721,7 @@ class HydrationImpl(
                     if (uploadSlots.containsKey(path) || !replayable(path)) return@launch
                     if (replaceReserves(path)) return@launch // gkrost/unidrive-cli#311: a replace still owes this name
                     val cp = mount.resolveCachePath(path)
-                    if (refusedEarlier(path, cp) != null) return@launch
+                    if (refusedEarlier(path, cp, engineOffer = true) != null) return@launch
                     launchDirtyReplay(now, cp, lateReplayHandleOf(path, snapshot, fallbackId))
                 }
                 continue
@@ -1885,13 +1887,24 @@ class HydrationImpl(
             val waitingForUpload = if (entry.remoteId == null) entry.isHydrated else isDirtyReplayCandidate(entry)
             if (!waitingForUpload || uploadSlots.containsKey(path) || !replayable(path)) return@launch
             val cachePath = mount.resolveCachePath(path)
-            if (refusedEarlier(path, cachePath) != null) return@launch
+            if (refusedEarlier(path, cachePath, engineOffer = true) != null) return@launch
             val handleId = "engine-retry-$round"
             if (entry.remoteId == null) {
                 launchSerializedUpload(path, cachePath, handleId, baseEtag = null)
             } else {
                 launchDirtyReplay(entry, cachePath, handleId)
             }
+        }
+    }
+
+    // Test drive 2, E3: a resume offers again every never-uploaded file whose last upload failed and that nothing uploads now
+    // (a parent_gone refusal, a ladder that ran out while the daemon was paused); the provider's refusal of these exact bytes
+    // still holds them back (refusedEarlier).
+    private suspend fun offerFailedPendingUploadsAgain() {
+        for (row in pendingUploadSplit().waiting) {
+            if (row.lastErrorAt == null || uploadSlots.containsKey(row.path) || !replayable(row.path)) continue
+            val cachePath = mount.resolveCachePath(row.path)
+            if (refusedEarlier(row.path, cachePath, engineOffer = true) == null) launchSerializedUpload(row.path, cachePath, "engine-resume-retry", baseEtag = null)
         }
     }
 
@@ -1944,7 +1957,9 @@ class HydrationImpl(
         runCatching { "${Files.getLastModifiedTime(cachePath).toMillis()}|${Files.size(cachePath)}" }.getOrNull()
 
     // The reason the provider refused this path's upload, when the refusal was for exactly the content the cache holds now.
-    private fun refusedEarlier(path: String, cachePath: Path): String? {
+    // [engineOffer]: the engine's own offer (a start's replay, a backoff round, a resume; `engine-` handles), which a parent_gone
+    // refusal does not hold back (test drive 2, E3: a gone folder can come back). The co-daemon's `recovery-` offers still are.
+    private fun refusedEarlier(path: String, cachePath: Path, engineOffer: Boolean = false): String? {
         val refusal = runCatching { stateDb.uploadRefusal(path) }.getOrNull() ?: return null
         val stamp = refusalStamp(cachePath) ?: return null
         if (!refusal.startsWith("$stamp|")) return null
@@ -1952,6 +1967,7 @@ class HydrationImpl(
         // Legacy refusals have no deadline: make them eligible once after upgrade.
         val retryAt = detail.substringBefore('|').toLongOrNull() ?: return null
         val reason = detail.substringAfter('|', "upload refused")
+        if (engineOffer && HydrationError.ParentGone.parse(reason) != null) return null
         return if (System.currentTimeMillis() < retryAt) reason else null
     }
 
