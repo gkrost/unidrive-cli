@@ -1456,6 +1456,7 @@ class HydrationImpl(
         tx: TransferHandle?,
         onPermitAcquired: () -> Unit,
     ): UploadOutcome {
+        rmdirWindow.awaitDeletesAbove(path) // live drive E3: never into a folder whose delete is in flight
         while (true) {
             if (pause.isPaused) {
                 // Waiting out a pause is not waiting for a transfer: the waiting slot is handed over now, or a long
@@ -3308,8 +3309,7 @@ class HydrationImpl(
         }
 
         return runCatching {
-            val kept = mount.deleteRemote(normalised, permanent, keepBelow)
-            if (kept.isNotEmpty()) deletedWithKeptRows += normalised
+            val kept = rmdirWindow.deleting(normalised) { mount.deleteRemote(normalised, permanent, keepBelow) }
             evictCacheTree(normalised, kept)
             RmdirResult.Ok
         }.getOrElse { e ->
@@ -3404,17 +3404,10 @@ class HydrationImpl(
     // a no-op and a partial failure must not abort the op (the cloud delete
     // already succeeded). Deletes children before parents so the directory
     // empties before it is removed.
-    // gkrost/unidrive-cli#746 finding 3: the folders a recursive rmdir deleted while it kept rows below them (made or written during
-    // its provider delete). The upload of such a row finds its folder gone: only a folder in here (or below one) is made again.
-    private val deletedWithKeptRows: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    private val rmdirWindow = RmdirWindow() // gkrost/unidrive-cli#746 finding 3, live drive E3
 
-    private suspend fun remakeFolderOfKeptRow(gone: String): Boolean {
-        val deleted = deletedWithKeptRows.firstOrNull { gone == it || gone.startsWith("$it/") } ?: return false
-        if (stateDb.getEntry(gone) != null) return false
-        val made = mkdirParents(gone).let { it == MkdirResult.Ok || it == MkdirResult.Existed }
-        if (made && gone == deleted) deletedWithKeptRows -= deleted
-        return made
-    }
+    private suspend fun remakeFolderOfKeptRow(gone: String): Boolean =
+        rmdirWindow.remakeIfKept(gone, { stateDb.getEntry(it) != null }) { mkdirParents(it).let { r -> r == MkdirResult.Ok || r == MkdirResult.Existed } }
 
     // gkrost/unidrive-cli#746 finding 3: the copies of [keep] (rows the delete left alive) stay.
     private fun evictCacheTree(path: String, keep: Set<String> = emptySet()) {

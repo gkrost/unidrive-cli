@@ -15,6 +15,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.minutes
 
 /**
@@ -102,6 +103,67 @@ class HydrationRmdirDuringDeleteTest {
             assertEquals("only copy", env.provider.remote["/dir/new.txt"]?.let { String(it) })
             assertEquals(true, env.provider.items["/dir"]?.isFolder, "the folder is back in the cloud")
             assertNotNull(env.db.getEntry("/dir/new.txt")?.remoteId, "the kept row is cloud-backed now")
+        }
+
+    // Live drive E3 t1: the new file's upload ran while the folder's provider delete was in flight, landed INTO the old folder,
+    // and went to the trash with it. An upload below a folder whose delete is in flight waits for that delete, then puts the
+    // folder back and lands in it.
+    @Test
+    fun `an upload below a folder whose delete is in flight waits for it, then lands in the folder put back`() =
+        runTest(timeout = 5.minutes) {
+            val env = syncedTree()
+            env.provider.requireParents = true
+            val hydration = HydrationImpl(env.engine, env.db, recoveryUploadScope = this)
+            val events = mutableListOf<HydrationEvent>()
+            val collector = launch { hydration.events.collect { events.add(it) } }
+            val reached = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            env.provider.deleteReached = reached
+            env.provider.deleteRelease = release
+
+            val rmdir = async(Dispatchers.IO) { hydration.rmdir("/dir", recursive = true) }
+            reached.await()
+            val created = assertIs<CreateResult.Ok>(hydration.create("conn", "h1", "/dir/new.txt"))
+            Files.writeString(created.cachePath, "only copy")
+            hydration.openForWrite("conn", "h1", "/dir/new.txt", created.cachePath)
+            advanceUntilIdle()
+            assertEquals(0, env.provider.uploadAttempts.get(), "no upload below the folder while its delete is in flight")
+
+            release.complete(Unit)
+            assertIs<RmdirResult.Ok>(rmdir.await())
+            advanceUntilIdle()
+            collector.cancel()
+
+            val completed = events.filterIsInstance<HydrationEvent.Completed>().single { it.handleId == "h1" }
+            assertEquals(true, completed.ok, "one attempt series lands it: $completed")
+            assertEquals("only copy", env.provider.remote["/dir/new.txt"]?.let { String(it) })
+            assertEquals(true, env.provider.items["/dir"]?.isFolder, "the folder is back in the cloud")
+        }
+
+    // Live drive E3 t2/t3: when the folder cannot be put back, the refused file stays visible below it in the mount's listing.
+    @Test
+    fun `a kept file whose folder cannot be put back stays listed`() =
+        runTest(timeout = 5.minutes) {
+            val env = syncedTree()
+            env.provider.requireParents = true
+            val hydration = HydrationImpl(env.engine, env.db, recoveryUploadScope = this)
+            val reached = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            env.provider.deleteReached = reached
+            env.provider.deleteRelease = release
+            val rmdir = async(Dispatchers.IO) { hydration.rmdir("/dir", recursive = true) }
+            reached.await()
+            val created = assertIs<CreateResult.Ok>(hydration.create("conn", "h1", "/dir/new.txt"))
+            Files.writeString(created.cachePath, "only copy")
+            release.complete(Unit)
+            assertIs<RmdirResult.Ok>(rmdir.await())
+            env.provider.createFolderFailure = IllegalStateException("folder create refused")
+
+            hydration.openForWrite("conn", "h1", "/dir/new.txt", created.cachePath)
+            advanceUntilIdle()
+
+            val listed = assertIs<ListResult.Ok>(hydration.list("/dir"))
+            assertTrue(listed.entries.any { it.path.endsWith("/new.txt") }, "the refused file is still listed: ${listed.entries}")
         }
 
     @Test

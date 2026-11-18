@@ -183,7 +183,11 @@ internal class MemProvider : CloudProvider {
         items.remove(remotePath)
     }
 
+    // When set, createFolder throws it.
+    @Volatile var createFolderFailure: Exception? = null
+
     override suspend fun createFolder(path: String): CloudItem {
+        createFolderFailure?.let { throw it }
         val at = java.time.Instant.parse("2026-03-28T12:00:00Z")
         val item =
             CloudItem(
