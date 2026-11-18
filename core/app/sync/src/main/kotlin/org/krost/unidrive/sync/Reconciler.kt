@@ -143,8 +143,25 @@ class Reconciler(
     ): Boolean {
         if (remote?.isFolder == true || entry?.isFolder == true) return true
         val local = safeResolveLocalOrNull(syncRoot, path) ?: return false
-        return Files.isDirectory(local)
+        return isDirectoryOnDisk(local)
     }
+
+    // #770: the ignore verdict for a path whose folder facet is not known up front. The rules are asked as a file and as a
+    // directory first: when both answers agree (always, with no rules wired or with rules blind to the facet), the
+    // facet cannot change the verdict and the disk is not asked. Only a verdict that depends on it pays the stat.
+    private fun ignoredWithFacet(
+        path: String,
+        remote: CloudItem?,
+        entry: SyncEntry?,
+    ): Boolean {
+        if (remote?.isFolder == true || entry?.isFolder == true) return isIgnored(path, true)
+        val asFile = isIgnored(path, false)
+        if (asFile == isIgnored(path, true)) return asFile
+        return isIgnored(path, directoryFacet(path, remote, entry))
+    }
+
+    // #770: the disk side of [directoryFacet]; a test substitutes a counting wrapper (as [entryLookup]).
+    internal var isDirectoryOnDisk: (java.nio.file.Path) -> Boolean = { Files.isDirectory(it) }
 
     // archive#316: how resolveSlice reads the rows its page needs. The default asks the state database in
     // bounded chunks of indexed path lookups, so a streamed gather reads the page's and the local
@@ -286,7 +303,7 @@ class Reconciler(
         val allPaths =
             (remoteChangesLocal.keys + localChanges.keys)
                 .filter { path -> excludePatterns.none { pattern -> matchesGlob(path, pattern) } }
-                .filterNot { path -> isIgnored(path, directoryFacet(path, remoteChangesLocal[path], entryByPath[path])) }
+                .filterNot { path -> ignoredWithFacet(path, remoteChangesLocal[path], entryByPath[path]) }
         val pinRules = db.getPinRules()
 
         // UD-240g: heartbeat into reporter every 5k items / 10s during the main
@@ -567,7 +584,7 @@ class Reconciler(
         val requestedPaths = candidates.toHashSet()
         val entryByPath = entryLookup(candidates).values.filter { it.path in requestedPaths }.associateBy { it.path }
         val allPaths =
-            candidates.filterNot { path -> isIgnored(path, directoryFacet(path, pageRemoteLocal[path], entryByPath[path])) }
+            candidates.filterNot { path -> ignoredWithFacet(path, pageRemoteLocal[path], entryByPath[path]) }
 
         for (path in allPaths) {
             val remoteItem = pageRemoteLocal[path]
@@ -1377,7 +1394,7 @@ class Reconciler(
     }
 
     private fun settleTouchedFolderConflicts(actions: MutableList<SyncAction>, remote: Map<String, CloudItem>, entryByPath: Map<String, SyncEntry>) =
-        settleTouchedFolderConflictsIn(actions, remote, entryByPath) { p, item -> excludePatterns.any { matchesGlob(p, it) } || isIgnored(p, directoryFacet(p, item, entryByPath[p])) }
+        settleTouchedFolderConflictsIn(actions, remote, entryByPath) { p, item -> excludePatterns.any { matchesGlob(p, it) } || ignoredWithFacet(p, item, entryByPath[p]) }
 
     // The second remote-side guard: a folder delete must not run when the listing this plan reconciled on shows
     // live content below it that no action deletes — a path the scan skips (excluded or ignored), or one without
@@ -1392,7 +1409,7 @@ class Reconciler(
     ) {
         val held =
             folderDeletesHoldingUnplannedRemoteItems(actions, remoteChangesLocal, entryByPath) { path, item ->
-                excludePatterns.any { matchesGlob(path, it) } || isIgnored(path, directoryFacet(path, item, entryByPath[path]))
+                excludePatterns.any { matchesGlob(path, it) } || ignoredWithFacet(path, item, entryByPath[path])
             }
         if (held.isEmpty()) return
         actions.removeAll(held.toSet())
