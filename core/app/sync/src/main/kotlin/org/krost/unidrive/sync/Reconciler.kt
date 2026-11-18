@@ -1432,6 +1432,39 @@ class Reconciler(
         }
     }
 
+    private class FolderMoveCandidate(val del: SyncAction.DeleteRemote, val score: Int, val movedNames: Set<String>)
+
+    // The folder deletes that can be the source of [create]: same basename, a folder row with a remote id, at least one
+    // child name the old folder held (a row under it) that the new folder uploads or creates, and the old folder gone
+    // from disk (#743 finding 10). Each carries its parent-segment overlap with [create] (UD-240k) and the shared names.
+    private fun folderMoveCandidates(
+        create: SyncAction.CreateRemoteFolder,
+        deletes: List<SyncAction.DeleteRemote>,
+        actions: List<SyncAction>,
+        entryByPath: Map<String, SyncEntry>,
+        matchedFolderDeletes: Set<String>,
+    ): List<FolderMoveCandidate> {
+        val newName = create.path.substringAfterLast("/")
+        val createParentSegs = parentSegments(create.path)
+        val newPrefix = create.path + "/"
+        val newNames =
+            actions
+                .filter { (it is SyncAction.Upload || it is SyncAction.CreateRemoteFolder) && it.path.startsWith(newPrefix) }
+                .mapTo(HashSet()) { it.path.removePrefix(newPrefix) }
+        return deletes
+            .asSequence()
+            .filter { it.path !in matchedFolderDeletes }
+            .filter { it.path.substringAfterLast("/") == newName }
+            .mapNotNull { d ->
+                val e = entryByPath[d.path] ?: return@mapNotNull null
+                if (!e.isFolder || e.remoteId == null) return@mapNotNull null
+                val oldPrefix = d.path + "/"
+                val shared = newNames.filterTo(HashSet()) { (oldPrefix + it) in entryByPath }
+                if (shared.isEmpty() || !isAbsentLocally(d.path)) return@mapNotNull null
+                FolderMoveCandidate(d, commonPrefixSegments(parentSegments(d.path), createParentSegs), shared)
+            }.toList()
+    }
+
     private fun detectMoves(
         actions: MutableList<SyncAction>,
         entryByPath: Map<String, SyncEntry>,
@@ -1463,8 +1496,6 @@ class Reconciler(
         val matchedFolderCreates = mutableSetOf<String>()
         for (create in folderCreates) {
             if (create.path in matchedFolderCreates) continue
-            val newName = create.path.substringAfterLast("/")
-            val createParentSegs = parentSegments(create.path)
 
             // Find the best matching delete: same basename, has a folder DB
             // row with remoteId, longest common parent-segment overlap with
@@ -1481,25 +1512,8 @@ class Reconciler(
             // #743 finding 10: a candidate also needs evidence that the new folder is the old one: at least one child
             // name the old folder held (a row under it) that the new folder uploads or creates, and the old folder gone
             // from disk. A same-named folder alone is two independent operations, not a move.
-            data class Candidate(val del: SyncAction.DeleteRemote, val score: Int, val movedNames: Set<String>)
             val newPrefix = create.path + "/"
-            val newNames =
-                actions
-                    .filter { (it is SyncAction.Upload || it is SyncAction.CreateRemoteFolder) && it.path.startsWith(newPrefix) }
-                    .mapTo(HashSet()) { it.path.removePrefix(newPrefix) }
-            val candidates = deletes
-                .asSequence()
-                .filter { it.path !in matchedFolderDeletes }
-                .filter { it.path.substringAfterLast("/") == newName }
-                .mapNotNull { d ->
-                    val e = entryByPath[d.path] ?: return@mapNotNull null
-                    if (!e.isFolder || e.remoteId == null) return@mapNotNull null
-                    val oldPrefix = d.path + "/"
-                    val shared = newNames.filterTo(HashSet()) { (oldPrefix + it) in entryByPath }
-                    if (shared.isEmpty() || !isAbsentLocally(d.path)) return@mapNotNull null
-                    Candidate(d, commonPrefixSegments(parentSegments(d.path), createParentSegs), shared)
-                }
-                .toList()
+            val candidates = folderMoveCandidates(create, deletes, actions, entryByPath, matchedFolderDeletes)
             if (candidates.isEmpty()) continue
             val maxScore = candidates.maxOf { it.score }
             // UD-240k ambiguous-zero guard: when several candidates share
