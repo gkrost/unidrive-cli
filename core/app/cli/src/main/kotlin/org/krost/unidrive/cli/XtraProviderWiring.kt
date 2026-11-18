@@ -11,6 +11,7 @@ import org.krost.unidrive.xtra.XtraPlaintextListings
 import org.krost.unidrive.xtra.XtraKeyManager
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlin.system.exitProcess
 
 /**
  * The X-tra layer (client-side encryption, config key `xtra_encryption`): every provider this CLI builds is
@@ -29,8 +30,7 @@ internal fun Main.wrapWithXtra(
     if (!Files.exists(keyPath)) {
         System.err.println("Error: a profile sets xtra_encryption but $keyPath does not exist.")
         System.err.println("Create it first: unidrive xtra init")
-        System.exit(1)
-        throw IllegalStateException("unreachable")
+        exitProcess(1)
     }
     val strategy =
         when (val algorithm = rp?.xtra_algorithm?.trim()?.takeIf { it.isNotEmpty() } ?: "aes-gcm") {
@@ -42,8 +42,7 @@ internal fun Main.wrapWithXtra(
                 if (!Files.exists(ageKeyPath)) {
                     System.err.println("Error: a profile sets xtra_algorithm = \"age-v1\" but $ageKeyPath does not exist.")
                     System.err.println("Create it first: unidrive xtra init-age")
-                    System.exit(1)
-                    error("unreachable")
+                    exitProcess(1)
                 }
                 AgeV1Strategy(
                     lazy { XtraAgeKeyStore(ageKeyPath) },
@@ -52,8 +51,7 @@ internal fun Main.wrapWithXtra(
             }
             else -> {
                 System.err.println("Error: unknown xtra_algorithm \"$algorithm\" (known: aes-gcm, age-v1).")
-                System.exit(1)
-                throw IllegalStateException("unreachable")
+                exitProcess(1)
             }
         }
     // The listings decorator sits below the cipher, so both halves see the same provider: the listings answer
