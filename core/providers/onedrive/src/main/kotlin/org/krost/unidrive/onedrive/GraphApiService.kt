@@ -955,13 +955,14 @@ class GraphApiService(
         // Two attempts: the probe-then-PUT race window means a session reported alive at
         // resolveUploadSession can be gone by the first chunk. A second attempt with a
         // freshly-minted session closes that race transparently to the caller.
+        // #748 finding 11: only the session's own 404/410 (UploadSessionGoneException) is retried. A 404 from the create
+        // or a path lookup (a parent folder that no longer exists) is the real error and surfaces at once.
         var lastSessionGone: GraphApiException? = null
         repeat(2) { attempt ->
             try {
                 return uploadLargeFileOnce(localPath, UploadTarget(remotePath, itemId), fileSize, onProgress, fileSystemInfo, conflictBehavior, ifMatchETag)
-            } catch (e: GraphApiException) {
-                val isSessionGone = e.statusCode == 404 || e.statusCode == 410
-                if (attempt == 0 && isSessionGone) {
+            } catch (e: UploadSessionGoneException) {
+                if (attempt == 0) {
                     log.info(
                         "OneDrive upload session for {} was gone (status {}); creating a fresh session and retrying once",
                         remotePath,
@@ -996,7 +997,6 @@ class GraphApiService(
         if (initialOffset > 0) log.debug("Upload resuming at offset {} / {} bytes", initialOffset, fileSize)
         var offset = initialOffset
         var result: DriveItem? = null
-        var finalChunkConfirmedByProbe = false
         try {
             while (offset < fileSize) {
                 val currentChunkSize = minOf(chunkSize, fileSize - offset).toInt()
@@ -1006,7 +1006,6 @@ class GraphApiService(
                 val chunkResult = uploadChunkWithRetry(uploadUrl, localPath, offset, endByte, fileSize)
                 if (chunkResult is ChunkUploadResult.Committed) {
                     offset = chunkResult.nextOffset
-                    finalChunkConfirmedByProbe = offset >= fileSize
                     log.debug("Upload progress: {}/{} bytes", offset, fileSize)
                     onProgress?.invoke(offset, fileSize)
                     continue
@@ -1030,24 +1029,38 @@ class GraphApiService(
                 log.debug("Upload progress: {}/{} bytes", offset, fileSize)
                 onProgress?.invoke(offset, fileSize)
             }
+        } catch (e: UploadSessionGoneException) {
+            // The server reported the session gone: its record goes, there is nothing to cancel.
+            sessionStore.delete(remotePath)
+            throw e
         } catch (e: GraphApiException) {
             // Terminal 4xx responses cannot be resumed. Keep the session for 408/429
             // and server errors so a later attempt can continue from its committed offset.
+            // A terminal answer (a 409 on the final chunk among them) leaves a live session behind: it is cancelled.
             if (e.statusCode in 400..499 && e.statusCode != 408 && e.statusCode != 429) {
-                sessionStore.delete(remotePath)
+                discardSession(remotePath, uploadUrl)
             }
             throw e
         }
 
-        val uploadedItem =
-            result ?: if (finalChunkConfirmedByProbe) {
-                if (itemId != null) getItemById(itemId) else getItemByPath(remotePath)
-            } else {
-                null
-            }
+        // #748 finding 2: every byte is with the session (the final chunk's answer was lost and the probe says it is in,
+        // or the stored session expects nothing more) but no item came back. The item at the target is the upload's only
+        // when it holds these bytes: a sibling at the path (one a `rename` avoided, the file a `fail` met) is not.
+        val uploadedItem = result ?: committedAfterLostAnswer(localPath, target, fileSize)
+        if (uploadedItem == null) {
+            // The session never committed (a failed commit, a conflict at the end): resuming it would end the same way on
+            // every attempt. It is discarded; the session-gone retry creates a fresh one.
+            discardSession(remotePath, uploadUrl)
+            throw UploadSessionGoneException(
+                "OneDrive upload session for $remotePath holds every byte but returned no item and none at the target " +
+                    "holds these bytes; discarding the session",
+                410,
+            )
+        }
+        // Graph removes a completed session itself: only the record goes.
         sessionStore.delete(remotePath)
-        uploadedItem?.let { downloadUrls.invalidate(itemId ?: it.id) }
-        return uploadedItem ?: throw GraphApiException("Upload session completed but no DriveItem returned")
+        downloadUrls.invalidate(itemId ?: uploadedItem.id)
+        return uploadedItem
     }
 
     // A try of the final chunk ended without its answer and the session is now gone. Graph removes a session once its
@@ -1084,8 +1097,8 @@ class GraphApiService(
             }
         if (localHash != remoteHash) return null
         log.info(
-            "OneDrive upload of {}: the answer to the final chunk was lost and the session is gone, but the item holds " +
-                "these bytes (same size and quickXorHash); the upload is complete",
+            "OneDrive upload of {}: the upload session returned no item, but the item holds these bytes (same size and " +
+                "quickXorHash); the upload is complete",
             target.remotePath,
         )
         return item
@@ -1115,7 +1128,7 @@ class GraphApiService(
     }
 
     // The stored session when this upload may resume it; otherwise it is discarded and null is returned.
-    private fun usableStoredSession(
+    private suspend fun usableStoredSession(
         remotePath: String,
         stored: UploadSessionStore.StoredSession,
         fileSize: Long,
@@ -1136,7 +1149,7 @@ class GraphApiService(
                 fileSize,
                 localMtimeMillis,
             )
-            sessionStore.delete(remotePath)
+            discardSession(remotePath, stored.uploadUrl)
             return null
         }
         // If-Match guard: a stored session that could overwrite more than this upload allows must not be reused.
@@ -1185,7 +1198,7 @@ class GraphApiService(
                 is SessionProbe.Alive -> probe.session
                 is SessionProbe.Unusable -> {
                     log.info("Upload session for {} is gone or unusable ({}); creating new session", remotePath, probe.reason)
-                    sessionStore.delete(remotePath)
+                    if (probe.gone) sessionStore.delete(remotePath) else discardSession(remotePath, stored.uploadUrl)
                     return null
                 }
             }
@@ -1194,7 +1207,9 @@ class GraphApiService(
         parsedSession.expirationDateTime
             ?.let { runCatching { java.time.Instant.parse(it) }.getOrNull() }
             ?.let { sessionStore.put(remotePath, stored.copy(expiresAt = it.toString())) }
-        val committedOffset = parsedSession.nextExpectedRanges.nextExpectedStart() ?: 0L
+        // #748 finding 2: a live session that names no range expects no more bytes. Starting at 0 would send the whole
+        // file into 416s; the end of the file sends nothing and lets the upload check the item instead.
+        val committedOffset = parsedSession.nextExpectedRanges.nextExpectedStart() ?: stored.localSize
         log.info(
             "Upload session resumed: {} at offset {} (server expiry {})",
             remotePath,
@@ -1266,7 +1281,7 @@ class GraphApiService(
             }
             // 404 (the documented answer for a session that no longer exists), 410, and any other 4xx: the session
             // cannot be used again, the same rule the chunk loop applies to a terminal 4xx.
-            else -> SessionProbe.Unusable("status $status")
+            else -> SessionProbe.Unusable("status $status", gone = status == 404 || status == 410)
         }
     }
 
@@ -1327,6 +1342,8 @@ class GraphApiService(
                     .now()
                     .plusSeconds(86_400) // fallback: 24 h
 
+        // The store keeps one session per path: the one this replaces would be lost to the store, so it is cancelled.
+        sessionStore.getSession(remotePath)?.uploadUrl?.takeIf { it != url }?.let { cancelUploadSession(remotePath, it) }
         sessionStore.put(remotePath, url, expiresAt, fileSize, localMtimeMillis, ifMatchETag, conflictBehavior)
         log.info("Upload session created: {} ({} bytes, conflictBehavior={})", remotePath, fileSize, conflictBehavior)
         return url to 0L
@@ -1417,7 +1434,7 @@ class GraphApiService(
         endByte: Long,
         fileSize: Long,
     ): ChunkUploadResult {
-        val gone = failure.statusCode == 404 || failure.statusCode == 410
+        val gone = failure is UploadSessionGoneException
         if (gone && answerLost && endByte == fileSize - 1) return ChunkUploadResult.GoneAfterLostAnswer(failure)
         throw failure
     }
@@ -1468,7 +1485,7 @@ class GraphApiService(
                 // Session expired or gone — surface as a 404/410 so uploadLargeFile's two-attempt
                 // wrapper recognises it and retries with a fresh session.
                 status == 404 || status == 410 ->
-                    GraphApiException(
+                    UploadSessionGoneException(
                         "OneDrive upload session is gone (status $status) at offset $currentOffset; " +
                             "the server cleaned it up between probe and PUT — a fresh session will be created on retry",
                         status,
@@ -1509,7 +1526,7 @@ class GraphApiService(
                 return null
             }
         if (statusResponse.status.value == 404 || statusResponse.status.value == 410) {
-            throw GraphApiException("Upload session expired while retrying at offset $currentOffset", statusResponse.status.value)
+            throw UploadSessionGoneException("Upload session expired while retrying at offset $currentOffset", statusResponse.status.value)
         }
         if (!statusResponse.status.isSuccess()) return null
         val body =
@@ -1520,6 +1537,39 @@ class GraphApiService(
                 return null
             }
         return runCatching { json.decodeFromString<UploadSession>(body) }.getOrNull()?.nextExpectedRanges.nextExpectedStart()
+    }
+
+    // A session that is given up: its record goes, and it is cancelled on the server.
+    private suspend fun discardSession(
+        remotePath: String,
+        uploadUrl: String,
+    ) {
+        sessionStore.delete(remotePath)
+        cancelUploadSession(remotePath, uploadUrl)
+    }
+
+    // #69: an upload session that is given up is cancelled (DELETE on its upload URL), so the server does not keep it, and
+    // whatever it holds, until it expires. The upload URL is pre-authenticated: Graph wants no Authorization header on
+    // it, so the request bypasses sendThrottled. Best effort: a failed cancel is logged once and never fails the upload;
+    // the session then expires on the server as before. A 404 means it is gone already.
+    private suspend fun cancelUploadSession(
+        remotePath: String,
+        uploadUrl: String,
+    ) {
+        val response =
+            try {
+                httpClient.delete(uploadUrl) {
+                    timeout { requestTimeoutMillis = UPLOAD_SESSION_CANCEL_TIMEOUT_MS }
+                }
+            } catch (e: java.io.IOException) {
+                log.warn("Cancelling the upload session of {} failed ({}); it expires on the server", remotePath, e.message)
+                return
+            }
+        if (response.status.isSuccess() || response.status == HttpStatusCode.NotFound) {
+            log.debug("Upload session of {} cancelled ({})", remotePath, response.status)
+        } else {
+            log.warn("Cancelling the upload session of {} answered {}; it expires on the server", remotePath, response.status)
+        }
     }
 
     private fun List<String>?.nextExpectedStart(): Long? = this?.firstOrNull()?.substringBefore("-")?.toLongOrNull()
@@ -1946,75 +1996,11 @@ private class DecodedDeltaItems(
     val skippedWithoutId: Int,
 )
 
-class GraphApiException(
+open class GraphApiException(
     message: String,
     val statusCode: Int = 0,
     requestId: String? = null,
 ) : ProviderException(message, requestId = requestId, httpStatus = statusCode.takeIf { it > 0 })
-
-// Where an upload lands: [remotePath] names the file, [itemId] (when set) is the existing item it replaces in place.
-private class UploadTarget(
-    val remotePath: String,
-    val itemId: String?,
-)
-
-private sealed interface ChunkUploadResult {
-    data class Response(val response: HttpResponse) : ChunkUploadResult
-
-    data class Committed(val nextOffset: Long) : ChunkUploadResult
-
-    // The session is gone after the final chunk's answer was lost; [failure] stands unless the item holds the bytes.
-    data class GoneAfterLostAnswer(val failure: GraphApiException) : ChunkUploadResult
-}
-
-// How a chunk is retried after a failed try: the wait before the next one, and whether the session is probed first.
-private data class ChunkRetry(
-    val waitMs: Long,
-    val probe: Boolean,
-)
-
-// What one status probe of a stored upload session told: a final answer (SessionProbe), or a transient failure.
-private sealed interface SessionProbeOutcome
-
-private sealed interface SessionProbe : SessionProbeOutcome {
-    // The session is alive; its state names the offset to resume at.
-    class Alive(
-        val session: UploadSession,
-    ) : SessionProbe
-
-    // The server said the session is gone or unusable (404, 410, another 4xx, an unreadable answer).
-    class Unusable(
-        val reason: String,
-    ) : SessionProbe
-}
-
-// The probe broke off or met a 408/429/5xx; [failure] is thrown when the tries are spent, [waitMs] is the wait first.
-private class TransientProbe(
-    val failure: Exception,
-    val waitMs: Long,
-) : SessionProbeOutcome
-
-/**
- * archive#1175: whether a stored session of the same local revision may be resumed by an upload that asks for
- * [conflictBehavior] under [ifMatchETag]. One file revision keeps one session (and the conflict behaviour it was created
- * with) through every failed attempt and replay, as long as resuming cannot overwrite more than the asking upload
- * allows:
- * - a session created with `fail` and no guard never overwrites anything (a name conflict is refused when the upload
- *   completes), so it serves a create, a keep-both and a guarded replace of the same bytes alike;
- * - any other session (a `replace` with or without a guard, a `rename`) serves only the same behaviour under the same
- *   guard, so the If-Match check its creation carried is never skipped;
- * - an entry stored before the behaviour was recorded keeps the old rule: the same guard.
- */
-internal fun mayResume(
-    stored: UploadSessionStore.StoredSession,
-    conflictBehavior: String,
-    ifMatchETag: String?,
-): Boolean =
-    when (stored.conflictBehavior) {
-        null -> stored.ifMatchETag == ifMatchETag
-        "fail" -> stored.ifMatchETag == null || stored.ifMatchETag == ifMatchETag
-        else -> stored.conflictBehavior == conflictBehavior && stored.ifMatchETag == ifMatchETag
-    }
 
 /**
  * The `createLink` body. [expiryHours] of 0 or less leaves `expirationDateTime` out: a link without expiry, which is
