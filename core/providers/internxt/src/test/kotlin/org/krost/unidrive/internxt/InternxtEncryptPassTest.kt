@@ -38,7 +38,7 @@ class InternxtEncryptPassTest {
     fun `the encrypt pass reads the source in chunks of at least 64 KiB`() {
         val source = CountingInput(plain.inputStream())
 
-        InternxtProvider.encryptToStaging(source, crypto.createContentEncryptCipher(key, iv), ByteArrayOutputStream(), MessageDigest.getInstance("SHA-256"))
+        encryptToStaging(source, crypto.createContentEncryptCipher(key, iv), ByteArrayOutputStream(), MessageDigest.getInstance("SHA-256"))
 
         assertTrue(source.reads <= plain.size / (64 * 1024) + 2, "${source.reads} reads for ${plain.size} bytes")
     }
@@ -48,7 +48,7 @@ class InternxtEncryptPassTest {
         val out = ByteArrayOutputStream()
         val digest = MessageDigest.getInstance("SHA-256")
 
-        InternxtProvider.encryptToStaging(plain.inputStream(), crypto.createContentEncryptCipher(key, iv), out, digest)
+        encryptToStaging(plain.inputStream(), crypto.createContentEncryptCipher(key, iv), out, digest)
 
         val expected = crypto.createContentEncryptCipher(key, iv).doFinal(plain)
         assertContentEquals(expected, out.toByteArray())

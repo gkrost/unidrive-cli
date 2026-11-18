@@ -12,7 +12,7 @@ import kotlin.test.assertTrue
 
 /**
  * gkrost/unidrive-cli#441 finding 10: the upload stages a full encrypted copy of the file next to the profile. Before that
- * copy is written, the volume must have room for it plus a margin ([InternxtProvider.STAGING_SPACE_MARGIN_BYTES]); without
+ * copy is written, the volume must have room for it plus a margin ([STAGING_SPACE_MARGIN_BYTES]); without
  * it the upload fails with the typed [InsufficientLocalSpaceException] (not a permanent refusal: it can go once space is
  * freed), before anything is staged or sent.
  */
@@ -40,11 +40,11 @@ class InternxtLocalSpacePreflightTest {
     @Test
     fun `an upload without room to stage its ciphertext fails typed before anything is staged or sent`() =
         withDrive { drive, provider, tmp ->
-            provider.usableSpaceOf = { content.length + InternxtProvider.STAGING_SPACE_MARGIN_BYTES - 1 }
+            provider.usableSpaceOf = { content.length + STAGING_SPACE_MARGIN_BYTES - 1 }
 
             val failure = assertFailsWith<InsufficientLocalSpaceException> { provider.upload(local(tmp), "/f.txt", existingRemoteId = null, onProgress = null) }
 
-            assertEquals(content.length + InternxtProvider.STAGING_SPACE_MARGIN_BYTES, failure.requiredBytes)
+            assertEquals(content.length + STAGING_SPACE_MARGIN_BYTES, failure.requiredBytes)
             assertTrue(drive.requests.none { "/files/start" in it || it.startsWith("POST /drive/files") }, "nothing is sent: ${drive.requests}")
             val staged = tmp.resolve("upload-tombstones")
             assertTrue(!Files.exists(staged) || Files.list(staged).use { s -> s.noneMatch { it.toString().endsWith(".enc") } }, "no ciphertext is staged")
@@ -53,7 +53,7 @@ class InternxtLocalSpacePreflightTest {
     @Test
     fun `an upload with exactly the room it needs goes through`() =
         withDrive { drive, provider, tmp ->
-            provider.usableSpaceOf = { content.length + InternxtProvider.STAGING_SPACE_MARGIN_BYTES }
+            provider.usableSpaceOf = { content.length + STAGING_SPACE_MARGIN_BYTES }
 
             val item = provider.upload(local(tmp), "/f.txt", existingRemoteId = null, onProgress = null)
 

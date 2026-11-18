@@ -243,9 +243,6 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
         // (the PUT overwrites) retry the full [TRANSIENT_STATUSES] instead.
         private val RETRYABLE_WRITE_STATUSES = setOf(429, 503)
 
-        // A route segment that names an item (see maskedRoute): a uuid, or 16 or more hex digits.
-        private val ROUTE_ID = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{16,}")
-
         // The gateway's own answers for an origin that did not answer (Cloudflare): 520 unknown error, 521 down, 522
         // connection timed out, 523 unreachable, 524 timed out. A GET treats them like 502/503/504: the same
         // "the server is unavailable" the callers' fallbacks act on, which is the 503 they end as.
@@ -2124,12 +2121,6 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
         bearerAuth(creds.jwt)
         applyInternxtHeaders(config)
     }
-
-    // gkrost/unidrive-cli#793: the route of a failed call for its error text, so a failure can be attributed to a call from
-    // the text alone. A segment that is an id (a uuid, a bucket or object id: 16 or more hex digits) is masked as {id}, the
-    // query is never part of it: the text names the route, not the item.
-    private fun maskedRoute(encodedPath: String): String =
-        encodedPath.split('/').joinToString("/") { segment -> if (ROUTE_ID.matches(segment)) "{id}" else segment }
 
     // UD-203: pull the Internxt server-side request id off a response.
     // Header name confirmed from the upstream SDK

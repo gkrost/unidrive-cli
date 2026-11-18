@@ -1551,7 +1551,7 @@ class InternxtProvider(
         val encryptedSize: Long
         val hashHex: String
         if (needsEncrypt) {
-            ensureStagingSpace(tempFile, fileSize, remotePath)
+            ensureStagingSpace(tempFile, fileSize, remotePath, usableSpaceOf, log)
             val encryptStarted = System.nanoTime()
             // Re-derive a fresh Cipher per encrypt pass (javax.crypto.Cipher is
             // single-use after doFinal). The fileKey/iv stay byte-identical to
@@ -1801,7 +1801,6 @@ class InternxtProvider(
             hashHex: String,
             startedAt: Instant,
         ): org.krost.unidrive.internxt.model.BucketEntry {
-            // One progress for the whole upload, across a dead-URL restart: it never goes back (#747).
             val partProgress = MultipartProgress(fileSize, encryptedSize, onProgress)
 
             // Starts a fresh multipart session and persists it. Used at entry, after the
@@ -1931,9 +1930,8 @@ class InternxtProvider(
                                                         offset,
                                                         size,
                                                         partBudget,
-                                                        // The single-PUT convention (archive#1197): live values while the
-                                                        // body streams, the completed parts plus every part in flight,
-                                                        // held below the total; the one final report follows the last part.
+                                                        // archive#1197: live values while the body streams (all parts, see
+                                                        // MultipartProgress); the one final report follows the last part.
                                                         onBytesSent = { sent -> partProgress.partSent(index, sent) },
                                                     )
                                                 if (put.isNullOrBlank()) {
@@ -2163,28 +2161,6 @@ class InternxtProvider(
             // A create, or the create that follows the archive rename of a replace: the same answers to a 409 and to a
             // lost response. A replace whose create had landed would otherwise fail with the prior content already
             // archived, and its retry would archive the archive.
-            // A create whose outcome is unknown (a lost response, a 500/502/504): the file landed when the parent lists it with
-            // exactly the content just uploaded (same bucket fileId and size), and is adopted; otherwise [cause] stands and the
-            // item fails, for the next pass to reconcile again (gkrost/unidrive-cli#793). A listing that fails proves nothing
-            // either way: the create's own failure is the one raised.
-            @Suppress("TooGenericExceptionCaught", "ThrowsCount")
-            suspend fun landedOrThrow(cause: Exception): org.krost.unidrive.internxt.model.InternxtFile {
-                val listed =
-                    try {
-                        findFileByName(parentUuid, segments.last())
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        log.warn("the listing that checks the create of {} failed too ({}); the create stays failed", remotePath, e.message)
-                        cause.addSuppressed(e)
-                        throw cause
-                    }
-                val landed = listed ?: throw cause
-                val landedSize = landed.size?.toLongOrNull() ?: -1L
-                if (landed.fileId != bucketEntry.id || landedSize != fileSize) throw cause
-                log.info("createFile landed server-side despite the failed answer for {} (uuid={}); adopting", remotePath, landed.uuid)
-                return landed
-            }
             val encryptedName = crypto.encryptName(plainName, "${creds.mnemonic}-$parentUuid")
             val created =
                 try {
@@ -2208,7 +2184,7 @@ class InternxtProvider(
                             e.statusCode,
                             e.requestId,
                         )
-                        landedOrThrow(e)
+                        landedOrThrow(e, parentUuid, segments.last(), bucketEntry.id, fileSize, remotePath)
                     } else {
                         // UD-366 defensive fallback: reconciler/DB drift can leave us POSTing a
                         // path that already exists on remote.  Safe overwrite requires PROVEN
@@ -2300,7 +2276,7 @@ class InternxtProvider(
                         remotePath,
                         e.message,
                     )
-                    landedOrThrow(e)
+                    landedOrThrow(e, parentUuid, segments.last(), bucketEntry.id, fileSize, remotePath)
                 }
             finalItem = created.toCloudItem(parentPath)
         }
@@ -2468,38 +2444,34 @@ class InternxtProvider(
         return created.toCloudItem(parentPath)
     }
 
-    // gkrost/unidrive-cli#441 finding 10: the encrypt pass writes a full copy of the file next to the profile, usually on the
-    // system drive. Before it starts, the volume must hold that copy plus [STAGING_SPACE_MARGIN_BYTES] (a stale partial copy
-    // of an earlier attempt is overwritten, so its bytes count as free); otherwise the upload fails typed, before anything is
-    // written, instead of filling the volume (state DB and logs included) and failing with a generic IOException on every
-    // pass. A volume that cannot say how much is free does not block the upload.
-    @Suppress("TooGenericExceptionCaught")
-    private suspend fun ensureStagingSpace(
-        tempFile: Path,
+    // A create whose outcome is unknown (a lost response, a 500/502/504): the file landed when the parent lists it with
+    // exactly the content just uploaded (same bucket fileId and size), and is adopted; otherwise [cause] stands and the
+    // item fails, for the next pass to reconcile again (gkrost/unidrive-cli#793). A listing that fails proves nothing
+    // either way: the create's own failure is the one raised.
+    @Suppress("TooGenericExceptionCaught", "ThrowsCount")
+    private suspend fun landedOrThrow(
+        cause: Exception,
+        parentUuid: String,
+        name: String,
+        entryId: String,
         fileSize: Long,
         remotePath: String,
-    ) {
-        val required = fileSize + STAGING_SPACE_MARGIN_BYTES
-        val usable =
-            withContext(Dispatchers.IO) {
-                try {
-                    Files.createDirectories(tempFile.parent)
-                    val stale = if (Files.exists(tempFile)) Files.size(tempFile) else 0L
-                    usableSpaceOf(tempFile.parent) + stale
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    log.warn("upload of {}: the free space of the staging volume cannot be read ({}); not checked", remotePath, e.message)
-                    null
-                }
-            } ?: return
-        if (usable >= required) return
-        throw org.krost.unidrive.InsufficientLocalSpaceException(
-            "not enough local space to stage the upload of $remotePath: $required bytes needed (the file plus a " +
-                "${STAGING_SPACE_MARGIN_BYTES / (1024 * 1024)} MiB margin), $usable free on the staging volume",
-            requiredBytes = required,
-            usableBytes = usable,
-        )
+    ): InternxtFile {
+        val listed =
+            try {
+                findFileByName(parentUuid, name)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log.warn("the listing that checks the create of {} failed too ({}); the create stays failed", remotePath, e.message)
+                cause.addSuppressed(e)
+                throw cause
+            }
+        val landed = listed ?: throw cause
+        val landedSize = landed.size?.toLongOrNull() ?: -1L
+        if (landed.fileId != entryId || landedSize != fileSize) throw cause
+        log.info("createFile landed server-side despite the failed answer for {} (uuid={}); adopting", remotePath, landed.uuid)
+        return landed
     }
 
     // A replace whose bucket entry was finished by an earlier attempt (resumed at FINISH_DONE). The file naming that
@@ -5152,18 +5124,6 @@ class InternxtProvider(
         // gkrost/unidrive-cli#145: Payment Required, the plan's refusal of an upload.
         internal const val PLAN_LIMIT_STATUS = 402
 
-        // Live finding 2026-11-18: the bridge answers an upload start (single-part and multipart) with 420
-        // {"message":"Max space used"} when the account's storage is full. Only that sentence is mapped; another 420 keeps
-        // its own type.
-        internal const val MAX_SPACE_STATUS = 420
-
-        // #747 finding 5, live 2026-11-18: the answer to a replace naming the file's current object.
-        internal fun isSameFileIdRefusal(e: InternxtApiException): Boolean =
-            e.statusCode == 400 && e.message.orEmpty().contains("New file ID is the same as the old file ID")
-
-        internal fun isMaxSpaceUsed(e: InternxtApiException): Boolean =
-            e.statusCode == MAX_SPACE_STATUS && e.message.orEmpty().contains("Max space used", ignoreCase = true)
-
         private val SERVER_MESSAGE = Regex("\"message\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
 
         // The `message` string of the JSON body an API error quotes ("API error: 402 Payment Required - {"message":"…"}"), else null.
@@ -5599,40 +5559,6 @@ class InternxtProvider(
                 updatedAt = tryParseInternxtInstant(file.updatedAt),
             )
         }
-
-        private const val ENCRYPT_BUFFER_BYTES = 256 * 1024
-
-        /** The free space an upload leaves on the staging volume beyond its staged copy (#441). */
-        internal const val STAGING_SPACE_MARGIN_BYTES: Long = 256L * 1024 * 1024
-
-        /**
-         * The encrypt pass of an upload (#747 finding 10): [source] through [cipher] into [out], the ciphertext also into
-         * [digest]. Reads in [ENCRYPT_BUFFER_BYTES] chunks, as the download path and the local content proof do; a
-         * CipherInputStream hands out at most 512 bytes per read whatever the caller's buffer.
-         */
-        internal fun encryptToStaging(
-            source: java.io.InputStream,
-            cipher: javax.crypto.Cipher,
-            out: java.io.OutputStream,
-            digest: java.security.MessageDigest,
-        ) {
-            val buf = ByteArray(ENCRYPT_BUFFER_BYTES)
-            val enc = ByteArray(cipher.getOutputSize(buf.size))
-            while (true) {
-                val n = source.read(buf)
-                if (n < 0) break
-                if (n == 0) continue
-                val m = cipher.update(buf, 0, n, enc, 0)
-                out.write(enc, 0, m)
-                digest.update(enc, 0, m)
-            }
-            val tail = cipher.doFinal()
-            out.write(tail)
-            digest.update(tail)
-        }
-
-        // gkrost/unidrive-cli#793: the answers to a file create that leave its outcome unknown (the write ladder does not repeat them).
-        internal val INDETERMINATE_CREATE_STATUSES = setOf(500, 502, 504)
 
         internal fun InternxtFile.isLive(): Boolean = status == "EXISTS" && !isTombstoned()
 
