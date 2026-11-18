@@ -2205,16 +2205,25 @@ class MountEngine private constructor(
      * Returns false, touching nothing, when no pending row lives at [newPath] any more (it was removed, or something
      * else gave it a cloud item): the item stays where it landed and the next enumeration decides about it.
      * Throws when the move fails; the item then stays at the old path and the row stays pending.
+     *
+     * gkrost/unidrive-cli#746 finding 2: the edit of a cloud-backed file, renamed while its upload ran. The rename moved the
+     * item, and the upload wrote it by its id, so the row at [newPath] already holds the landed item's id: nothing is moved,
+     * the row takes the landed version as its baseline (and its edit base with it), the same rebaseline as above.
      */
     suspend fun adoptLandedAfterRename(
         landed: LandedWithoutRow,
         newPath: String,
     ): Boolean {
         val row = db.getEntry(newPath) ?: return false
-        if (row.isFolder || row.remoteId?.startsWith("local:") == false) return false
+        val sameItem = row.remoteId == landed.item.id
+        if (row.isFolder || (!sameItem && row.remoteId?.startsWith("local:") == false)) return false
         val newRemote = remotePathOf(newPath, row)
         val moved =
-            if (landed.remotePath == newRemote) landed.item else provider.moveById(landed.item.id, landed.remotePath, newRemote)
+            if (sameItem || landed.remotePath == newRemote) {
+                landed.item
+            } else {
+                provider.moveById(landed.item.id, landed.remotePath, newRemote)
+            }
         recordProviderContact()
         markRecentlyUploaded(newRemote)
         val cachePath = resolveCachePath(newPath)

@@ -1231,7 +1231,8 @@ class HydrationImpl(
                 if (outcome.keptBothAs != null) return completeKeptBoth(path, handleId, outcome, tx)
                 // Kept while the move runs: a failed move is retried by the next attempt.
                 strayed = outcome.takeIf { followsRenames }
-                val adoptedAt = adoptedAfterRename(slot, path, strayed, retryingMove)
+                // gkrost/unidrive-cli#746 finding 2: an edit of a cloud-backed file (no rename following) is adopted too.
+                val adoptedAt = adoptedAfterRename(slot, path, strayed ?: outcome, retryingMove)
                 strayed = null
                 adoptedAt?.let {
                     path = it
