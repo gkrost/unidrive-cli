@@ -3126,10 +3126,9 @@ class HydrationImpl(
         if (entry.isFolder) return UnlinkResult.PathIsFolder
 
         // WB-3 (archive#87): the file's own upload is queued or in flight — deleting the row and the cache
-        // copy under it would orphan the cloud copy the upload is about to create (the row is gone
-        // when the upload lands). Answer busy, the same refusal dehydrate has given since archive#301; the
-        // client cancels the upload (cancelUpload) and retries, or retries after the completed event.
-        if (hasUploadSlot(normalised)) return UnlinkResult.Busy
+        // copy under it would orphan the cloud copy the upload is about to create (the row is gone when the upload lands). Answer
+        // busy, as dehydrate has since archive#301; the client cancels the upload (cancelUpload) and retries, or retries later.
+        if (hasUploadSlot(normalised) && !dropsWaitingUpload(entry)) return UnlinkResult.Busy
 
         // Never-uploaded file (remote_id is null): the file only ever existed
         // locally — created through the mount, upload not yet done. There is
@@ -3214,13 +3213,9 @@ class HydrationImpl(
         }
     }
 
-    // archive#1178: a provider without the permanent-delete capability is a typed refusal, not a failed delete.
-    private fun permanentRefusalOrNull(e: Throwable): HydrationError? =
-        if (e is org.krost.unidrive.UnsupportedCapabilityException && e.capability == org.krost.unidrive.Capability.PermanentDelete) {
-            HydrationError.PermanentUnsupported
-        } else {
-            null
-        }
+    // Test drive 3: paused, a never-uploaded file's upload only waits and nothing of it is in the cloud: cancelled, the file may go.
+    private suspend fun dropsWaitingUpload(entry: org.krost.unidrive.sync.model.SyncEntry): Boolean =
+        entry.remoteId == null && pause.isPaused && cancelUpload(entry.path)
 
     // WB-3 (archive#87): the staged copy goes with a delete, but failing to remove it must not fail a
     // delete that already happened (the cloud copy is trashed, or the row is about to go): the

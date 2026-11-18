@@ -7,3 +7,12 @@ import kotlinx.coroutines.CancellationException
 internal fun Throwable.rethrowIfCancellation() {
     if (this is CancellationException) throw this
 }
+
+// archive#1178: a provider without the permanent-delete capability is a typed refusal, not a failed delete. (Moved here from
+// HydrationImpl for the size ratchet, gkrost/unidrive-cli#534.)
+internal fun permanentRefusalOrNull(e: Throwable): HydrationError? =
+    if (e is org.krost.unidrive.UnsupportedCapabilityException && e.capability == org.krost.unidrive.Capability.PermanentDelete) {
+        HydrationError.PermanentUnsupported
+    } else {
+        null
+    }
