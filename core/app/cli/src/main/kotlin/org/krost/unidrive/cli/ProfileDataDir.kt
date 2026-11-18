@@ -1,6 +1,7 @@
 package org.krost.unidrive.cli
 
 import org.krost.unidrive.io.Os
+import org.krost.unidrive.sync.ConflictLog
 import java.nio.file.Path
 import java.nio.file.Paths
 
@@ -20,3 +21,17 @@ internal fun profileDataDir(
     } else {
         Paths.get(env("HOME") ?: userHome, ".local", "share", "unidrive", profileName)
     }
+
+/**
+ * #768: the daemon's conflict log, where `unidrive sync` writes it and `unidrive conflicts` reads it: the journal in the
+ * profile's config folder [configDir], the loser backups in the profile's data folder [dataDir] ([profileDataDir]).
+ */
+internal fun daemonConflictLog(
+    profileName: String,
+    configDir: Path,
+    dataDir: Path = profileDataDir(profileName),
+): ConflictLog =
+    ConflictLog(
+        logFile = configDir.resolve("conflicts.jsonl"),
+        backupDir = dataDir.resolve("conflict-backups"),
+    )

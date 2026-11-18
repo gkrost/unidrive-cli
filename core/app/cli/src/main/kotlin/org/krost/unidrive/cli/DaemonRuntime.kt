@@ -31,7 +31,6 @@ import org.krost.unidrive.hydration.provesProviderReachable
 import org.krost.unidrive.hydration.serialiseHydrationEvent
 import org.krost.unidrive.io.Os
 import org.krost.unidrive.io.ndjsonString
-import org.krost.unidrive.sync.ConflictLog
 import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.ProcessLock
@@ -368,8 +367,7 @@ class DaemonRuntime(
                     mountIgnore = ignoreSettings.takeIf { profileMode == ProfileMode.MOUNT },
                     mirrorIgnore = ignoreSettings.takeIf { profileMode != ProfileMode.MOUNT },
                     uploadInFlight = hydrationLink::hasUploadSlot,
-                    // #768: the loser of a last-writer-wins conflict is always backed up, as under `unidrive sync`.
-                    conflictLog = daemonConflictLog(profileName, ipcTokenDir),
+                    conflictLog = daemonConflictLog(profileName, ipcTokenDir), // #768: a conflict loser is always backed up
                     viewInvalidationSink = { changedPaths, full, moved ->
                         // A pass changed rows: the top level may hold a folder with the name of a view's root now.
                         viewNamespaces.invalidate()
@@ -1263,17 +1261,3 @@ class DaemonRuntime(
 /** The `state_recovery` object of `daemon.status` (gkrost/unidrive-cli#581): additive, present only after a corrupt state.db was moved aside. */
 internal fun stateRecoveryJson(r: StateDbRecovery): String =
     """{"reason":"corrupt","moved_to":${ndjsonString(r.movedTo.toString())},"at_ms":${r.atMs},"local_changes_lost":true,"message":${ndjsonString(r.message)}}"""
-
-/**
- * #768: the daemon's conflict log, where `unidrive sync` writes it and `unidrive conflicts` reads it: the journal in the
- * profile's config folder [configDir], the loser backups in the profile's data folder [dataDir] ([profileDataDir]).
- */
-internal fun daemonConflictLog(
-    profileName: String,
-    configDir: Path,
-    dataDir: Path = profileDataDir(profileName),
-): ConflictLog =
-    ConflictLog(
-        logFile = configDir.resolve("conflicts.jsonl"),
-        backupDir = dataDir.resolve("conflict-backups"),
-    )
