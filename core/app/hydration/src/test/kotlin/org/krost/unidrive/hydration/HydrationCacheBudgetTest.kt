@@ -1,7 +1,9 @@
 package org.krost.unidrive.hydration
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -245,6 +247,37 @@ class HydrationCacheBudgetTest {
             hydration.evictCache()
 
             assertTrue(Files.exists(cache), "just served: the client may still be about to open the path")
+        }
+
+    // gkrost/unidrive-cli#746 finding 1: an eviction pass that met the stale copy before a re-download began waits for the
+    // path's hydrate lock; when it gets the lock the download has written the fresh copy the reader is about to be handed.
+    // A path whose download still has a waiter is in use, re-checked under that lock: the fresh copy stays.
+    @Test
+    fun `a copy whose re-download still has a waiter is not evicted when the download ends`() =
+        runTest(timeout = REAL_FILE_WORK_BUDGET) {
+            val env = freshEnv()
+            env.syncedAndRead("a.txt")
+            // The cloud copy moved on: the next open re-downloads over the (still baseline, disposable) old copy.
+            env.provider.seed("/a.txt", bytesOf(42, size = 2000))
+            val row = assertNotNull(env.db.getEntry("/a.txt"))
+            env.db.upsertEntry(row.copy(remoteSize = 2000, isHydrated = false))
+            val reached = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            env.provider.downloadReached = reached
+            env.provider.downloadRelease = release
+            val hydration = env.hydration(this, budget = 1)
+
+            val open = async(Dispatchers.IO) { hydration.openForRead("conn", "h1", "/a.txt") }
+            reached.await()
+            // Undispatched: the pass runs until it either finishes or waits for the path's hydrate lock.
+            val pass = launch(start = CoroutineStart.UNDISPATCHED) { hydration.evictCache() }
+            release.complete(Unit)
+            val opened = assertIs<OpenResult.Ok>(open.await())
+            pass.join()
+
+            assertTrue(Files.exists(opened.cachePath), "the copy just downloaded for the reader must stay")
+            assertEquals(2000L, Files.size(opened.cachePath))
+            assertEquals(true, env.db.getEntry("/a.txt")?.isHydrated)
         }
 
     // ── eviction ───────────────────────────────────────────────────────────────────────────────

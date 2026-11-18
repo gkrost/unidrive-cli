@@ -1220,11 +1220,22 @@ class MountEngine private constructor(
      * refills them from the remote).
      * [onUnhydrated] is invoked for the first kind, so the hydration layer can publish the event;
      * it may suspend (gkrost/unidrive-cli#452: the layer's emit waits for event-buffer room).
+     * [stillUnused] is the caller's in-use test, asked again under the lock (gkrost/unidrive-cli#746 finding 1): a pass
+     * that waited for the lock while a download of [path] ran must not take the copy that download just wrote.
      */
     suspend fun evictCacheCopy(
         path: String,
+        stillUnused: () -> Boolean = { true },
         onUnhydrated: suspend (String) -> Unit = {},
-    ): Long? = deleteCacheCopyLocked(path, disposableOnly = true, reason = "budget", summary = "mount-evict", onUnhydrated = onUnhydrated)
+    ): Long? =
+        deleteCacheCopyLocked(
+            path,
+            disposableOnly = true,
+            reason = "budget",
+            summary = "mount-evict",
+            onUnhydrated = onUnhydrated,
+            stillUnused = stillUnused,
+        )
 
     /**
      * gkrost/unidrive-cli#452: the delete of an explicit `dehydrate`, through the same per-path lock as
@@ -1252,8 +1263,10 @@ class MountEngine private constructor(
         summary: String,
         onUnhydrated: suspend (String) -> Unit = {},
         observed: Pair<Long, Long>? = null,
+        stillUnused: () -> Boolean = { true },
     ): Long? =
         hydrateLocks.withLock(path) {
+            if (!stillUnused()) return@withLock null
             // archive#728: one row read decides both the classification and the baseline question below: this
             // is the re-check that counts, so it must not ask the database twice per evicted file.
             val entry = db.getEntry(path) ?: return@withLock null

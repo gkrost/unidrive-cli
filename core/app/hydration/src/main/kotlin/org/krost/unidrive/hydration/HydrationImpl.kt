@@ -2006,7 +2006,7 @@ class HydrationImpl(
         // gkrost/unidrive-cli#452: the event changes the subscriber's view of the path, so it must
         // not go through tryEmit: with the event buffer full a tryEmit drops it before any
         // subscriber queue. emit waits for buffer room instead of losing it.
-        val bytes = mount.evictCacheCopy(path) { _events.emit(HydrationEvent.Dehydrated(it)) }
+        val bytes = mount.evictCacheCopy(path, { !inUse(path) }) { _events.emit(HydrationEvent.Dehydrated(it)) }
         if (bytes != null) forgetCacheFile(path)
     }
 
@@ -2184,10 +2184,11 @@ class HydrationImpl(
     }
 
     // The checks only this layer can make: an open handle, a queued or in-flight upload (archive#301, archive#318),
-    // and the access grace window.
+    // a download someone still waits for (gkrost/unidrive-cli#746 finding 1), and the access grace window.
     private fun inUse(path: String): Boolean =
         openSets.values.any { it.containsValue(path) } ||
             uploadSlots.containsKey(path) ||
+            downloads.waiterCount(path) > 0 ||
             (lastAccess[path]?.let { System.currentTimeMillis() - it < cacheAccessGraceMs } ?: false)
 
     /**
@@ -2258,7 +2259,7 @@ class HydrationImpl(
             if (mount.cacheDisposition(f.path, rows[f.path]) != CacheDisposition.DISPOSABLE) continue
             // gkrost/unidrive-cli#452: as in reclaimOnLastClose — the event must not be dropped
             // by a full buffer before any subscriber queue; emit waits for room instead.
-            val bytes = mount.evictCacheCopy(f.path) { _events.emit(HydrationEvent.Dehydrated(it)) }
+            val bytes = mount.evictCacheCopy(f.path, { !inUse(f.path) }) { _events.emit(HydrationEvent.Dehydrated(it)) }
             if (bytes == null) continue
             freed += bytes
             evicted += f.path
@@ -2651,7 +2652,9 @@ class HydrationImpl(
         reportingDownloadProgress(path, waiter.handleId) {
             downloads.await(path, waiter) {
                 try {
-                    SharedRead(mount.ensureHydratedReporting(path, tx), tx)
+                    // gkrost/unidrive-cli#746 finding 1: the fresh copy counts as used from the moment it exists, before the
+                    // waiters leave the download and before the reader registers its handle.
+                    SharedRead(mount.ensureHydratedReporting(path, tx), tx).also { touch(path) }
                 } catch (e: Exception) {
                     tx.endDownloadFailed(e)
                     throw e
