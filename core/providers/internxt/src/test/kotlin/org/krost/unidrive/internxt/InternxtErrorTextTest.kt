@@ -45,7 +45,8 @@ class InternxtErrorTextTest {
         assertFalse("SECRET" in text, text)
         assertFalse("eyJhbGci" in text, text)
         assertFalse(FOLDER in text, text)
-        assertTrue(text.length <= 400, "bounded, was ${text.length} chars")
+        // The excerpt's bound plus the call's method and masked route (#793).
+        assertTrue(text.length <= 460, "bounded, was ${text.length} chars")
     }
 
     @Test
@@ -55,7 +56,21 @@ class InternxtErrorTextTest {
 
             val e = assertFailsWith<InternxtApiException> { service.listFiles() }
 
-            assertTrue(e.message!!.startsWith("API error: 400 Bad Request - {\"message\":\"rejected\""), e.message)
+            assertTrue(e.message!!.startsWith("API error: 400 Bad Request (GET /drive/files) - {\"message\":\"rejected\""), e.message)
+            assertClean(e.chainText())
+            service.close()
+        }
+
+    // gkrost/unidrive-cli#793: a failed call is attributable from its error text alone, so the text names the method and
+    // the route; an id in the route (a uuid, a bucket or object id) is masked, the query is left out.
+    @Test
+    fun `an API error names the method and the route of the call, ids masked`() =
+        runTest {
+            val service = serviceOn(MockEngine { respond("""{"message":"x"}""", HttpStatusCode.BadGateway, json) })
+
+            val e = assertFailsWith<InternxtApiException> { service.getFileMeta(FOLDER) }
+
+            assertTrue(e.message!!.startsWith("API error: 502 Bad Gateway (GET /drive/files/{id}/meta)"), e.message)
             assertClean(e.chainText())
             service.close()
         }
