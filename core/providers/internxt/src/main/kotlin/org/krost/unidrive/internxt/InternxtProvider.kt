@@ -6087,14 +6087,17 @@ class InternxtProvider(
         // The modification time is the string the server sent when the row carries it (archive#1039): the version
         // token of the file is built from it, and the Instant's toString() drops a zero fraction. The fileId is the one
         // the row carries (gkrost/unidrive-cli#194): the contentId of the item is built from it.
+        // The staged name is the full recomposed name (#747): it is split the way an upload splits it ([splitLeaf]), so a
+        // name the drive keeps whole (`a.txt.txt`, `a.`) is rebuilt whole and listed as it was staged.
         internal fun CloudItem.toResumedFile(): InternxtFile {
             val raw = stagedModificationTime(hash)
+            val (stem, type) = splitLeaf(name)
             return InternxtFile(
                 uuid = id,
                 fileId = stagedFileIdOf(this),
-                plainName = name.substringBeforeLast('.', name),
-                name = name.substringBeforeLast('.', name),
-                type = name.substringAfterLast('.', ""),
+                plainName = stem,
+                name = stem,
+                type = type ?: "",
                 folderUuid = parentId,
                 size = size.toString(),
                 modificationTime = if (raw == null) modified?.toString() else raw.takeIf { it.isNotEmpty() },
