@@ -6,6 +6,7 @@ import org.krost.unidrive.sync.Vault
 import org.krost.unidrive.sync.escapeTomlValue
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
+import picocli.CommandLine.Parameters
 import picocli.CommandLine.ParentCommand
 import java.nio.file.Files
 
@@ -18,6 +19,7 @@ import java.nio.file.Files
         VaultEncryptCommand::class,
         VaultDecryptCommand::class,
         VaultChangePassphraseCommand::class,
+        VaultForgetCommand::class,
     ],
 )
 class VaultCommand : Runnable {
@@ -25,7 +27,7 @@ class VaultCommand : Runnable {
     lateinit var parent: Main
 
     override fun run() {
-        println("Usage: unidrive vault <init|encrypt|decrypt|change-passphrase>")
+        println("Usage: unidrive vault <init|encrypt|decrypt|change-passphrase|forget>")
     }
 }
 
@@ -267,20 +269,45 @@ class VaultDecryptCommand : Runnable {
         }
 
         val passphrase = readPassphrase("Vault passphrase: ")
-        val data = vault.read(passphrase)
+        println(decryptVault(baseDir, passphrase) { System.err.println("Warning: $it") })
+    }
+}
 
-        val configPath = baseDir.resolve("config.toml")
-        ConfigFileTransaction.withLock(configPath) {
-            if (data.isEmpty()) {
-                println("Vault is empty — nothing to restore.")
-                vault.delete()
-                return@withLock
-            }
-            val configContent = if (Files.exists(configPath)) Files.readString(configPath) else "[general]\n"
-            val restored = restoreVaultCredentials(configContent, data)
-            ConfigFileTransaction.writeAtomically(configPath, restored)
+/**
+ * `vault decrypt` past the passphrase: restores the vault of [baseDir] into its config.toml; returns the line to print.
+ * An entry whose profile is no longer configured (#749 finding 7: a `profile remove` that found the vault locked) has no
+ * section to go back into: it is skipped with one [warn] naming `vault forget`, and stays in the vault, which is then
+ * rewritten with only those entries instead of deleted.
+ */
+internal fun decryptVault(
+    baseDir: java.nio.file.Path,
+    passphrase: CharArray,
+    warn: (String) -> Unit,
+): String {
+    val vault = Vault(baseDir.resolve("vault.enc"))
+    val data = vault.read(passphrase)
+    val configPath = baseDir.resolve("config.toml")
+    return ConfigFileTransaction.withLock(configPath) {
+        if (data.isEmpty()) {
             vault.delete()
-            println("Credentials restored to config.toml. Vault deleted.")
+            return@withLock "Vault is empty — nothing to restore."
+        }
+        val configContent = if (Files.exists(configPath)) Files.readString(configPath) else "[general]\n"
+        val configured = SyncConfig.parseRaw(configContent, configPath.toString()).providers.keys
+        val restorable = data.filterKeys { it in configured }
+        val orphans = data - restorable.keys
+        for (name in orphans.keys) {
+            warn("the vault entry of profile '$name' has no config section and was not restored; drop it with `unidrive vault forget $name`")
+        }
+        if (restorable.isNotEmpty()) {
+            ConfigFileTransaction.writeAtomically(configPath, restoreVaultCredentials(configContent, restorable))
+        }
+        if (orphans.isEmpty()) {
+            vault.delete()
+            "Credentials restored to config.toml. Vault deleted."
+        } else {
+            vault.write(passphrase, orphans)
+            "Credentials of ${restorable.size} profile(s) restored to config.toml; the vault keeps ${orphans.size} orphan entry(ies)."
         }
     }
 }
@@ -395,6 +422,74 @@ class VaultChangePassphraseCommand : Runnable {
         vault.write(newPass1, data)
         println("Vault passphrase changed.")
     }
+}
+
+// ── vault forget ─────────────────────────────────────────────────────────────
+
+@Command(
+    name = "forget",
+    description = ["Drop the vault entry of a profile that is no longer configured (one `profile remove` could not drop)"],
+    mixinStandardHelpOptions = true,
+)
+class VaultForgetCommand : java.util.concurrent.Callable<Int> {
+    @ParentCommand
+    lateinit var vaultCmd: VaultCommand
+
+    @Parameters(index = "0", description = ["Profile whose vault entry is dropped"])
+    lateinit var profile: String
+
+    @Option(
+        names = ["--passphrase-stdin"],
+        description = [
+            "Read the vault passphrase from the first line of standard input instead of the " +
+                "terminal (no interactive terminal required)",
+        ],
+    )
+    var passphraseStdin: Boolean = false
+
+    override fun call(): Int {
+        val baseDir = vaultCmd.parent.configBaseDir()
+        val vault = Vault(baseDir.resolve("vault.enc"))
+        if (!vault.exists()) {
+            System.err.println("No vault found.")
+            return 1
+        }
+        val configPath = baseDir.resolve("config.toml")
+        val passphrase =
+            if (passphraseStdin) readPassphraseStdin("--passphrase-stdin") else readPassphrase("Vault passphrase: ")
+        val dropped =
+            ConfigFileTransaction.withLock(configPath) {
+                // The entry of a configured profile is the only copy of its credentials: never dropped here.
+                if (Files.exists(configPath) &&
+                    profile in SyncConfig.parseRaw(Files.readString(configPath), configPath.toString()).providers
+                ) {
+                    null
+                } else {
+                    forgetVaultEntry(vault, passphrase, profile)
+                }
+            }
+        when (dropped) {
+            null -> {
+                System.err.println("Profile '$profile' is still configured; remove it with 'unidrive profile remove $profile'.")
+                return 1
+            }
+            true -> println("Dropped the vault entry of profile '$profile'.")
+            false -> println("The vault holds no entry for profile '$profile'.")
+        }
+        return 0
+    }
+}
+
+/** Drops [name]'s entry from [vault]; true when there was one. The other entries are written back unchanged. */
+internal fun forgetVaultEntry(
+    vault: Vault,
+    passphrase: CharArray,
+    name: String,
+): Boolean {
+    val data = vault.read(passphrase)
+    if (name !in data) return false
+    vault.write(passphrase, data - name)
+    return true
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────────────

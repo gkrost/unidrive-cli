@@ -1695,10 +1695,13 @@ class DaemonRuntimeTest {
                 assertTrue(quota.getValue("fetched_at_ms").jsonPrimitive.long > 0)
                 assertEquals(1, stub.quotaCalls, "inside the TTL the snapshot is served from memory")
 
-                // The cache is updated for offline `quota --json` reads too.
+                // The cache is updated for offline `quota --json` reads too. The daemon persists the tuple after
+                // it serves the fresh snapshot from memory, so wait for the write instead of racing it.
                 val db = StateDatabase(dbPath)
                 db.initialize()
                 try {
+                    val deadline = System.currentTimeMillis() + 5_000
+                    while (db.getSyncState("quota_used") != "1" && System.currentTimeMillis() < deadline) delay(50)
                     assertEquals("1", db.getSyncState("quota_used"), "the shared cache tuple is refreshed")
                 } finally {
                     db.close()

@@ -33,7 +33,8 @@ import java.util.concurrent.Callable
  * engine's back would be re-uploaded from the sync root by the next sync. With the profile's daemon running the
  * delete goes through the daemon (`hydration.unlink` / `hydration.rmdir` over a full-scope IPC connection), so its
  * state.db and the mount view drop the item at once and the daemon's own guards apply (an upload in flight is
- * `busy`; a recursive delete over a file whose bytes the cloud has not seen is `unsynced_below`). A daemon that holds
+ * `busy`; a recursive delete over a file whose bytes the cloud has not seen is `unsynced_below`; a folder whose current
+ * cloud listing the engine has not yet confirmed is `remote_unobserved` and its siblings, see [notEmptyRefusal]). A daemon that holds
  * the profile but does not answer is refused (`daemon_not_answering`); nothing is deleted behind its back. Without a
  * daemon the provider is called directly, but only while the profile has no state.db yet: once the mount has state,
  * a delete that bypasses the daemon would leave its rows and cache copies stale (`daemon_not_running`).
@@ -294,21 +295,21 @@ private fun removeViaDaemon(
     if (request.permanent) requirePermanentConsent(path, request, null)
     val unlink = askDaemonToDelete(endpoint, "hydration.unlink", path, recursive = false, permanent = request.permanent)
     if (unlink == null) return RmResult(path, isFolder = false, route = "daemon", deletedAs = deletedAs)
-    if (unlink != "path_is_folder") throw daemonRefusal(unlink, path, recursive = false)
+    if (unlink.token != "path_is_folder") throw daemonRefusal(unlink, path, recursive = false)
     requireFolderConsent(path, request) // -r is required for a permanent delete too; its consent was asked above
     val rmdir = askDaemonToDelete(endpoint, "hydration.rmdir", path, recursive = true, permanent = request.permanent)
     if (rmdir == null) return RmResult(path, isFolder = true, route = "daemon", deletedAs = deletedAs)
     throw daemonRefusal(rmdir, path, recursive = true)
 }
 
-/** Null when the daemon deleted; else its refusal token. Throws when the daemon cannot be asked or does not answer. */
+/** Null when the daemon deleted; else its refusal. Throws when the daemon cannot be asked or does not answer. */
 private fun askDaemonToDelete(
     endpoint: IpcEndpoint,
     verb: String,
     path: String,
     recursive: Boolean,
     permanent: Boolean = false,
-): String? {
+): DaemonRefusal? {
     val request =
         buildJsonObject {
             put("verb", verb)
@@ -329,7 +330,15 @@ private fun askDaemonToDelete(
                 "the daemon took the delete of '$path' but did not answer in time; it may still happen. Check with `unidrive ls`.",
             )
         is DaemonAnswer.Reply ->
-            if (answer.json.isTrue("ok")) null else (answer.json["error"] as? JsonPrimitive)?.content ?: "unknown"
+            if (answer.json.isTrue("ok")) {
+                null
+            } else {
+                DaemonRefusal(
+                    token = (answer.json["error"] as? JsonPrimitive)?.content ?: "unknown",
+                    reason = (answer.json["reason"] as? JsonPrimitive)?.content,
+                    child = (answer.json["child"] as? JsonPrimitive)?.content,
+                )
+            }
     }
 }
 
@@ -337,19 +346,15 @@ private fun JsonObject.isTrue(key: String): Boolean = (this[key] as? JsonPrimiti
 
 /** The rm refusal for a daemon's error token; the daemon's tokens are documented in HydrationIpcHandler. */
 private fun daemonRefusal(
-    token: String,
+    refusal: DaemonRefusal,
     path: String,
     recursive: Boolean,
 ): LifecycleError =
-    when (token) {
+    when (val token = refusal.token) {
         "unknown_path" -> LifecycleError("not_found", "no such remote path: $path")
         "not_empty" ->
             if (recursive) {
-                LifecycleError(
-                    "unsynced_below",
-                    "a file below '$path' holds changes the cloud has not received yet; nothing was deleted. " +
-                        "Let the upload finish, or delete that file on its own first.",
-                )
+                notEmptyRefusal(refusal, path)
             } else {
                 LifecycleError("folder_not_empty", "'$path' is not empty; rm -r deletes a folder with everything in it")
             }
