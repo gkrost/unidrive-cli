@@ -197,6 +197,39 @@ class HydrationRmdirDuringDeleteTest {
             assertEquals(0, hydration.uploadHealth().pending)
         }
 
+    // Test drive 3: the mount's own `rm -rf` (unidrive-mount ipc.rs) sends hydration.unlink per file and then a plain
+    // hydration.rmdir (no recursive, no discard_local). That sequence clears the stranded never-uploaded rows too; the folder,
+    // whose row is already gone, then answers unknown_path.
+    @Test
+    fun `the mount's rm -rf sequence clears stranded never-uploaded rows below a folder whose row is gone`() =
+        runTest(timeout = 5.minutes) {
+            val env = syncedTree()
+            env.provider.requireParents = true
+            val hydration = HydrationImpl(env.engine, env.db, recoveryUploadScope = this, exhaustedRetryDelaysMs = emptyList())
+            val reached = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            env.provider.deleteReached = reached
+            env.provider.deleteRelease = release
+            val rmdir = async(Dispatchers.IO) { hydration.rmdir("/dir", recursive = true) }
+            reached.await()
+            val created = assertIs<CreateResult.Ok>(hydration.create("conn", "h1", "/dir/new.txt"))
+            Files.writeString(created.cachePath, "only copy")
+            release.complete(Unit)
+            assertIs<RmdirResult.Ok>(rmdir.await())
+            env.provider.createFolderFailure = IllegalStateException("folder create refused")
+            hydration.openForWrite("conn", "h1", "/dir/new.txt", created.cachePath)
+            advanceUntilIdle()
+            hydration.closeHandle("conn", "h1")
+            assertNotNull(env.db.getEntry("/dir/new.txt"), "precondition: the stranded row is there")
+
+            assertEquals(UnlinkResult.Ok, hydration.unlink("/dir/new.txt"))
+            assertEquals(RmdirResult.Failed(HydrationError.UnknownPath), hydration.rmdir("/dir"))
+
+            assertNull(env.db.getEntry("/dir/new.txt"), "the stranded row is gone")
+            assertTrue(Files.notExists(created.cachePath), "its cache copy is gone")
+            assertEquals(0, hydration.uploadHealth().pending)
+        }
+
     @Test
     fun `a vetted file written during the provider delete keeps its row and its copy`() =
         runTest(timeout = 5.minutes) {
