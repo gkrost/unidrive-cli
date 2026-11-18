@@ -225,6 +225,23 @@ sealed interface HydrationError {
     }
 
     /**
+     * An upload the local staging volume (`local_space`) or the account's storage (`remote_space`) had no room for. The same
+     * upload goes once space is freed, so it is deferred: not the retry ladder, and the same bytes are not sent again before the
+     * refusal's deadline. Wire form: the STABLE token alone.
+     */
+    data class SpaceDeferred(
+        override val message: String,
+    ) : HydrationError {
+        companion object {
+            const val LOCAL_SPACE_TOKEN = "local_space"
+            const val REMOTE_SPACE_TOKEN = "remote_space"
+
+            /** The [SpaceDeferred] of a stored refusal reason, else null. */
+            fun parse(text: String): SpaceDeferred? = text.takeIf { it == LOCAL_SPACE_TOKEN || it == REMOTE_SPACE_TOKEN }?.let(::SpaceDeferred)
+        }
+    }
+
+    /**
      * The daemon is paused (archive#778) and the request would start a cloud download: refused at once, nothing is
      * started and nothing is left waiting. A front-end asks the user whether to lift the pause (the action
      * unpauses everything), calls `daemon.resume` and sends the request again. A file already in the cache is

@@ -100,6 +100,7 @@ class HydrationErrorTest {
             is HydrationError.BlockedByParent -> "blocked_by_parent"
             is HydrationError.ParentGone -> "parent_gone"
             is HydrationError.PlanLimit -> "plan_limit"
+            is HydrationError.SpaceDeferred -> "space_deferred"
             HydrationError.Paused -> "paused"
             HydrationError.ReadOnly -> "read_only"
             HydrationError.PermanentUnsupported -> "permanent_unsupported"

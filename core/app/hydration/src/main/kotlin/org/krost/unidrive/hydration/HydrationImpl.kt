@@ -1897,6 +1897,7 @@ class HydrationImpl(
         when (e) {
             is org.krost.unidrive.ParentGoneException -> HydrationError.ParentGone(e.parent)
             is org.krost.unidrive.PlanLimitException -> HydrationError.PlanLimit(e.detail)
+            is UploadDeferredForSpaceException -> HydrationError.SpaceDeferred(e.token)
             else -> HydrationError.Generic(e.message ?: "upload refused")
         }
 
@@ -1904,12 +1905,14 @@ class HydrationImpl(
     private fun storedRefusalError(reason: String): HydrationError =
         HydrationError.ParentGone.parse(reason)
             ?: HydrationError.PlanLimit.parse(reason)
+            ?: HydrationError.SpaceDeferred.parse(reason)
             ?: HydrationError.Generic("refused earlier: $reason")
 
     // gkrost/unidrive-cli#145: HTTP 402 Payment Required from an upload is the plan's refusal, whichever provider answered it and
     // whether or not it typed it: the same bytes are refused again until the plan changes. Anything else is returned unchanged.
+    // A typed space refusal is deferred under its own token ([spaceDeferralOf]).
     private fun planLimitOf(e: org.krost.unidrive.ProviderException): Exception =
-        if (e.httpStatus == HTTP_PAYMENT_REQUIRED && e !is org.krost.unidrive.PermanentUploadFailureException) {
+        spaceDeferralOf(e) ?: if (e.httpStatus == HTTP_PAYMENT_REQUIRED && e !is org.krost.unidrive.PermanentUploadFailureException) {
             org.krost.unidrive.PlanLimitException(e.message ?: "upload refused by the plan (402)", cause = e, requestId = e.requestId)
         } else {
             e
