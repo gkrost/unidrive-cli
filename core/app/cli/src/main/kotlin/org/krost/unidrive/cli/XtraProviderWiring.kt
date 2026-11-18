@@ -11,6 +11,7 @@ import org.krost.unidrive.xtra.XtraPlaintextListings
 import org.krost.unidrive.xtra.XtraKeyManager
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlin.system.exitProcess
 
 /**
  * The X-tra layer (client-side encryption, config key `xtra_encryption`): every provider this CLI builds is
@@ -29,27 +30,28 @@ internal fun Main.wrapWithXtra(
     if (!Files.exists(keyPath)) {
         System.err.println("Error: a profile sets xtra_encryption but $keyPath does not exist.")
         System.err.println("Create it first: unidrive xtra init")
-        System.exit(1)
-        error("unreachable")
+        exitProcess(1)
     }
     val strategy =
         when (val algorithm = rp?.xtra_algorithm?.trim()?.takeIf { it.isNotEmpty() } ?: "aes-gcm") {
             "aes-gcm" -> AesGcmStrategy()
-            "age-v1" -> AgeV1Strategy(
-                lazy {
-                    val store = XtraAgeKeyStore(keyPath.parent.resolve("xtra-age.key"))
-                    if (!store.exists()) {
-                        store.generate(xtraPassphrase())
-                        System.err.println("Generated a new X-tra age identity at ${store.path}")
-                    }
-                    store
-                },
-                this::xtraPassphrase,
-            )
+            "age-v1" -> {
+                // The identity never self-generates on the first content operation (a root secret must not appear
+                // silently); like the RSA key, it must exist, or the profile refuses to run.
+                val ageKeyPath = keyPath.parent.resolve("xtra-age.key")
+                if (!Files.exists(ageKeyPath)) {
+                    System.err.println("Error: a profile sets xtra_algorithm = \"age-v1\" but $ageKeyPath does not exist.")
+                    System.err.println("Create it first: unidrive xtra init-age")
+                    exitProcess(1)
+                }
+                AgeV1Strategy(
+                    lazy { XtraAgeKeyStore(ageKeyPath) },
+                    this::xtraPassphrase,
+                )
+            }
             else -> {
                 System.err.println("Error: unknown xtra_algorithm \"$algorithm\" (known: aes-gcm, age-v1).")
-                System.exit(1)
-                error("unreachable")
+                exitProcess(1)
             }
         }
     // The listings decorator sits below the cipher, so both halves see the same provider: the listings answer
