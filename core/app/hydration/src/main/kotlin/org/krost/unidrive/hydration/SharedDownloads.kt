@@ -113,8 +113,10 @@ internal class SharedDownloads<T>(
         callerContext: CoroutineContext,
         download: suspend () -> T,
     ): Download<T> {
-        // A parent that has ended (the daemon is stopping) is not inherited: the download would never start.
-        val context = callerContext + (parent?.takeIf { it.isActive } ?: EmptyCoroutineContext)
+        // gkrost/unidrive-cli#438 finding 8: a parent that has ended (the daemon is stopping) refuses the download: started
+        // without it, it would run as a root coroutine nobody cancels or joins and write state.db after the stop closed it.
+        check(parent?.isActive != false) { "the daemon is stopping" }
+        val context = callerContext + (parent ?: EmptyCoroutineContext)
         val produced = AtomicReference<T?>()
         val holder = arrayOfNulls<Download<T>>(1)
         val job =
