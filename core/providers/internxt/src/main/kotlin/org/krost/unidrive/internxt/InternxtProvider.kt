@@ -365,10 +365,7 @@ class InternxtProvider(
      */
     override suspend fun reloadCredentials() {
         authService.initialize()
-        notificationsStartLock.withLock {
-            notificationsClient?.disconnect()
-            notificationsClient = null
-        }
+        notificationsStartLock.withLock { detachNotificationsClient()?.disconnect() }
         if (authService.isAuthenticated && remoteHintsWanted) ensureNotificationsClient()
     }
 
@@ -376,19 +373,19 @@ class InternxtProvider(
     override suspend fun forgetCredentials() {
         authService.forget()
         clearCachedSeed()
-        notificationsStartLock.withLock {
-            notificationsClient?.disconnect()
-            notificationsClient = null
-        }
+        notificationsStartLock.withLock { detachNotificationsClient()?.disconnect() }
     }
+
+    // The client taken out of [notificationsClient] under [notificationsGuard], as close() takes it: a sign-out, a
+    // credential reload or a forget that overlaps close() (which does not take the start lock, #532) never hands the same
+    // client to both, and the field is never written outside the guard.
+    private fun detachNotificationsClient(): NotificationsClient? =
+        synchronized(notificationsGuard) { notificationsClient.also { notificationsClient = null } }
 
     override suspend fun logout() {
         // Under the start lock, like reloadCredentials and forgetCredentials: a sign-in re-running the
         // notifications client must not race the teardown, and the disconnect must not race a start.
-        notificationsStartLock.withLock {
-            notificationsClient?.disconnect()
-            notificationsClient = null
-        }
+        notificationsStartLock.withLock { detachNotificationsClient()?.disconnect() }
         clearCachedSeed()
         // archive#1054: the staged ciphertext of the account's files and their resume state do not outlive the sign-in.
         withContext(Dispatchers.IO) { tombstoneStore.discardAll() }

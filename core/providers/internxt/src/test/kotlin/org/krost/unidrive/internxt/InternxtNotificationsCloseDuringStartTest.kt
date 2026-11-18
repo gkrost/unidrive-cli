@@ -148,6 +148,67 @@ class InternxtNotificationsCloseDuringStartTest {
         }
     }
 
+    // A sign-out or a credential reload overlapping close() (#532: close() does not take the start lock): both end with no
+    // client, and the client is taken out once, by one of them.
+    @Test
+    fun `logout and reload overlapping close leave no client and close its socket once`() {
+        repeat(20) { round ->
+            val tmp = TestScratch.directory("internxt-notif-overlap-")
+            try {
+                writeValidCredentials(tmp)
+                val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = tmp, notificationsUrl = "http://127.0.0.1:9", notificationsEnabled = true))
+                val connects = AtomicInteger()
+                val closes = AtomicInteger()
+                provider.notificationsClientFactory = { tokenSupplier, onRemoteChange ->
+                    NotificationsClient(
+                        notificationsUrl = "http://127.0.0.1:9",
+                        tokenSupplier = tokenSupplier,
+                        onRemoteChange = onRemoteChange,
+                        socketFactory = { _, _ -> ClosingSocket(connects, closes) },
+                    )
+                }
+                runBlocking {
+                    provider.authenticate()
+                    provider.onRemoteChangeHint { }
+                }
+                assertEquals(1, connects.get(), "round $round: the client is up")
+                val go = CountDownLatch(1)
+                val other =
+                    Thread {
+                        go.await()
+                        runCatching { runBlocking { if (round % 2 == 0) provider.logout() else provider.reloadCredentials() } }
+                    }.apply { isDaemon = true }
+                other.start()
+                go.countDown()
+                provider.close()
+                other.join(30_000)
+
+                assertNull(provider.notificationsClient, "round $round: no client after both")
+                assertEquals(1, closes.get(), "round $round: the socket is closed once")
+            } finally {
+                Files.walk(tmp).sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) }
+            }
+        }
+    }
+
+    private class ClosingSocket(
+        private val connects: AtomicInteger,
+        private val closes: AtomicInteger,
+    ) : NotificationsSocket {
+        override fun on(
+            event: String,
+            listener: (List<Any?>) -> Unit,
+        ) = Unit
+
+        override fun connect() {
+            connects.incrementAndGet()
+        }
+
+        override fun close() {
+            closes.incrementAndGet()
+        }
+    }
+
     private class CountingLatch {
         val latch = CountDownLatch(1)
     }
