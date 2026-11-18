@@ -102,10 +102,18 @@ internal object ProfileRemover {
                         return VaultDrop(removed = forgetVaultEntry(vault, resolution.chars, name), kept = false, warning = null)
                     } catch (_: javax.crypto.AEADBadTagException) {
                         "wrong vault passphrase"
+                    } catch (e: java.security.GeneralSecurityException) {
+                        "the vault could not be decrypted (${e.javaClass.simpleName})"
                     } catch (e: IOException) {
-                        "the vault could not be written (${e.javaClass.simpleName})"
-                    } catch (e: Exception) {
-                        "the vault could not be read (${e.javaClass.simpleName})"
+                        "the vault could not be read or written (${e.javaClass.simpleName})"
+                    } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                        throw e
+                    } catch (e: IllegalStateException) {
+                        // A file too short to be a vault.
+                        "the vault is damaged (${e.javaClass.simpleName})"
+                    } catch (e: IllegalArgumentException) {
+                        // Decrypted bytes that are not the vault's JSON (a SerializationException is one).
+                        "the vault is damaged (${e.javaClass.simpleName})"
                     } finally {
                         resolution.chars.fill('\u0000')
                     }

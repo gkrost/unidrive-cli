@@ -674,6 +674,22 @@ class ProfileRemoveTest {
     }
 
     @Test
+    fun `a damaged vault keeps the entry, says so, and the removal still completes`() {
+        populate()
+        Files.writeString(dir.resolve("vault.enc"), "short")
+        vaultSources(vaultPass)
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--json"), stderr())
+
+        val r = json()
+        assertTrue(r.getValue("kept").jsonObject.getValue("vault_entry").jsonPrimitive.boolean)
+        val warning = r.getValue("warnings").jsonArray.map { it.jsonPrimitive.content }.single { it.startsWith("vault: ") }
+        assertTrue("the vault is damaged" in warning, warning)
+        assertEquals("short", Files.readString(dir.resolve("vault.enc")), "a damaged vault is not touched")
+        assertEquals(setOf("keep"), profiles())
+    }
+
+    @Test
     fun `without a vault nothing about a vault is reported or created`() {
         populate()
         vaultSources(vaultPass)
