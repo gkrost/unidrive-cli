@@ -13,8 +13,8 @@ import java.nio.file.Paths
  * `xtra_encryption`). One key per installation, beside config.toml: export it to a second machine with `export-key`
  * and `import-key`; a lost key loses the encrypted content — nothing else can decrypt it. The `-age` verbs do the
  * same for the age-v1 algorithm's identity (`xtra_algorithm = "age-v1"`, file `xtra-age.key`), whose recovery story
- * is stronger: the export is the standard age identity, so `age -d -i <identity-file>` decrypts every stored object
- * with no unidrive code involved.
+ * is stronger: the export is the standard age identity, so `age -d -i <identity-file>` decrypts the age file that
+ * begins after the stored object's 266-byte XTRA header, not the raw object.
  */
 @Command(
     name = "xtra",
@@ -187,7 +187,7 @@ class XtraInitAgeCommand : Runnable {
 
 @Command(
     name = "export-age",
-    description = ["Export the age identity for backup (the standard age format: 'age -d -i <file>' decrypts every stored object)"],
+    description = ["Export the age identity for backup (standard age format; age decrypts the age file after the stored object's 266-byte XTRA header)"],
     mixinStandardHelpOptions = true,
 )
 class XtraExportAgeCommand : Runnable {
@@ -211,7 +211,7 @@ class XtraExportAgeCommand : Runnable {
         org.krost.unidrive.io.OwnerOnlyAtomicWrite.replace(dest, XtraAgeKeyStore(keyPath).exportIdentity(xtraCmd.parent.xtraPassphrase()).toByteArray())
         println("Age identity exported to $dest")
         println("WARNING: this file decrypts everything the identity encrypts — store it accordingly.")
-        println("It is the standard age identity: age -d -i '$dest' <stored-object> decrypts offline, no unidrive needed.")
+        println("It is the standard age identity. age -d -i '$dest' decrypts the age file that begins after the stored object's 266-byte XTRA header, not the raw object.")
     }
 }
 

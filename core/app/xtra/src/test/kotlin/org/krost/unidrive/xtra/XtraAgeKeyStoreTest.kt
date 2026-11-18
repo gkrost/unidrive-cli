@@ -8,6 +8,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kage.crypto.x25519.X25519Identity
 import org.krost.unidrive.testing.TestScratch
@@ -60,6 +61,26 @@ class XtraAgeKeyStoreTest {
 
         assertFailsWith<AEADBadTagException> { store.load(PASSPHRASE) }
         assertEquals(before, store.exportIdentity(OTHER_PASSPHRASE))
+    }
+
+    // A short passphrase never wraps an imported identity, and a forced import of one does not retire the old file.
+    @Test
+    fun `an import refuses a short passphrase before it writes or retires an identity`() {
+        val source = store("import-floor-source")
+        source.generate(PASSPHRASE)
+        val exported = source.exportIdentity(PASSPHRASE)
+        val shortPass = "sevench".toCharArray()
+
+        val fresh = store("import-floor-fresh")
+        assertFailsWith<IllegalArgumentException> { fresh.importIdentity(exported, shortPass) }
+        assertTrue(!fresh.exists(), "a short passphrase must not create an identity file")
+
+        val local = store("import-floor-force")
+        local.generate(PASSPHRASE)
+        val bytesBefore = Files.readAllBytes(local.path)
+        assertFailsWith<IllegalArgumentException> { local.importIdentity(exported, shortPass, force = true) }
+        assertContentEquals(bytesBefore, Files.readAllBytes(local.path))
+        assertNull(retiredCopyOf(local), "a refused import must not retire the identity")
     }
 
     @Test

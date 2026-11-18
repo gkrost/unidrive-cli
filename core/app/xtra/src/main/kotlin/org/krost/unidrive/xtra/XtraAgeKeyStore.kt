@@ -72,6 +72,11 @@ class XtraAgeKeyStore(
         // Prove the import is an identity before it can replace one: the decode needs no passphrase (unlike the
         // RSA key's probe load), so it happens inside, where a wrong file fails with the identity untouched.
         X25519Identity.Companion.decode(encoded)
+        // This path wraps a new envelope, so the floor applies here, and before the backup: a short passphrase
+        // must leave the existing identity in place and write no .bak.
+        require(passphrase.size >= XtraKeyManager.MIN_PASSPHRASE_LENGTH) {
+            "Passphrase must be at least ${XtraKeyManager.MIN_PASSPHRASE_LENGTH} characters"
+        }
         val replaced = exists()
         // The identity file is the only copy of what decrypts the account's content, so an import never silently
         // replaces one: a mistyped --input, or the other machine's older identity, would make every file this
