@@ -107,4 +107,58 @@ class ConflictTransfersInPassTwoTest {
             assertEquals(listOf(true), paced, "the conflict's download held a reservation on the shared budget")
             assertTrue(provider.uploadedPaths.any { it != "/doc.txt" }, "the kept local edit went up: ${provider.uploadedPaths}")
         }
+
+    private suspend fun manyConflictsPlanned(
+        engine: SyncEngine,
+        names: List<String>,
+    ) {
+        fun at(path: String, content: String, version: Int) =
+            item(content, version).copy(id = "id-$path", name = path.removePrefix("/"), path = path)
+        for (p in names) provider.files[p] = "old".toByteArray()
+        provider.deltaItems = names.map { at(it, "old", 1) }
+        provider.deltaCursor = "cursor-1"
+        engine.syncOnce()
+        for (p in names) {
+            provider.files[p] = cloudText.toByteArray()
+            Files.writeString(syncRoot.resolve(p.removePrefix("/")), "local edit of $p")
+            Files.setLastModifiedTime(syncRoot.resolve(p.removePrefix("/")), FileTime.from(Instant.parse("2026-03-28T13:00:00Z")))
+        }
+        provider.deltaItems = names.map { at(it, cloudText, 2) }
+        provider.deltaCursor = "cursor-2"
+    }
+
+    @Test
+    fun `deferred conflicts that keep failing stop the pass at the consecutive-failure cap`() =
+        runTest {
+            val n = SyncEngine.CONSECUTIVE_SYNC_FAILURE_HARD_CAP + 10
+            val engine = engine()
+            manyConflictsPlanned(engine, (1..n).map { "/c$it.txt" })
+            val attempts = java.util.concurrent.atomic.AtomicInteger()
+            provider.beforeDownload = { attempts.incrementAndGet(); throw org.krost.unidrive.ProviderException("upstream down") }
+
+            val stopped = runCatching { engine.syncOnce() }.exceptionOrNull()
+
+            assertTrue(
+                stopped is org.krost.unidrive.ProviderException && "consecutive failures" in stopped.message.orEmpty(),
+                "the pass stops as Pass 1 did: $stopped",
+            )
+            assertTrue(attempts.get() < n, "the conflicts after the cap were not attempted: ${attempts.get()} of $n")
+        }
+
+    @Test
+    fun `deferred conflict failures with successes between them do not stop the pass`() =
+        runTest {
+            val n = SyncEngine.CONSECUTIVE_SYNC_FAILURE_HARD_CAP + 10
+            val engine = engine()
+            manyConflictsPlanned(engine, (1..n).map { "/c$it.txt" })
+            val before = provider.downloadByIdCalls.size
+            // Every other conflict's download fails: the streak never grows past a few.
+            provider.beforeDownload = { path ->
+                if (path.removePrefix("/c").removeSuffix(".txt").toInt() % 2 == 0) throw org.krost.unidrive.ProviderException("refused")
+            }
+
+            engine.syncOnce()
+
+            assertEquals(n / 2, provider.downloadByIdCalls.size - before, "every healthy conflict download ran")
+        }
 }

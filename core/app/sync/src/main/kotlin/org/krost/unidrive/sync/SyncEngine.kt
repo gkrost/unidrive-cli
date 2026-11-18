@@ -1891,6 +1891,10 @@ open class SyncEngine(
         // doSyncOnce so the streaming-gather executor (gatherStreamingChanges)
         // can share them. On the non-streaming path nothing else mutates
         // them before this point, so the move is behaviour-preserving.
+        // The Pass 1 actions run here (bytesInPassTwo) keep Pass 1's stop rule: CONSECUTIVE_SYNC_FAILURE_HARD_CAP failures
+        // in a row (a success resets the streak) end the pass as an upstream outage. Pass 1's streak carries over.
+        val deferredFailureStreak = AtomicInteger(consecutiveFailures)
+        val deferredCapFailure = java.util.concurrent.atomic.AtomicReference<ProviderException?>(null)
         try {
             coroutineScope {
                 // A pool of perProviderConcurrency workers takes the transfers in plan order, instead of one coroutine
@@ -1927,7 +1931,28 @@ open class SyncEngine(
                                                 stopPass = { this@coroutineScope.cancel() },
                                                 // A Pass 1 action run here is reported with the other Pass 1 actions, by label.
                                                 applied = {
-                                                    if (action in bytesInPassTwo) appliedCounts.merge(actionLabel(action), 1, Int::plus)
+                                                    if (action in bytesInPassTwo) {
+                                                        appliedCounts.merge(actionLabel(action), 1, Int::plus)
+                                                        deferredFailureStreak.set(0)
+                                                    }
+                                                },
+                                                failed = {
+                                                    if (action in bytesInPassTwo) {
+                                                        val streak = deferredFailureStreak.incrementAndGet()
+                                                        if (streak >= CONSECUTIVE_SYNC_FAILURE_HARD_CAP &&
+                                                            deferredCapFailure.compareAndSet(
+                                                                null,
+                                                                ProviderException("Stopping sync after $streak consecutive failures"),
+                                                            )
+                                                        ) {
+                                                            log.error(
+                                                                "Stopping sync pass: {} consecutive action failures (last on {}) — treating as upstream outage",
+                                                                streak,
+                                                                action.path,
+                                                            )
+                                                            this@coroutineScope.cancel()
+                                                        }
+                                                    }
                                                 },
                                             )
                                         } finally {
@@ -1950,12 +1975,13 @@ open class SyncEngine(
         } catch (e: CancellationException) {
             // Scope cancelled by an AuthenticationException in a child job — the rethrow happens
             // just below so callers see the auth failure, not the cancellation.
-            if (authFailure.get() == null) throw e
+            if (authFailure.get() == null && deferredCapFailure.get() == null) throw e
         }
 
         // UD-222: AuthenticationException trumps everything — surface it to the caller so token
         // refresh / re-auth flows trigger instead of a silent "0 downloaded, many failed" result.
         authFailure.get()?.let { throw it }
+        deferredCapFailure.get()?.let { throw it }
 
         // Promote unconditionally. The original gate was `transferFailures == 0`,
         // which protected against "cursor advances past a failed download and the
@@ -2146,6 +2172,8 @@ open class SyncEngine(
         stopPass: () -> Unit,
         settled: () -> Unit = {},
         applied: () -> Unit = {},
+        // A failure that is no auth failure and no cancel.
+        failed: () -> Unit = {},
     ) {
         val download = action as? SyncAction.DownloadContent
         val upload = action as? SyncAction.Upload
@@ -2184,14 +2212,17 @@ open class SyncEngine(
             if (download != null) handlePermanentDownloadFailure(download, e) else transferFailed(action, what, e)
             transferFailures.incrementAndGet()
             settled()
+            failed()
         } catch (e: PermanentUploadFailureException) {
             if (upload != null) handlePermanentUploadFailure(upload, e) else transferFailed(action, what, e)
             transferFailures.incrementAndGet()
             settled()
+            failed()
         } catch (e: Exception) {
             transferFailed(action, what, e)
             transferFailures.incrementAndGet()
             settled()
+            failed()
         }
     }
 
