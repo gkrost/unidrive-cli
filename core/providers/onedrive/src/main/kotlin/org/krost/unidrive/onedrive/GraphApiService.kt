@@ -955,13 +955,14 @@ class GraphApiService(
         // Two attempts: the probe-then-PUT race window means a session reported alive at
         // resolveUploadSession can be gone by the first chunk. A second attempt with a
         // freshly-minted session closes that race transparently to the caller.
+        // #748 finding 11: only the session's own 404/410 (UploadSessionGoneException) is retried. A 404 from the create
+        // or a path lookup (a parent folder that no longer exists) is the real error and surfaces at once.
         var lastSessionGone: GraphApiException? = null
         repeat(2) { attempt ->
             try {
                 return uploadLargeFileOnce(localPath, UploadTarget(remotePath, itemId), fileSize, onProgress, fileSystemInfo, conflictBehavior, ifMatchETag)
-            } catch (e: GraphApiException) {
-                val isSessionGone = e.statusCode == 404 || e.statusCode == 410
-                if (attempt == 0 && isSessionGone) {
+            } catch (e: UploadSessionGoneException) {
+                if (attempt == 0) {
                     log.info(
                         "OneDrive upload session for {} was gone (status {}); creating a fresh session and retrying once",
                         remotePath,
@@ -1045,7 +1046,7 @@ class GraphApiService(
         if (uploadedItem == null) {
             // The session never committed (a failed commit, a conflict at the end): resuming it would end the same way on
             // every attempt. It is discarded; the session-gone retry creates a fresh one.
-            throw GraphApiException(
+            throw UploadSessionGoneException(
                 "OneDrive upload session for $remotePath holds every byte but returned no item and none at the target " +
                     "holds these bytes; discarding the session",
                 410,
@@ -1424,7 +1425,7 @@ class GraphApiService(
         endByte: Long,
         fileSize: Long,
     ): ChunkUploadResult {
-        val gone = failure.statusCode == 404 || failure.statusCode == 410
+        val gone = failure is UploadSessionGoneException
         if (gone && answerLost && endByte == fileSize - 1) return ChunkUploadResult.GoneAfterLostAnswer(failure)
         throw failure
     }
@@ -1475,7 +1476,7 @@ class GraphApiService(
                 // Session expired or gone — surface as a 404/410 so uploadLargeFile's two-attempt
                 // wrapper recognises it and retries with a fresh session.
                 status == 404 || status == 410 ->
-                    GraphApiException(
+                    UploadSessionGoneException(
                         "OneDrive upload session is gone (status $status) at offset $currentOffset; " +
                             "the server cleaned it up between probe and PUT — a fresh session will be created on retry",
                         status,
@@ -1516,7 +1517,7 @@ class GraphApiService(
                 return null
             }
         if (statusResponse.status.value == 404 || statusResponse.status.value == 410) {
-            throw GraphApiException("Upload session expired while retrying at offset $currentOffset", statusResponse.status.value)
+            throw UploadSessionGoneException("Upload session expired while retrying at offset $currentOffset", statusResponse.status.value)
         }
         if (!statusResponse.status.isSuccess()) return null
         val body =
@@ -1953,11 +1954,18 @@ private class DecodedDeltaItems(
     val skippedWithoutId: Int,
 )
 
-class GraphApiException(
+open class GraphApiException(
     message: String,
     val statusCode: Int = 0,
     requestId: String? = null,
 ) : ProviderException(message, requestId = requestId, httpStatus = statusCode.takeIf { it > 0 })
+
+// The upload session itself is gone or unusable (its chunk PUT or status probe answered 404/410, or it was discarded as
+// stuck): the one failure uploadLargeFile answers with a fresh session (#748 finding 11).
+class UploadSessionGoneException(
+    message: String,
+    statusCode: Int,
+) : GraphApiException(message, statusCode)
 
 // Where an upload lands: [remotePath] names the file, [itemId] (when set) is the existing item it replaces in place.
 private class UploadTarget(
