@@ -9,6 +9,7 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 
 /**
@@ -60,6 +61,29 @@ class RmdirWindowGuardTest {
 
         // Nothing below was indexed after the listing: no refusal.
         refuseIndexedAfterWholeListing(env.db.getEntriesByPrefix("/dir/"), folders.lastWholeListing("/dir"))
+    }
+
+    // Test drive 3: a file this mount uploaded into the folder after the client's last whole listing, whose cache copy was then
+    // evicted, read as a cloud item a delta had indexed: every recursive rmdir of the folder was refused remote_unobserved
+    // until a daemon restart. A file this computer wrote (or read) is one the client knows.
+    @Test
+    fun `a file the mount uploaded after the folder's last listing does not refuse its recursive rmdir`() = runTest {
+        val env = Env()
+        env.provider.seedFolder("/R")
+        env.mount.enumerateRemoteIntoState(reset = false)
+        val hydration = HydrationImpl(env.engine, env.db, recoveryUploadScope = this)
+        val listed = assertIs<ListResult.Ok>(hydration.list("/R"))
+        assertEquals(true, listed.complete, "precondition: the folder was listed whole")
+
+        val created = assertIs<CreateResult.Ok>(hydration.create("conn", "h1", "/R/n1.txt"))
+        java.nio.file.Files.writeString(created.cachePath, "uploaded here")
+        hydration.openForWrite("conn", "h1", "/R/n1.txt", created.cachePath)
+        testScheduler.advanceUntilIdle()
+        assertNotNull(env.db.getEntry("/R/n1.txt")?.remoteId, "precondition: the upload landed")
+        hydration.closeHandle("conn", "h1")
+        assertIs<DehydrateResult.Ok>(hydration.dehydrate("/R/n1.txt"))
+
+        assertEquals(RmdirResult.Ok, hydration.rmdir("/R", recursive = true))
     }
 
     @Test

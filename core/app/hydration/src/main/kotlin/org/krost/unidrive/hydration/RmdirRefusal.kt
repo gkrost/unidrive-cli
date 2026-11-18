@@ -58,13 +58,15 @@ internal fun unobservedChild(
 // against, and the delete's own listings still guard.
 // gkrost/unidrive-cli#739: [listedAt] has the clock's full resolution, as `lastSynced` has, and of several such rows the one
 // indexed first is named (then the path): the answer does not hang on the order the database returns the rows in.
+// Test drive 3: a row with a local baseline ([SyncEntry.localMtime]) was written or read here, even when its cache copy has
+// since been evicted (not hydrated): the client knows it. Only a row that never had a copy here can be one a delta indexed.
 internal fun refuseIndexedAfterWholeListing(
     rowsBelow: List<SyncEntry>,
     listedAt: Instant?,
 ) {
     if (listedAt == null) return
     rowsBelow
-        .filter { !it.isFolder && !it.isHydrated && it.lastSynced.isAfter(listedAt) }
+        .filter { !it.isFolder && !it.isHydrated && it.localMtime == null && it.lastSynced.isAfter(listedAt) }
         .minWithOrNull(compareBy<SyncEntry>({ it.lastSynced }, { it.path }))
         ?.let { throw UnobservedChildException(UnobservedChildException.UNOBSERVED, it.path) }
 }
