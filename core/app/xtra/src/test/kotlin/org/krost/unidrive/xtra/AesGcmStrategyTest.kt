@@ -10,12 +10,28 @@ import kotlin.test.assertFailsWith
 
 class AesGcmStrategyTest {
 
+    // The cipher tests hand the file key and the IV directly, so the key manager must never be demanded: the
+    // lazy that fires would fail the test.
+    private fun strategy() = AesGcmStrategy(lazy { error("the cipher path never demands the key manager") })
+
     private fun fileKey() = ByteArray(32).also { SecureRandom().nextBytes(it) }
     private fun iv(strategy: AesGcmStrategy) = ByteArray(strategy.ivLength).also { SecureRandom().nextBytes(it) }
 
+    // The header slot's key journey, which the strategy (not the provider) owns: RSA-OAEP in, RSA-OAEP out.
+    @Test
+    fun `wrap and unwrap carry the file key through the header's slot`() {
+        val dir = org.krost.unidrive.testing.TestScratch.directory("xtra-aesgcm-test")
+        val km = XtraKeyManager(dir.resolve("xtra.key"))
+        km.generate("testpass1234".toCharArray())
+        val keyed = AesGcmStrategy(lazy { km })
+
+        val key = fileKey()
+        assertContentEquals(key, keyed.unwrapFileKey(keyed.wrapFileKey(key)))
+    }
+
     @Test
     fun `encrypt then decrypt round-trips`() {
-        val strategy = AesGcmStrategy()
+        val strategy = strategy()
         val key = fileKey()
         val iv = iv(strategy)
         val plaintext = "Hello, X-tra!".toByteArray()
@@ -33,7 +49,7 @@ class AesGcmStrategyTest {
 
     @Test
     fun `empty input round-trips`() {
-        val strategy = AesGcmStrategy()
+        val strategy = strategy()
         val key = fileKey()
         val iv = iv(strategy)
 
@@ -50,7 +66,7 @@ class AesGcmStrategyTest {
 
     @Test
     fun `large input round-trips across the buffer boundary`() {
-        val strategy = AesGcmStrategy()
+        val strategy = strategy()
         val key = fileKey()
         val iv = iv(strategy)
         val plaintext = ByteArray(200_000).also { SecureRandom().nextBytes(it) }
@@ -66,7 +82,7 @@ class AesGcmStrategyTest {
 
     @Test
     fun `a tampered ciphertext fails the decrypt`() {
-        val strategy = AesGcmStrategy()
+        val strategy = strategy()
         val key = fileKey()
         val iv = iv(strategy)
         val encrypted = ByteArrayOutputStream().also { out ->
@@ -81,7 +97,7 @@ class AesGcmStrategyTest {
 
     @Test
     fun `a wrong key fails the decrypt`() {
-        val strategy = AesGcmStrategy()
+        val strategy = strategy()
         val iv = iv(strategy)
         val encrypted = ByteArrayOutputStream().also { out ->
             strategy.encrypt(ByteArrayInputStream("payload".toByteArray()), out, fileKey(), iv)
@@ -99,7 +115,7 @@ class AesGcmStrategyTest {
     // X-tra profile would answer a wrong size.
     @Test
     fun `the size math inverts exactly and refuses foreign sizes`() {
-        val strategy = AesGcmStrategy()
+        val strategy = strategy()
         val fixed = 10L + 256 + 12
         val seg = 65536L
         val tag = 16L
@@ -117,7 +133,7 @@ class AesGcmStrategyTest {
     // segment boundary fails the final segment's tag instead of yielding short plaintext.
     @Test
     fun `a stream truncated at a segment boundary fails the decrypt`() {
-        val strategy = AesGcmStrategy()
+        val strategy = strategy()
         val key = fileKey()
         val iv = iv(strategy)
         val plaintext = ByteArray(3 * 65536).also { SecureRandom().nextBytes(it) }
@@ -134,7 +150,7 @@ class AesGcmStrategyTest {
 
     @Test
     fun `a spliced stream fails the decrypt`() {
-        val strategy = AesGcmStrategy()
+        val strategy = strategy()
         val key = fileKey()
         val iv = iv(strategy)
         val encryptedOfA = ByteArrayOutputStream().also { out ->

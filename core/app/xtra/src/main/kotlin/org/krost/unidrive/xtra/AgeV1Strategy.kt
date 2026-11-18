@@ -17,8 +17,10 @@ import org.bouncycastle.crypto.InvalidCipherTextException
  * (age-encryption.org/v1) — its own header wraps a fresh random 128-bit file key to the account's X25519 identity
  * (one per installation, [XtraAgeKeyStore]), and its payload is a 16-byte nonce plus 64 KiB ChaCha20-Poly1305
  * STREAM chunks. The [XtraHeader] stays the dispatcher, but for this algorithm its wrapped-key slot is vestigial:
- * upload() RSA-wraps a random key there that this strategy does not consume (the slot's length is part of the
- * stored layout, which [plaintextSizeOf] inverts), and the age file carries its own wrap of its own key.
+ * the age file carries its own wrap of its own key, so the strategy fills the slot with zeroes — no key material,
+ * no wrap, no RSA pair anywhere on this path (the slot's length stays part of the stored layout, which
+ * [plaintextSizeOf] inverts; files written when the provider did the RSA wrap carry a wrapped slot of the same
+ * length, which reads back the same way: nothing consumes it).
  *
  * What this buys against the default [AesGcmStrategy], at its measured ~4x-lower raw throughput (still >100x the
  * engines' transfer rates): every stored object decrypts offline with the standard `age` tool from the identity
@@ -39,9 +41,14 @@ class AgeV1Strategy(
     // age draws its own 16-byte payload nonce per file; nothing external is mixed in.
     override val ivLength: Int = 0
 
-    // upload() RSA-wraps a random key into the XTRA header for every algorithm; this algorithm ignores it, but
-    // the slot's length is part of the stored layout [plaintextSizeOf] inverts.
+    // The vestigial slot's length, kept in the stored layout [plaintextSizeOf] inverts.
     override val wrappedKeyLength: Int = RSA_WRAPPED_KEY_LENGTH
+
+    // The slot is layout-only here: zero-filled (it carries no key material), and filled without the identity —
+    // no passphrase demand belongs to the write path of an algorithm whose key lives inside the age file.
+    override fun wrapFileKey(fileKey: ByteArray): ByteArray = ByteArray(wrappedKeyLength)
+
+    override fun unwrapFileKey(wrapped: ByteArray): ByteArray = ByteArray(0)
 
     // The age file's constant overhead — the header's length for one X25519 stanza plus the payload's 16-byte
     // nonce — measured from a zero-byte encrypt with a throwaway public recipient, minus that empty payload's

@@ -16,9 +16,10 @@ import kotlin.system.exitProcess
 /**
  * The X-tra layer (client-side encryption, config key `xtra_encryption`): every provider this CLI builds is
  * wrapped when the profile opts in, so every command that moves content — sync, daemon, get, verify, relocate —
- * sees plaintext while the provider stores ciphertext. The key loads lazily on the first content operation
- * ([XtraEncryptedProvider]); commands that only list, authenticate or report never need the passphrase. The
- * key file lives beside config.toml (the token path's parent): one key per installation.
+ * sees plaintext while the provider stores ciphertext. The strategy owns its key material and loads it lazily on
+ * the first content operation ([XtraEncryptedProvider]); commands that only list, authenticate or report never
+ * need the passphrase. The algorithm's key file lives beside config.toml (the token path's parent), one per
+ * installation — and an age-v1 profile has only the identity store, never an RSA pair.
  */
 internal fun Main.wrapWithXtra(
     rp: RawProvider?,
@@ -27,14 +28,18 @@ internal fun Main.wrapWithXtra(
 ): CloudProvider {
     if (rp?.xtra_encryption != true) return provider
     val keyPath = tokenPath.parent.resolve("xtra.key")
-    if (!Files.exists(keyPath)) {
-        System.err.println("Error: a profile sets xtra_encryption but $keyPath does not exist.")
-        System.err.println("Create it first: unidrive xtra init")
-        exitProcess(1)
-    }
     val strategy =
         when (val algorithm = rp?.xtra_algorithm?.trim()?.takeIf { it.isNotEmpty() } ?: "aes-gcm") {
-            "aes-gcm" -> AesGcmStrategy()
+            "aes-gcm" -> {
+                // The key never self-generates on the first content operation (a root secret must not appear
+                // silently); it must exist, or the profile refuses to run.
+                if (!Files.exists(keyPath)) {
+                    System.err.println("Error: a profile sets xtra_encryption but $keyPath does not exist.")
+                    System.err.println("Create it first: unidrive xtra init")
+                    exitProcess(1)
+                }
+                AesGcmStrategy(lazy { XtraKeyManager(keyPath).also { it.load(xtraPassphrase()) } })
+            }
             "age-v1" -> {
                 // The identity never self-generates on the first content operation (a root secret must not appear
                 // silently); like the RSA key, it must exist, or the profile refuses to run.
@@ -57,11 +62,7 @@ internal fun Main.wrapWithXtra(
     // The listings decorator sits below the cipher, so both halves see the same provider: the listings answer
     // the plaintext size the engines' size contracts hold downloads against, and the cipher seals the content
     // and answers the hash questions with "cannot tell" (the AEAD tag is the integrity check).
-    return XtraEncryptedProvider(
-        XtraPlaintextListings(provider, strategy),
-        lazy { XtraKeyManager(keyPath).also { it.load(xtraPassphrase()) } },
-        strategy,
-    )
+    return XtraEncryptedProvider(XtraPlaintextListings(provider, strategy), strategy)
 }
 
 /**

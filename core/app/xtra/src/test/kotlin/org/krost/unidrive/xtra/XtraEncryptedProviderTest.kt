@@ -32,13 +32,12 @@ class XtraEncryptedProviderTest {
     private fun provider(
         inner: CloudProvider,
         keys: Lazy<XtraKeyManager>,
-    ): CloudProvider = provider(inner, keys, AesGcmStrategy())
+    ): CloudProvider = provider(inner, AesGcmStrategy(keys))
 
     private fun provider(
         inner: CloudProvider,
-        keys: Lazy<XtraKeyManager>,
         strategy: XtraEncryptionStrategy,
-    ): CloudProvider = XtraEncryptedProvider(XtraPlaintextListings(inner, strategy), keys, strategy)
+    ): CloudProvider = XtraEncryptedProvider(XtraPlaintextListings(inner, strategy), strategy)
 
     @Test
     fun `upload encrypts and download decrypts round-trip`() {
@@ -293,17 +292,26 @@ class XtraEncryptedProviderTest {
         val tmpDir = TestScratch.directory("xtra-provider-test")
         val storage = mutableMapOf<String, ByteArray>()
         var loaded = false
-        val keys = lazy { loaded = true; XtraKeyManager(tmpDir.resolve("xtra.key")) }
+        val keys = lazy {
+            loaded = true
+            XtraKeyManager(tmpDir.resolve("xtra.key")).also { it.generate("testpass1234".toCharArray()) }
+        }
         val xtra = provider(InMemoryProvider(storage), keys)
 
         kotlinx.coroutines.runBlocking { xtra.listChildren("/") }
         assertEquals(false, loaded)
 
-        // A download reaches for the key (and then fails the unencrypted bytes the store holds).
+        // A download of bytes without the header refuses before any key demand: the failure needs no secret.
         storage["/plain.txt"] = "not encrypted".toByteArray()
         assertFailsWith<ProviderException> {
             kotlinx.coroutines.runBlocking { xtra.download("/plain.txt", tmpDir.resolve("out")) }
         }
+        assertEquals(false, loaded)
+
+        // The first content operation that keys the content — the wrap of an upload — demands it.
+        val localFile = tmpDir.resolve("keyed.txt")
+        Files.writeString(localFile, "demand it")
+        kotlinx.coroutines.runBlocking { xtra.upload(localFile, "/keyed.txt") }
         assertEquals(true, loaded)
     }
 
@@ -412,6 +420,8 @@ class XtraEncryptedProviderTest {
 
     // ── The age-v1 algorithm (xtra_algorithm = "age-v1", AgeV1Strategy) through the same decorator ──
 
+    // An age-v1 profile owns no RSA material at all: no key file is generated here, none may be demanded —
+    // the identity store is the only key material the algorithm has.
     private fun ageProvider(
         inner: CloudProvider,
         dir: Path,
@@ -419,7 +429,7 @@ class XtraEncryptedProviderTest {
         val store = XtraAgeKeyStore(dir.resolve("xtra-age.key"))
         store.generate("testpass1234".toCharArray())
         val strategy = AgeV1Strategy(lazy { store }, { "testpass1234".toCharArray() })
-        return provider(inner, keys(dir), strategy)
+        return provider(inner, strategy)
     }
 
     @Test
