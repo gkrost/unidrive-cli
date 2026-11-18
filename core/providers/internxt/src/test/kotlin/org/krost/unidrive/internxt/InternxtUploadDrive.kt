@@ -93,6 +93,9 @@ internal class UploadDrive(
     /** Answers a `POST /files` with this status instead (null lets it through); [call] counts from 1. */
     @Volatile var createFault: ((call: Int, plainName: String) -> HttpStatusCode?)? = null
 
+    /** The body [createFault]'s answer carries instead of the generic one. */
+    @Volatile var createFaultBody: String? = null
+
     /** The file is stored although [createFault] answers an error: the commit landed and the response was lost. */
     @Volatile var storeBeforeFault: Boolean = false
 
@@ -216,7 +219,7 @@ internal class UploadDrive(
                         )
                     if (fault != null && storeBeforeFault && !clash) files += stored
                     when {
-                        fault != null -> respond("""{"statusCode":${fault.value},"message":"injected"}""", fault, jsonHeaders)
+                        fault != null -> respond(createFaultBody ?: """{"statusCode":${fault.value},"message":"injected"}""", fault, jsonHeaders)
                         clash -> respond("""{"message":"File already exists","error":"Conflict","statusCode":409}""", HttpStatusCode.Conflict, jsonHeaders)
                         else -> {
                             files += stored

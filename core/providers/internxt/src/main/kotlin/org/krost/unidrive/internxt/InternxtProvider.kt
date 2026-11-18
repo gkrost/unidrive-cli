@@ -1295,6 +1295,7 @@ class InternxtProvider(
                 val item = uploadUnclassified(localPath, remotePath, existingRemoteId, ifMatchETag, onProgress, sourceSha256)
                 sourceSha256.get()?.let { item.copy(sentSha256 = it) } ?: item
             } catch (e: InternxtApiException) {
+                if (isParentFolderNotFound(e)) throw parentGoneAfterCreate(e, remotePath, folderCache, authService.getValidCredentials().rootFolderId)
                 if (isMaxSpaceUsed(e)) {
                     throw org.krost.unidrive.InsufficientRemoteSpaceException(
                         "Internxt refused the upload of $remotePath: the account's storage is full (${e.statusCode}: ${serverSentence(e.message) ?: e.message})",

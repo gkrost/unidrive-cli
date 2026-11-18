@@ -51,6 +51,29 @@ internal fun encryptToStaging(
     digest.update(tail)
 }
 
+// Live finding E3 (2026-11-18): the file create's answer when its parent folder is gone (trashed after the walk, or
+// reached through a stale cached uuid).
+internal fun isParentFolderNotFound(e: InternxtApiException): Boolean =
+    e.statusCode == 404 && e.message.orEmpty().contains("Folder not found")
+
+// The parent of [remotePath] is gone (see [isParentFolderNotFound]): its cached uuid is dropped, so the caller's remake of
+// the parent and the next upload walk the listing again, and the failure is the typed parent-gone refusal.
+internal fun parentGoneAfterCreate(
+    e: InternxtApiException,
+    remotePath: String,
+    folderCache: FolderUuidCache,
+    rootUuid: String,
+): org.krost.unidrive.ParentGoneException {
+    val parentSegments = InternxtProvider.pathSegments(remotePath).dropLast(1)
+    folderCache.invalidatePath(rootUuid, parentSegments)
+    return org.krost.unidrive.ParentGoneException(
+        "parent folder of $remotePath is gone in the cloud: ${e.message}",
+        parent = "/" + parentSegments.joinToString("/"),
+        cause = e,
+        requestId = e.requestId,
+    )
+}
+
 // gkrost/unidrive-cli#793: the answers to a file create that leave its outcome unknown (the write ladder does not repeat them).
 internal val INDETERMINATE_CREATE_STATUSES = setOf(500, 502, 504)
 
