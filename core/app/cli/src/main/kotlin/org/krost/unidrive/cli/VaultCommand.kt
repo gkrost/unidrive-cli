@@ -6,6 +6,7 @@ import org.krost.unidrive.sync.Vault
 import org.krost.unidrive.sync.escapeTomlValue
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
+import picocli.CommandLine.Parameters
 import picocli.CommandLine.ParentCommand
 import java.nio.file.Files
 
@@ -18,6 +19,7 @@ import java.nio.file.Files
         VaultEncryptCommand::class,
         VaultDecryptCommand::class,
         VaultChangePassphraseCommand::class,
+        VaultForgetCommand::class,
     ],
 )
 class VaultCommand : Runnable {
@@ -25,7 +27,7 @@ class VaultCommand : Runnable {
     lateinit var parent: Main
 
     override fun run() {
-        println("Usage: unidrive vault <init|encrypt|decrypt|change-passphrase>")
+        println("Usage: unidrive vault <init|encrypt|decrypt|change-passphrase|forget>")
     }
 }
 
@@ -395,6 +397,74 @@ class VaultChangePassphraseCommand : Runnable {
         vault.write(newPass1, data)
         println("Vault passphrase changed.")
     }
+}
+
+// ── vault forget ─────────────────────────────────────────────────────────────
+
+@Command(
+    name = "forget",
+    description = ["Drop the vault entry of a profile that is no longer configured (one `profile remove` could not drop)"],
+    mixinStandardHelpOptions = true,
+)
+class VaultForgetCommand : java.util.concurrent.Callable<Int> {
+    @ParentCommand
+    lateinit var vaultCmd: VaultCommand
+
+    @Parameters(index = "0", description = ["Profile whose vault entry is dropped"])
+    lateinit var profile: String
+
+    @Option(
+        names = ["--passphrase-stdin"],
+        description = [
+            "Read the vault passphrase from the first line of standard input instead of the " +
+                "terminal (no interactive terminal required)",
+        ],
+    )
+    var passphraseStdin: Boolean = false
+
+    override fun call(): Int {
+        val baseDir = vaultCmd.parent.configBaseDir()
+        val vault = Vault(baseDir.resolve("vault.enc"))
+        if (!vault.exists()) {
+            System.err.println("No vault found.")
+            return 1
+        }
+        val configPath = baseDir.resolve("config.toml")
+        val passphrase =
+            if (passphraseStdin) readPassphraseStdin("--passphrase-stdin") else readPassphrase("Vault passphrase: ")
+        val dropped =
+            ConfigFileTransaction.withLock(configPath) {
+                // The entry of a configured profile is the only copy of its credentials: never dropped here.
+                if (Files.exists(configPath) &&
+                    profile in SyncConfig.parseRaw(Files.readString(configPath), configPath.toString()).providers
+                ) {
+                    null
+                } else {
+                    forgetVaultEntry(vault, passphrase, profile)
+                }
+            }
+        when (dropped) {
+            null -> {
+                System.err.println("Profile '$profile' is still configured; remove it with 'unidrive profile remove $profile'.")
+                return 1
+            }
+            true -> println("Dropped the vault entry of profile '$profile'.")
+            false -> println("The vault holds no entry for profile '$profile'.")
+        }
+        return 0
+    }
+}
+
+/** Drops [name]'s entry from [vault]; true when there was one. The other entries are written back unchanged. */
+internal fun forgetVaultEntry(
+    vault: Vault,
+    passphrase: CharArray,
+    name: String,
+): Boolean {
+    val data = vault.read(passphrase)
+    if (name !in data) return false
+    vault.write(passphrase, data - name)
+    return true
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────────────

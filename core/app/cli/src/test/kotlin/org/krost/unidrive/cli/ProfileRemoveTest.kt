@@ -75,6 +75,7 @@ class ProfileRemoveTest {
         ProfileRemoveHooks.stopWaitMs = 15_000
         ProfileRemoveHooks.cacheRoot = { org.krost.unidrive.sync.SyncEngine.defaultHydrationCacheRoot() }
         ProfileRemoveHooks.afterPendingCheck = {}
+        ProfileRemoveHooks.vaultSources = { interactive -> if (interactive) PassphraseSources() else PassphraseSources(consolePresent = { false }) }
         dir.toFile().deleteRecursively()
     }
 
@@ -586,6 +587,117 @@ class ProfileRemoveTest {
         assertEquals(0, run("profile", "remove", "gone", "--yes", "--json"), stderr())
 
         assertTrue(Files.exists(data.resolve("my-document.txt")), "the root in other letter case is never deleted")
+    }
+
+    // ── the vault entry goes with the profile (#749 finding 7) ───────────────
+
+    private val vaultPass = "vault-pass-123"
+
+    private val vault get() = org.krost.unidrive.sync.Vault(dir.resolve("vault.enc"))
+
+    /** A vault holding an entry for `gone` (carrying [secret]) and one for `keep`. */
+    private fun writeVault() {
+        vault.write(vaultPass.toCharArray(), mapOf("gone" to mapOf("password" to secret), "keep" to mapOf("password" to "keep-pass")))
+    }
+
+    /** The passphrase sources the removal sees: [env] answers the vault variable; a console is never there. */
+    private fun vaultSources(env: String?) {
+        ProfileRemoveHooks.vaultSources = { interactive ->
+            assertFalse(interactive, "the json form must never be offered a console")
+            PassphraseSources(
+                env = { if (it == org.krost.unidrive.io.VAULT_PASSPHRASE_ENV) env else null },
+                consolePresent = { false },
+                consoleRead = { error("the removal must never prompt here") },
+            )
+        }
+    }
+
+    @Test
+    fun `the vault entry of the removed profile is dropped and the other entries stay`() {
+        populate()
+        writeVault()
+        vaultSources(vaultPass)
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--json"), stderr())
+
+        val r = json()
+        assertTrue(r.getValue("removed").jsonObject.getValue("vault_entry").jsonPrimitive.boolean)
+        assertFalse(r.getValue("kept").jsonObject.getValue("vault_entry").jsonPrimitive.boolean)
+        assertEquals(mapOf("keep" to mapOf("password" to "keep-pass")), vault.read(vaultPass.toCharArray()))
+        assertNoSecret()
+    }
+
+    @Test
+    fun `keep-data drops the vault entry too, like the config section it came from`() {
+        populate()
+        writeVault()
+        vaultSources(vaultPass)
+
+        assertEquals(0, run("profile", "remove", "gone", "--keep-data", "--yes", "--json"), stderr())
+
+        assertTrue(json().getValue("removed").jsonObject.getValue("vault_entry").jsonPrimitive.boolean)
+        assertEquals(setOf("keep"), vault.read(vaultPass.toCharArray()).keys)
+    }
+
+    @Test
+    fun `a locked vault in json mode never prompts and reports the entry as kept with the way to drop it`() {
+        populate()
+        writeVault()
+        vaultSources(null)
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--json"), stderr())
+
+        val r = json()
+        assertFalse(r.getValue("removed").jsonObject.getValue("vault_entry").jsonPrimitive.boolean)
+        assertTrue(r.getValue("kept").jsonObject.getValue("vault_entry").jsonPrimitive.boolean)
+        val warning = r.getValue("warnings").jsonArray.map { it.jsonPrimitive.content }.single { it.startsWith("vault: ") }
+        assertTrue("unidrive vault forget gone" in warning, warning)
+        assertEquals(setOf("gone", "keep"), vault.read(vaultPass.toCharArray()).keys, "a locked vault is not touched")
+        assertEquals(setOf("keep"), profiles(), "the rest of the removal still happens")
+        assertNoSecret()
+    }
+
+    @Test
+    fun `a wrong vault passphrase keeps the entry and says so`() {
+        populate()
+        writeVault()
+        vaultSources("wrong-pass-999")
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--json"), stderr())
+
+        val r = json()
+        assertTrue(r.getValue("kept").jsonObject.getValue("vault_entry").jsonPrimitive.boolean)
+        val warning = r.getValue("warnings").jsonArray.map { it.jsonPrimitive.content }.single { it.startsWith("vault: ") }
+        assertTrue("wrong vault passphrase" in warning, warning)
+        assertEquals(setOf("gone", "keep"), vault.read(vaultPass.toCharArray()).keys)
+        assertNoSecret()
+    }
+
+    @Test
+    fun `without a vault nothing about a vault is reported or created`() {
+        populate()
+        vaultSources(vaultPass)
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--json"), stderr())
+
+        val r = json()
+        assertFalse(r.getValue("removed").jsonObject.getValue("vault_entry").jsonPrimitive.boolean)
+        assertFalse(r.getValue("kept").jsonObject.getValue("vault_entry").jsonPrimitive.boolean)
+        assertFalse(Files.exists(dir.resolve("vault.enc")))
+    }
+
+    @Test
+    fun `the human form says the vault entry was dropped`() {
+        populate()
+        writeVault()
+        ProfileRemoveHooks.vaultSources = { _ ->
+            PassphraseSources(env = { if (it == org.krost.unidrive.io.VAULT_PASSPHRASE_ENV) vaultPass else null }, consolePresent = { false })
+        }
+
+        assertEquals(0, run("profile", "remove", "gone", "-y"), stderr())
+
+        assertTrue("Vault entry of profile 'gone' removed." in stdout(), stdout())
+        assertEquals(setOf("keep"), vault.read(vaultPass.toCharArray()).keys)
     }
 
     // ── links and junctions are leaves ──────────────────────────────────────

@@ -599,7 +599,7 @@ class ProfileRemoveCommand : Callable<Int> {
 
         val result =
             try {
-                ProfileRemover.remove(configDir, name, keepData, stop, forcePending) {
+                ProfileRemover.remove(configDir, name, keepData, stop, forcePending, interactive = true) {
                     if (yes) {
                         true
                     } else {
@@ -617,6 +617,8 @@ class ProfileRemoveCommand : Callable<Int> {
             return 0
         }
         if (result.deletedProfileDir) println("  Deleted: ${result.profileDir}")
+        if (result.vaultEntryRemoved) println("  Vault entry of profile '$name' removed.")
+        result.vaultWarning?.let { System.err.println("Warning: ${it.removePrefix("vault: ")}") }
         println("Profile '$name' removed.")
         return 0
     }

@@ -11,6 +11,8 @@ import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.ProcessLock
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.SyncEngine
+import org.krost.unidrive.sync.Vault
+import org.krost.unidrive.io.VAULT_PASSPHRASE_ENV
 import org.krost.unidrive.sync.isValidProfileName
 import org.krost.unidrive.sync.removeProfileSection
 import java.io.IOException
@@ -36,6 +38,15 @@ internal object ProfileRemoveHooks {
 
     /** Test seam: runs after the pending check has read the rows and before the profile lock is taken (the window a daemon can start in). */
     var afterPendingCheck: () -> Unit = {}
+
+    /**
+     * Where the vault passphrase comes from (#749 finding 7); the argument says whether a console prompt is allowed.
+     * The `--json` form passes false: the chain then tries the environment, the systemd credential and a configured
+     * unlock helper, and never prompts.
+     */
+    var vaultSources: (interactive: Boolean) -> PassphraseSources = { interactive ->
+        if (interactive) PassphraseSources() else PassphraseSources(consolePresent = { false })
+    }
 }
 
 /**
@@ -58,7 +69,54 @@ internal object ProfileRemover {
         val json: JsonObject,
         val profileDir: Path,
         val deletedProfileDir: Boolean,
+        /** True when the profile's vault entry was dropped. */
+        val vaultEntryRemoved: Boolean = false,
+        /** Why the vault entry could not be dropped and how to drop it later; null when there was nothing to keep. */
+        val vaultWarning: String? = null,
     )
+
+    /** What became of the profile's vault entry: dropped, or kept with the reason and the way to drop it later. */
+    private class VaultDrop(
+        val removed: Boolean,
+        val kept: Boolean,
+        val warning: String?,
+    )
+
+    /**
+     * Drops the vault entry of [name] (#749 finding 7). The vault holds fields cut out of the profile's config section, so
+     * the entry goes whenever the section goes, also with `--keep-data`. A vault that cannot be opened (no passphrase
+     * source, a wrong passphrase, a damaged file) or written is left as it is; the result names the reason and
+     * `vault forget`, never a secret.
+     */
+    private fun dropVaultEntry(
+        vault: Vault,
+        resolution: PassphraseResolution?,
+        name: String,
+    ): VaultDrop {
+        if (resolution == null) return VaultDrop(removed = false, kept = false, warning = null)
+        val reason =
+            when (resolution) {
+                is PassphraseResolution.Refused -> "the vault is locked: ${resolution.detail}"
+                is PassphraseResolution.Secret ->
+                    try {
+                        return VaultDrop(removed = forgetVaultEntry(vault, resolution.chars, name), kept = false, warning = null)
+                    } catch (_: javax.crypto.AEADBadTagException) {
+                        "wrong vault passphrase"
+                    } catch (e: IOException) {
+                        "the vault could not be written (${e.javaClass.simpleName})"
+                    } catch (e: Exception) {
+                        "the vault could not be read (${e.javaClass.simpleName})"
+                    } finally {
+                        resolution.chars.fill('\u0000')
+                    }
+            }
+        return VaultDrop(
+            removed = false,
+            kept = true,
+            warning = "vault: the vault entry of profile '$name' could not be dropped ($reason); " +
+                "drop it later with `unidrive vault forget $name`",
+        )
+    }
 
     /** The config of [configDir] as text and parsed, or a [LifecycleError] naming why it cannot be read. */
     private fun readConfig(configDir: Path): Pair<String, org.krost.unidrive.sync.RawSyncConfig> {
@@ -220,6 +278,7 @@ internal object ProfileRemover {
         keepData: Boolean,
         stop: Boolean,
         forcePending: Boolean = false,
+        interactive: Boolean = false,
         confirm: () -> Boolean = { true },
     ): Result? {
         val configPath = configDir.resolve("config.toml")
@@ -232,6 +291,23 @@ internal object ProfileRemover {
         refuseIfHeld(holder, name, stop)
         if (holder == Holder.NONE && !forcePending) refuseIfUploadsPending(profileDir, name, lockHeld = false)
         if (!confirm()) return null
+
+        // The passphrase is resolved before any lock is taken: the console form may prompt for it.
+        val vault = Vault(configDir.resolve("vault.enc"))
+        val vaultPassphrase =
+            if (!vault.exists()) {
+                null
+            } else {
+                resolvePassphrase(
+                    secretKind = "vault",
+                    envName = VAULT_PASSPHRASE_ENV,
+                    credentialName = "unidrive-vault-pass",
+                    configDir = configDir,
+                    helperConfig = raw.general.unlock_helper,
+                    prompt = "Vault passphrase: ",
+                    sources = ProfileRemoveHooks.vaultSources(interactive),
+                )
+            }
 
         var daemonStopped = false
         if (holderOf(profileDir, socket) == Holder.DAEMON) {
@@ -256,6 +332,7 @@ internal object ProfileRemover {
         var removedMode: String? = null
         var syncRoot = ""
         var wasDefault = false
+        var vaultDrop = VaultDrop(removed = false, kept = false, warning = null)
         try {
             // The look that may delete rows runs here, under the lock: no daemon can start between the check and the deletion.
             if (guarded && holder == Holder.NONE && !forcePending) refuseIfUploadsPending(profileDir, name)
@@ -270,6 +347,9 @@ internal object ProfileRemover {
                 } catch (e: IOException) {
                     throw LifecycleError("config_write_failed", "config.toml could not be written: ${e.javaClass.simpleName}; nothing was removed", e)
                 }
+                // Under the config lock, as `vault encrypt` writes the vault: the two cannot interleave.
+                vaultDrop = dropVaultEntry(vault, vaultPassphrase, name)
+                vaultDrop.warning?.let { warnings += it }
 
                 // The IPC tokens and socket belong to a daemon that is gone: always removed, also with --keep-data.
                 for (scope in IpcAuth.Scope.entries) {
@@ -313,6 +393,7 @@ internal object ProfileRemover {
                         put("credentials", credentialsRemoved)
                         put("ipc_tokens", tokensRemoved)
                         put("socket", socketRemoved)
+                        put("vault_entry", vaultDrop.removed)
                     },
                 )
                 put(
@@ -322,12 +403,14 @@ internal object ProfileRemover {
                         put("sync_root", syncRoot)
                         put("state_folder", Files.isDirectory(profileDir))
                         put("credentials", credentialsKept)
+                        // True when the vault could not be opened or written: it may still hold the profile's entry.
+                        put("vault_entry", vaultDrop.kept)
                         // Credentials held outside the profile folder (an OS secret store) are not touched.
                         put("secret_store", "not touched")
                     },
                 )
                 put("warnings", JsonArray(warnings.map { JsonPrimitive(it) }))
             }
-        return Result(json, profileDir, profileDirGone)
+        return Result(json, profileDir, profileDirGone, vaultDrop.removed, vaultDrop.warning)
     }
 }
