@@ -9,7 +9,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.selects.select
 import org.krost.unidrive.AuthenticationException
-import org.krost.unidrive.io.Os
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.AccountOwner
 import org.krost.unidrive.authenticateAndLog
@@ -517,7 +516,7 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
         val watcher = if (watch) LocalWatcher(config.syncRoot) else null
         watcher?.let { w -> shutdown.closing(SyncShutdown.Step.WATCHER) { w.stop() } }
 
-        val dataDir = syncDataDir(profile.name)
+        val dataDir = profileDataDir(profile.name)
         val conflictLog =
             ConflictLog(
                 logFile = parent.providerConfigDir().resolve("conflicts.jsonl"),
@@ -969,21 +968,6 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
         val root = context.getLogger(ch.qos.logback.classic.Logger.ROOT_LOGGER_NAME)
         root.addAppender(appender)
     }
-
-    // The data dir beside the profile's data (conflict backups): LOCALAPPDATA on Windows, ~/.local/share elsewhere.
-    private fun syncDataDir(profileName: String): Path =
-        if (Os.isWindows()) {
-            val localAppData = System.getenv("LOCALAPPDATA") ?: System.getProperty("user.home")
-            java.nio.file.Paths.get(localAppData, "unidrive", profileName)
-        } else {
-            java.nio.file.Paths.get(
-                System.getenv("HOME") ?: System.getProperty("user.home"),
-                ".local",
-                "share",
-                "unidrive",
-                profileName,
-            )
-        }
 
     private fun applyConfigPinRules(
         db: StateDatabase,

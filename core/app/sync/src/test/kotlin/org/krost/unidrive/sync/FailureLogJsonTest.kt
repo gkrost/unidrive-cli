@@ -74,7 +74,7 @@ class FailureLogJsonTest {
 
     @Test
     fun `a path with a quote, a backslash and a line break reads back exactly`() {
-        val obj = parse(SyncEngine.formatFailureJson("up", SyncAction.Upload(nastyPath), RuntimeException("boom"), ts))
+        val obj = parse(formatFailureJson("up", SyncAction.Upload(nastyPath), RuntimeException("boom"), ts))
 
         assertEquals(listOf("ts", "action", "path", "error"), obj.keys.toList(), "the field names and their order stay")
         assertEquals("2026-10-30T10:00:00Z", obj.text("ts"))
@@ -86,7 +86,7 @@ class FailureLogJsonTest {
     @Test
     fun `a move records both paths, and its source reads back exactly`() {
         val move = SyncAction.MoveRemote(path = nastyPath, fromPath = nastyFrom, remoteId = "id-1")
-        val obj = parse(SyncEngine.formatFailureJson("move", move, RuntimeException("boom"), ts))
+        val obj = parse(formatFailureJson("move", move, RuntimeException("boom"), ts))
 
         assertEquals(listOf("ts", "action", "path", "from_path", "error"), obj.keys.toList())
         assertEquals(nastyPath, obj.text("path"), "path keeps the destination")
@@ -95,14 +95,14 @@ class FailureLogJsonTest {
 
     @Test
     fun `a multi-line message with a Windows path reads back exactly`() {
-        val obj = parse(SyncEngine.formatFailureJson("up", SyncAction.Upload("/a.txt"), RuntimeException(windowsMessage), ts))
+        val obj = parse(formatFailureJson("up", SyncAction.Upload("/a.txt"), RuntimeException(windowsMessage), ts))
 
         assertEquals(windowsMessage, obj.text("error"))
     }
 
     @Test
     fun `a failure without a message records the exception's class name`() {
-        val obj = parse(SyncEngine.formatFailureJson("del-remote", SyncAction.DeleteRemote("/a.txt"), IllegalStateException(), ts))
+        val obj = parse(formatFailureJson("del-remote", SyncAction.DeleteRemote("/a.txt"), IllegalStateException(), ts))
 
         assertEquals("IllegalStateException", obj.text("error"))
         assertNull(obj["from_path"], "only a move has a source")

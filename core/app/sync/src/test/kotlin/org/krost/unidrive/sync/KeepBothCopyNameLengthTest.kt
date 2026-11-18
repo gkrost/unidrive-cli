@@ -30,7 +30,7 @@ class KeepBothCopyNameLengthTest {
     @Test
     fun `a 232 character name gets a side copy that still fits in 255 units and keeps its extension`() {
         val path = "/d/" + "n".repeat(228) + ".txt" // 232 units
-        val copy = SyncEngine.keepBothCopyPath(path, stamp) { false }
+        val copy = keepBothCopyPath(path, stamp) { false }
 
         assertTrue(leaf(copy).length <= 255, "got ${leaf(copy).length}")
         assertTrue(leaf(copy).endsWith(".conflict-local-$stamp.txt"), leaf(copy))
@@ -46,7 +46,7 @@ class KeepBothCopyNameLengthTest {
             val stem = "a".repeat(room - 1) + emoji + "b".repeat(stemUnits - room - 1)
             val path = "/$stem.txt"
             assertEquals(total, leaf(path).length)
-            val copy = SyncEngine.keepBothCopyPath(path, stamp) { false }
+            val copy = keepBothCopyPath(path, stamp) { false }
             assertTrue(leaf(copy).length <= 255, "total $total: ${leaf(copy).length}")
             assertTrue(!hasLoneSurrogate(copy), "total $total: split surrogate pair")
             assertTrue(leaf(copy).endsWith(".conflict-local-$stamp.txt"), leaf(copy))
@@ -59,7 +59,7 @@ class KeepBothCopyNameLengthTest {
         val taken = mutableSetOf<String>()
         val names = mutableListOf<String>()
         repeat(12) {
-            val copy = SyncEngine.keepBothCopyPath(path, stamp) { it in taken }
+            val copy = keepBothCopyPath(path, stamp) { it in taken }
             taken += copy
             names += copy
         }
@@ -70,6 +70,6 @@ class KeepBothCopyNameLengthTest {
 
     @Test
     fun `a short name is built exactly as before`() {
-        assertEquals("/my.dir/c.conflict-local-$stamp.txt", SyncEngine.keepBothCopyPath("/my.dir/c.txt", stamp) { false })
+        assertEquals("/my.dir/c.conflict-local-$stamp.txt", keepBothCopyPath("/my.dir/c.txt", stamp) { false })
     }
 }

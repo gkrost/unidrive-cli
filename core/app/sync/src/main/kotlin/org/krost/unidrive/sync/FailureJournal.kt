@@ -1,10 +1,12 @@
 package org.krost.unidrive.sync
 
+import org.krost.unidrive.sync.model.SyncAction
 import org.slf4j.LoggerFactory
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
+import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 
 private val journalLog = LoggerFactory.getLogger("org.krost.unidrive.sync.FailureJournal")
@@ -65,3 +67,46 @@ private fun warnOnce(
         journalLog.warn("#742: the {} {} cannot be written ({}); further write errors on it are not reported until it recovers", what, path, e.toString())
     }
 }
+
+/**
+ * #216: one failures.jsonl line, built with kotlinx like [formatSkippedOpJson], so a path or a message with `"`,
+ * `\` or a line break stays one valid record that reads back as written. The fields and their order are the ones
+ * the hand-built template wrote: `ts`, `action`, `path`, `from_path` (moves only), `error`.
+ */
+internal fun formatFailureJson(
+    kind: String,
+    action: SyncAction,
+    error: Throwable,
+    ts: Instant,
+): String {
+    // UD-740: a move also records its source, so a post-mortem reader sees what was renamed;
+    // `path` keeps its destination meaning.
+    val fromPath =
+        when (action) {
+            is SyncAction.MoveRemote -> action.fromPath
+            is SyncAction.MoveLocal -> action.fromPath
+            else -> null
+        }
+    return kotlinx.serialization.json
+        .buildJsonObject {
+            put("ts", kotlinx.serialization.json.JsonPrimitive(ts.toString()))
+            put("action", kotlinx.serialization.json.JsonPrimitive(kind))
+            put("path", kotlinx.serialization.json.JsonPrimitive(action.path))
+            if (fromPath != null) put("from_path", kotlinx.serialization.json.JsonPrimitive(fromPath))
+            put("error", kotlinx.serialization.json.JsonPrimitive(error.message ?: error.javaClass.simpleName))
+        }.toString()
+}
+
+internal fun formatSkippedOpJson(
+    action: String,
+    path: String,
+    reason: String,
+    ts: Instant,
+): String =
+    kotlinx.serialization.json
+        .buildJsonObject {
+            put("ts", kotlinx.serialization.json.JsonPrimitive(ts.toString()))
+            put("action", kotlinx.serialization.json.JsonPrimitive(action))
+            put("path", kotlinx.serialization.json.JsonPrimitive(path))
+            put("reason", kotlinx.serialization.json.JsonPrimitive(reason))
+        }.toString()

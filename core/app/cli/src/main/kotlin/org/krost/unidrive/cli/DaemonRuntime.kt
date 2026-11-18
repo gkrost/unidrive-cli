@@ -367,6 +367,7 @@ class DaemonRuntime(
                     mountIgnore = ignoreSettings.takeIf { profileMode == ProfileMode.MOUNT },
                     mirrorIgnore = ignoreSettings.takeIf { profileMode != ProfileMode.MOUNT },
                     uploadInFlight = hydrationLink::hasUploadSlot,
+                    conflictLog = daemonConflictLog(profileName, ipcTokenDir), // #768: a conflict loser is always backed up
                     viewInvalidationSink = { changedPaths, full, moved ->
                         // A pass changed rows: the top level may hold a folder with the name of a view's root now.
                         viewNamespaces.invalidate()

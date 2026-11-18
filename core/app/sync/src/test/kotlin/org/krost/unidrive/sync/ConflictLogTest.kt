@@ -309,4 +309,28 @@ class ConflictLogTest {
         }
         assertEquals(2, names.toSet().size, "two backups in the same second keep their own names")
     }
+
+    @Test
+    fun `a journal append that fails does not fail record and the backup is still made`() {
+        val dir = tempDir()
+        // #779: a directory where the journal file should be.
+        val log = ConflictLog(Files.createDirectories(dir.resolve("conflicts.jsonl")), dir.resolve("backups"))
+        val loser = dir.resolve("loser.txt")
+        Files.writeString(loser, "bytes")
+
+        val entry = log.record("/a.txt", "MODIFIED", "MODIFIED", "LAST_WRITER_WINS", loser)
+
+        assertEquals("bytes", Files.readString(dir.resolve("backups").resolve(assertNotNull(entry.backupFile))))
+    }
+
+    @Test
+    fun `a loser backup that cannot be made fails record`() {
+        val dir = tempDir()
+        Files.writeString(dir.resolve("backups"), "a file, not a folder")
+        val log = createLog(dir)
+        val loser = dir.resolve("loser.txt")
+        Files.writeString(loser, "bytes")
+
+        assertFails { log.record("/a.txt", "MODIFIED", "MODIFIED", "LAST_WRITER_WINS", loser) }
+    }
 }
