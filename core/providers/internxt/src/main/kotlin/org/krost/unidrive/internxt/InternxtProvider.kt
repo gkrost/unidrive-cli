@@ -1815,6 +1815,9 @@ class InternxtProvider(
             hashHex: String,
             startedAt: Instant,
         ): org.krost.unidrive.internxt.model.BucketEntry {
+            // One progress for the whole upload, across a dead-URL restart: it never goes back (#747).
+            val partProgress = MultipartProgress(fileSize, encryptedSize, onProgress)
+
             // Starts a fresh multipart session and persists it. Used at entry, after the
             // presigned-URL TTL drops a session, and after a part PUT meets a dead-URL 403.
             suspend fun startFreshSession(): MultipartResume {
@@ -1915,6 +1918,7 @@ class InternxtProvider(
                     )
                 val completed = java.util.concurrent.ConcurrentHashMap<Int, String>()
                 for (part in current.parts) completed[part.index] = part.etag
+                partProgress.startSession(current.parts.associate { it.index to partSize(current, it.index, encryptedSize) })
                 val tombMutex = kotlinx.coroutines.sync.Mutex()
                 val partsSem = kotlinx.coroutines.sync.Semaphore(effectiveUploadConcurrency)
                 // supervisorScope, not coroutineScope: a part that used its ladder up does not cancel the parts still
@@ -1941,14 +1945,10 @@ class InternxtProvider(
                                                         offset,
                                                         size,
                                                         partBudget,
-                                                        onBytesSent = { sent ->
-                                                            // The single-PUT convention (archive#1197), scaled from this
-                                                            // part's window of the ciphertext to plaintext bytes:
-                                                            // live values while the body streams, always held below
-                                                            // the total; the one final report follows the last part.
-                                                            val scaled = ((offset + sent).toDouble() / encryptedSize * fileSize).toLong()
-                                                            onProgress?.invoke(scaled.coerceIn(0L, fileSize - 1), fileSize)
-                                                        },
+                                                        // The single-PUT convention (archive#1197): live values while the
+                                                        // body streams, the completed parts plus every part in flight,
+                                                        // held below the total; the one final report follows the last part.
+                                                        onBytesSent = { sent -> partProgress.partSent(index, sent) },
                                                     )
                                                 if (put.isNullOrBlank()) {
                                                     throw InternxtApiException("Part ${index + 1} of $remotePath answered no ETag")
@@ -1985,6 +1985,7 @@ class InternxtProvider(
                                             withContext(Dispatchers.IO) { tombstoneStore.write(pathHashStr, currentTomb) }
                                         }
                                     }
+                                    partProgress.partDone(index, size)
                                 } catch (e: CancellationException) {
                                     throw e   // the daemon took the upload down; nothing to drain
                                 } catch (e: Throwable) {
