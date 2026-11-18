@@ -1432,6 +1432,38 @@ class Reconciler(
         }
     }
 
+    // The child actions a folder move [oldPrefix] -> [newPrefix] replaces, given the child names it carries ([movedNames]):
+    //  - a child delete under the old folder goes when the move carries the child (it is on disk in the new folder);
+    //    a hydrated file the user deleted during the move is not carried, so its delete is aimed at the new path, where
+    //    the move puts the cloud copy (moves apply before deletes);
+    //  - the uploads and folder creates of carried names under the new folder go; a genuinely new file keeps its upload,
+    //    and a conflict or anything else there stays planned (#743 finding 10);
+    private fun settleChildrenOfFolderMove(
+        actions: MutableList<SyncAction>,
+        oldPrefix: String,
+        newPrefix: String,
+        movedNames: Set<String>,
+        entryByPath: Map<String, SyncEntry>,
+    ) {
+        val iterator = actions.listIterator()
+        while (iterator.hasNext()) {
+            val action = iterator.next()
+            when {
+                action is SyncAction.DeleteRemote && action.path.startsWith(oldPrefix) -> {
+                    val newPath = newPrefix + action.path.removePrefix(oldPrefix)
+                    val deletedFile = entryByPath[action.path]?.let { !it.isFolder && it.isHydrated } == true
+                    if (deletedFile && isAbsentLocally(newPath)) {
+                        iterator.set(SyncAction.DeleteRemote(newPath))
+                    } else {
+                        iterator.remove()
+                    }
+                }
+                (action is SyncAction.Upload || action is SyncAction.CreateRemoteFolder) &&
+                    action.path.startsWith(newPrefix) && action.path.removePrefix(newPrefix) in movedNames -> iterator.remove()
+            }
+        }
+    }
+
     private class FolderMoveCandidate(val del: SyncAction.DeleteRemote, val score: Int, val movedNames: Set<String>)
 
     // The folder deletes that can be the source of [create]: same basename, a folder row with a remote id, at least one
@@ -1542,16 +1574,7 @@ class Reconciler(
             // Remove the folder delete and create
             actions.remove(del)
             actions.remove(create)
-            // Remove child deletes under old prefix — API move handles them
-            val oldPrefix = del.path + "/"
-            actions.removeAll { it is SyncAction.DeleteRemote && it.path.startsWith(oldPrefix) }
-            // Only remove the new-prefix uploads and folder creates the move replaces (names it carries over). A
-            // genuinely new file keeps its upload; a conflict, download or anything else there stays planned.
-            actions.removeAll { action ->
-                (action is SyncAction.Upload || action is SyncAction.CreateRemoteFolder) &&
-                    action.path.startsWith(newPrefix) &&
-                    action.path.removePrefix(newPrefix) in best.movedNames
-            }
+            settleChildrenOfFolderMove(actions, del.path + "/", newPrefix, best.movedNames, entryByPath)
             matchedFolderDeletes.add(del.path)
             matchedFolderCreates.add(create.path)
         }
