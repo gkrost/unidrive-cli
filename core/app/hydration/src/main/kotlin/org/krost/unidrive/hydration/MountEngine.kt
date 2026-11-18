@@ -13,7 +13,6 @@ import org.krost.unidrive.TypedDeleteProvider
 import org.krost.unidrive.ContentProof
 import org.krost.unidrive.DownloadReceipt
 import org.krost.unidrive.FolderState
-import org.krost.unidrive.FolderNotEmptyException
 import org.krost.unidrive.ItemRemoteState
 import org.krost.unidrive.NameRefusedException
 import org.krost.unidrive.PermanentDownloadFailureException
@@ -1220,22 +1219,13 @@ class MountEngine private constructor(
      * refills them from the remote).
      * [onUnhydrated] is invoked for the first kind, so the hydration layer can publish the event;
      * it may suspend (gkrost/unidrive-cli#452: the layer's emit waits for event-buffer room).
-     * [stillUnused] is the caller's in-use test, asked again under the lock (gkrost/unidrive-cli#746 finding 1): a pass
-     * that waited for the lock while a download of [path] ran must not take the copy that download just wrote.
+     * [stillUnused]: the caller's in-use test, asked again under the lock (gkrost/unidrive-cli#746 finding 1).
      */
     suspend fun evictCacheCopy(
         path: String,
         stillUnused: () -> Boolean = { true },
         onUnhydrated: suspend (String) -> Unit = {},
-    ): Long? =
-        deleteCacheCopyLocked(
-            path,
-            disposableOnly = true,
-            reason = "budget",
-            summary = "mount-evict",
-            onUnhydrated = onUnhydrated,
-            stillUnused = stillUnused,
-        )
+    ): Long? = deleteCacheCopyLocked(path, true, "budget", "mount-evict", onUnhydrated, stillUnused = stillUnused)
 
     /**
      * gkrost/unidrive-cli#452: the delete of an explicit `dehydrate`, through the same per-path lock as
@@ -2551,31 +2541,3 @@ class BlockedByParentException(
 
 /** The reason of an entry that waits for a blocked folder above it; the reason of the folder itself is [NameRefusedException.SIMILAR_NAME]. */
 const val BLOCKED_BY_PARENT = "blocked_by_parent"
-
-/** gkrost/unidrive-cli#452: what [MountEngine.existingFolderAt] proved the cloud holds at a create refused with 409. */
-sealed interface ExistingFolder {
-    /** The folder is there, and its row now names it. */
-    data class Adopted(val item: CloudItem) : ExistingFolder
-
-    /** A file holds the name. */
-    data object HeldByFile : ExistingFolder
-
-    /** Nothing provable: the caller's refusal stands. */
-    data object Unknown : ExistingFolder
-}
-
-/**
- * gkrost/unidrive-cli#635: the folder delete's snapshot guard refused: the listing has a child the rows do not account
- * for. [reason] names which ([UNOBSERVED], [CHANGED], [REPEATED_LISTING]) and [childPath] the listed item, so the refusal
- * that reaches the client as not_empty leaves a line in the log that says why.
- */
-class UnobservedChildException(
-    val reason: String,
-    val childPath: String,
-) : FolderNotEmptyException("Remote folder contains an unobserved or changed child") {
-    companion object {
-        const val UNOBSERVED = "remote_unobserved"
-        const val CHANGED = "remote_changed"
-        const val REPEATED_LISTING = "remote_listing_repeats"
-    }
-}

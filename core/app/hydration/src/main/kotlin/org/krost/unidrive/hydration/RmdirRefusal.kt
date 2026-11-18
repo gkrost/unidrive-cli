@@ -1,6 +1,7 @@
 package org.krost.unidrive.hydration
 
 import org.krost.unidrive.CloudItem
+import org.krost.unidrive.FolderNotEmptyException
 import org.krost.unidrive.sync.model.SyncEntry
 import org.slf4j.Logger
 import java.time.Instant
@@ -66,4 +67,20 @@ internal fun refuseIndexedAfterWholeListing(
         .filter { !it.isFolder && !it.isHydrated && it.lastSynced.isAfter(listedAt) }
         .minWithOrNull(compareBy<SyncEntry>({ it.lastSynced }, { it.path }))
         ?.let { throw UnobservedChildException(UnobservedChildException.UNOBSERVED, it.path) }
+}
+
+/**
+ * gkrost/unidrive-cli#635: the folder delete's snapshot guard refused: the listing has a child the rows do not account
+ * for. [reason] names which ([UNOBSERVED], [CHANGED], [REPEATED_LISTING]) and [childPath] the listed item, so the refusal
+ * that reaches the client as not_empty leaves a line in the log that says why.
+ */
+class UnobservedChildException(
+    val reason: String,
+    val childPath: String,
+) : FolderNotEmptyException("Remote folder contains an unobserved or changed child") {
+    companion object {
+        const val UNOBSERVED = "remote_unobserved"
+        const val CHANGED = "remote_changed"
+        const val REPEATED_LISTING = "remote_listing_repeats"
+    }
 }

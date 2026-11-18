@@ -36,10 +36,6 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import org.krost.unidrive.FolderNotEmptyException
 import org.krost.unidrive.ItemRemoteState
-import org.krost.unidrive.RemoteContentRefusedDownloadException
-import org.krost.unidrive.RemoteIncompleteDownloadException
-import org.krost.unidrive.RemoteObjectMissingDownloadException
-import org.krost.unidrive.UnsupportedRemoteObjectDownloadException
 import org.krost.unidrive.engine.CachePaths
 import org.krost.unidrive.engine.MountHost
 import org.krost.unidrive.engine.RemoteEnumeration
@@ -600,7 +596,6 @@ class HydrationImpl(
         lastAccess[path] = System.currentTimeMillis()
     }
 
-    /** gkrost/unidrive-cli#746 finding 4: a test seam, the paths the access map holds now. */
     internal val lastAccessPaths: Set<String> get() = lastAccess.keys.toSet()
 
     // Whether the cache file of [path] lies inside the profile's cache folder: the engine's resolution refuses one
@@ -1231,7 +1226,6 @@ class HydrationImpl(
                 if (outcome.keptBothAs != null) return completeKeptBoth(path, handleId, outcome, tx)
                 // Kept while the move runs: a failed move is retried by the next attempt.
                 strayed = outcome.takeIf { followsRenames }
-                // gkrost/unidrive-cli#746 finding 2: an edit of a cloud-backed file (no rename following) is adopted too.
                 val adoptedAt = adoptedAfterRename(slot, path, strayed ?: outcome, retryingMove)
                 strayed = null
                 adoptedAt?.let {
@@ -2159,8 +2153,7 @@ class HydrationImpl(
     }
 
     private fun forgetCacheFile(path: String) {
-        // gkrost/unidrive-cli#746 finding 4: the access entry goes with the copy (unlink, eviction, dehydrate, reap).
-        lastAccess.remove(path)
+        lastAccess.remove(path) // gkrost/unidrive-cli#746 finding 4
         accountedBytes.compute(path) { _, previous ->
             if (previous != null) cacheBytes.addAndGet(-previous)
             null
@@ -2295,8 +2288,7 @@ class HydrationImpl(
             val stillThere = runCatching { Files.exists(mount.resolveCachePath(path)) }.getOrDefault(false)
             if (!stillThere) forgetCacheFile(path)
         }
-        // gkrost/unidrive-cli#746 finding 4: a path noted without a copy the walk found (a hydrate of an unknown path, a
-        // copy deleted outside this layer) leaves the access map once its grace window has passed.
+        // gkrost/unidrive-cli#746 finding 4: a path with no copy leaves the access map once its grace window has passed.
         val now = System.currentTimeMillis()
         lastAccess.entries.removeIf { (path, at) -> path !in seen && now - at >= cacheAccessGraceMs }
     }
@@ -2664,8 +2656,7 @@ class HydrationImpl(
         reportingDownloadProgress(path, waiter.handleId) {
             downloads.await(path, waiter) {
                 try {
-                    // gkrost/unidrive-cli#746 finding 1: the fresh copy counts as used from the moment it exists, before the
-                    // waiters leave the download and before the reader registers its handle.
+                    // gkrost/unidrive-cli#746 finding 1: the fresh copy is in use before the reader registers its handle.
                     SharedRead(mount.ensureHydratedReporting(path, tx), tx).also { touch(path) }
                 } catch (e: Exception) {
                     tx.endDownloadFailed(e)
@@ -2733,9 +2724,7 @@ class HydrationImpl(
     private suspend fun dehydrateAt(path: String): DehydrateResult {
         if (!resolvesInsideCache(path)) return DehydrateResult.Failed(HydrationError.InvalidPath)
         if (renames.blocks(path)) return DehydrateResult.Busy // archive#1040 M4: the copy has not followed its rename yet
-        // gkrost/unidrive-cli#746 finding 6: the copy as it is BEFORE the vetting below. A write that lands during the
-        // vetting then no longer matches it, and the locked delete leaves the copy alone; a stat taken after the vetting
-        // took that write for the vetted copy.
+        // gkrost/unidrive-cli#746 finding 6: stat BEFORE vetting, so a write landing meanwhile no longer matches it.
         val observed = runCatching { Transfers.statBeforeUpload(mount.resolveCachePath(path)) }.getOrNull()
         val entry = stateDb.getEntry(path)
             ?: return DehydrateResult.Failed(HydrationError.UnknownPath)
@@ -3199,13 +3188,9 @@ class HydrationImpl(
                 return runCatching {
                     mount.deleteRemote(normalised, permanent)
                     // gkrost/unidrive-cli#746 finding 5: the delete committed; a cancel must not skip its cleanup.
-                    withContext(NonCancellable) {
-                        discardStagedUploadBestEffort(normalised)
-                        evictCacheFile(normalised)
-                    }
+                    withContext(NonCancellable) { discardStagedUploadBestEffort(normalised); evictCacheFile(normalised) }
                     UnlinkResult.Ok
                 }.getOrElse { e ->
-                    // gkrost/unidrive-cli#746 finding 5: a cancelled caller is not a failed request.
                     if (e is CancellationException) throw e
                     permanentRefusalOrNull(e)?.let { refusal -> return UnlinkResult.Failed(refusal) }
                     UnlinkResult.Failed(HydrationError.Generic(e.message ?: "unlink failed"))
@@ -3227,12 +3212,8 @@ class HydrationImpl(
 
         return runCatching {
             mount.deleteRemote(normalised, permanent)
-            // gkrost/unidrive-cli#746 finding 5: the delete committed; a cancel must not skip its cleanup.
-            withContext(NonCancellable) {
-                // A tracked file whose last edit's upload failed has a staged copy too.
-                discardStagedUploadBestEffort(normalised)
-                evictCacheFile(normalised)
-            }
+            // A tracked file whose last edit's upload failed has a staged copy too. gkrost/unidrive-cli#746 finding 5: NonCancellable.
+            withContext(NonCancellable) { discardStagedUploadBestEffort(normalised); evictCacheFile(normalised) }
             UnlinkResult.Ok
         }.getOrElse { e ->
             if (e is CancellationException) throw e
@@ -3299,9 +3280,8 @@ class HydrationImpl(
         // changed while the daemon was stopped): the delete would tombstone that row and evict its cache file, the
         // only copy. The user deletes such a file on its own first, or the client says it did (discardLocal,
         // gkrost/unidrive-cli#445: "discard_local":true): then those bytes go with the tree.
-        // gkrost/unidrive-cli#746 finding 3: the rows below as vetted now, and which of them were clean. The provider delete
-        // takes seconds on a large tree; a row made below meanwhile, or a clean one that took unsynced bytes, an upload or
-        // an open handle meanwhile, is not part of the tree the client asked to delete: its row and its copy stay.
+        // gkrost/unidrive-cli#746 finding 3: a row made below during the provider delete, or a vetted-clean one that took
+        // unsynced bytes, an upload or an open handle meanwhile, keeps its row and its copy.
         var vetted: Set<String> = emptySet()
         var vettedClean: Set<String> = emptySet()
         if (!recursive) {
@@ -3418,8 +3398,7 @@ class HydrationImpl(
     // a no-op and a partial failure must not abort the op (the cloud delete
     // already succeeded). Deletes children before parents so the directory
     // empties before it is removed.
-    // gkrost/unidrive-cli#746 finding 3: the copies of [keep] (rows the delete left alive) stay, and so do the folders
-    // that hold them.
+    // gkrost/unidrive-cli#746 finding 3: the copies of [keep] (rows the delete left alive) stay.
     private fun evictCacheTree(path: String, keep: Set<String> = emptySet()) {
         val keepFiles = keep.mapNotNullTo(HashSet()) { runCatching { mount.resolveCachePath(it).toAbsolutePath().normalize() }.getOrNull() }
         runCatching {
@@ -3997,10 +3976,7 @@ class HydrationImpl(
                     RenameResult.Ok
                 }.getOrElse { e ->
                     // The cloud and the row moved: the record stays, and the next request or start finishes the rest.
-                    renames.interrupted(intent)
-                    // gkrost/unidrive-cli#746 finding 5: a cancelled caller is not a failed request.
-                    if (e is CancellationException) throw e
-                    RenameResult.Failed(HydrationError.Generic(e.message ?: "rename failed"))
+                    interruptedRename(intent, e)
                 }
             }
             // #452: the copy moves before the row does, so a failure or a stop in between left the file's only copy at the
@@ -4022,9 +3998,7 @@ class HydrationImpl(
                 RenameResult.Ok
             }.getOrElse { e ->
                 // Whatever stopped it, the record stays: the next request or start finishes the rename.
-                renames.interrupted(intent)
-                if (e is CancellationException) throw e
-                RenameResult.Failed(HydrationError.Generic(e.message ?: "rename failed"))
+                interruptedRename(intent, e)
             }
         }
 
@@ -4046,6 +4020,13 @@ class HydrationImpl(
         if (sourceEntry.isFolder) adoptGhostChildren(oldNorm, newNorm)
         rekeyUploadSlot(oldNorm, newNorm)
         return RenameResult.Ok
+    }
+
+    // gkrost/unidrive-cli#746 finding 5: the rename record stays either way; a cancelled caller is not a failed request.
+    private fun interruptedRename(intent: RenameIntent, e: Throwable): RenameResult {
+        renames.interrupted(intent)
+        if (e is CancellationException) throw e
+        return RenameResult.Failed(HydrationError.Generic(e.message ?: "rename failed"))
     }
 
     /**
@@ -4256,38 +4237,6 @@ class HydrationImpl(
         handles.values.forEach { accountCacheFileOnDisk(it) }
     }
 
-    // archive#652: the end of a download's logical transfer. A read served from the cache, and a cold read refused for a pause
-    // before it began, never started their handle and leave no row. A download the pause aborted ends interrupted: the
-    // client reads again later, which is a new transfer.
-    private fun TransferHandle?.endDownload(bytes: Long) {
-        if (this != null && hasStarted) finish(TransferResult.SUCCESS, bytesDone = bytes)
-    }
-
-    private fun TransferHandle?.endDownloadFailed(e: Exception) {
-        if (this == null || !hasStarted) return
-        when (e) {
-            is TransferPausedException -> finish(TransferResult.INTERRUPTED, errorClass = "paused")
-            is CancellationException -> finish(TransferResult.INTERRUPTED, errorClass = "cancelled")
-            else -> finish(TransferResult.FAILED, errorClass = e.javaClass.simpleName, message = e.message)
-        }
-    }
-
-    // One classification for a failed download, shared by the open_read path and the hydrate verb:
-    // a refusal for a pause (archive#778) carries the paused token, a stored object of a different size than the
-    // drive reports (archive#536) carries its own token with the numbers, a download whose content failed its
-    // integrity check (archive#940) content_refused and an object this client cannot read as stored
-    // unsupported_object (archive#941), both with a short reason that names no file; a genuinely-gone read the
-    // not_found token, everything else stays Generic (→ EIO).
-    private fun downloadFailureOf(e: Exception, fallback: String): HydrationError = when {
-        // archive#778: the daemon is paused (or paused while this download ran): not a failure of the download.
-        e is TransferPausedException -> HydrationError.Paused
-        e is RemoteIncompleteDownloadException -> HydrationError.RemoteIncomplete(e.storedBytes, e.declaredBytes)
-        e is RemoteObjectMissingDownloadException -> HydrationError.RemoteObjectMissing
-        e is RemoteContentRefusedDownloadException -> HydrationError.ContentRefused(e.reason)
-        e is UnsupportedRemoteObjectDownloadException -> HydrationError.UnsupportedObject(e.reason)
-        DownloadFailures.isNotFound(e) -> HydrationError.NotFound
-        else -> HydrationError.Generic(e.message ?: fallback)
-    }
 }
 
 // gkrost/unidrive-cli#134: the one look at a missing folder that one submission gets ([MountEngine.recoverGoneParent]); a refusal
