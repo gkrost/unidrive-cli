@@ -2341,7 +2341,7 @@ class InternxtProvider(
         var currentUuid = authService.getValidCredentials().rootFolderId
         for ((index, segment) in segments.withIndex()) {
             val children =
-                api.getChildFoldersPaged(currentUuid).filter { it.isLive() && sanitizeName(it.plainName ?: it.name ?: "") == segment }
+                api.getChildFoldersPaged(currentUuid).filter { it.isLive() && !api.trashedFolders.contains(it.uuid) && sanitizeName(it.plainName ?: it.name ?: "") == segment }
             val child =
                 when (children.size) {
                     0 -> {
@@ -2848,25 +2848,8 @@ class InternxtProvider(
         val parentUuid = resolveFolder(parentPath)
         val creds = authService.getValidCredentials()
         val encryptedName = crypto.encryptName(name, "${creds.mnemonic}-$parentUuid")
-        val folder =
-            try {
-                api.createFolder(parentUuid, name, encryptedName)
-            } catch (e: InternxtApiException) {
-                if (e.statusCode != 409) throw e
-                // Folder already exists on the server — recover its UUID instead of failing.
-                // UD-317: sanitise child name before matching; a trashed twin is never adopted. Two live twins are
-                // ambiguous (#747): a first-match pick would be cached for the process lifetime, as in resolveFolder.
-                val live =
-                    api
-                        .getFolderContents(parentUuid)
-                        .children
-                        .filter { it.isLive() && sanitizeName(it.plainName ?: it.name ?: "") == name }
-                when (live.size) {
-                    0 -> throw e // 409 but no live folder of that name: re-throw original error
-                    1 -> live.single()
-                    else -> throwAmbiguous(live.size, name, parentPath)
-                }
-            }
+        // A 409 adopts the one live folder of the name; two are ambiguous (#747), and one this provider trashed is waited out (E3).
+        val folder = createFolderPastTrashLag(api, parentUuid, name, encryptedName, log) { throwAmbiguous(it, name, parentPath) }
         // UD-357: cache the new folder's UUID so the next resolveFolder call
         // doesn't race Internxt's read-after-write inconsistency on listing.
         // Use sanitizeName(name) so the lookup key matches what resolveFolder
@@ -5015,7 +4998,7 @@ class InternxtProvider(
             // window. On the first resolveFolder right after createFolder of
             // a new subfolder, the API listing still doesn't show it; the
             // cache (populated by createFolder) does.
-            val cached = folderCache.get(currentUuid, segment)
+            val cached = folderCache.get(currentUuid, segment)?.takeUnless(api.trashedFolders::contains) // E3: never one we trashed
             if (cached != null) {
                 // A folder renamed, moved or trashed elsewhere leaves the cache when a change feed names it
                 // (assembleFullDelta); folderStateById drops a folder it finds gone.
@@ -5028,7 +5011,7 @@ class InternxtProvider(
             // pinning every operation under this path to an arbitrary twin. Non-live
             // folders do not count: a trashed twin must neither be picked nor make a
             // live folder ambiguous (the same rule as getMetadata and listChildren).
-            val children = content.children.filter { it.isLive() && sanitizeName(it.plainName ?: it.name ?: "") == segment }
+            val children = content.children.filter { it.isLive() && !api.trashedFolders.contains(it.uuid) && sanitizeName(it.plainName ?: it.name ?: "") == segment }
             val child =
                 when (children.size) {
                     0 -> throw FolderNotFoundException(segment, path, "/" + segments.take(index + 1).joinToString("/"))

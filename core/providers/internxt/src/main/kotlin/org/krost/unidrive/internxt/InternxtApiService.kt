@@ -342,6 +342,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
     // gkrost/unidrive-cli#392: every Drive answer that carries files records them, so a download of a listed file can skip
     // the meta call (see FileContentHints).
     internal val fileHints = FileContentHints()
+    internal val trashedFolders = RecentlyTrashedFolders()
     internal val fileMetaDedup = InFlightDedup<String, InternxtFile>()
     internal val folderMetaDedup = InFlightDedup<String, InternxtFolder>()
     internal val listFilesDedup = InFlightDedup<String, List<InternxtFile>>()
@@ -1332,7 +1333,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
             }
         }
         // A trashed file is not read by its hint any more (#747): an answer that names it again (a restore) is newer.
-        items.filter { it.second == "file" }.forEach { fileHints.forget(it.first) }
+        items.forEach { (uuid, type) -> if (type == "file") fileHints.forget(uuid) else trashedFolders.remember(uuid) }
     }
 
     /**
@@ -1401,6 +1402,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                 }
             }
         }
+        trashedFolders.remember(uuid) // listed live a while longer, like a trashed one (E3)
     }
 
     private fun isHttps(url: String): Boolean =

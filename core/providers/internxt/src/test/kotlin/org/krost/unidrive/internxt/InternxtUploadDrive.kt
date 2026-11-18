@@ -128,6 +128,13 @@ internal class UploadDrive(
     /** Answers every cursor listing of a folder's children with this status instead (null lets it through). */
     @Volatile var pagedListingFault: HttpStatusCode? = null
 
+    /** Runs before every single `POST /folders` is answered; [call] counts from 1. A test changes the drive from here. */
+    @Volatile var onFolderCreate: ((call: Int) -> Unit)? = null
+    private val folderCreateCalls = AtomicInteger()
+
+    /** The uuids `POST /storage/trash/add` was asked to trash. The drive keeps listing them as they were (the trash lag). */
+    val trashed = CopyOnWriteArrayList<String>()
+
     /** The order in which a batch `POST /folders` answers its folders. */
     @Volatile var batchAnswerOrder: (List<UploadDriveFolder>) -> List<UploadDriveFolder> = { it }
 
@@ -232,6 +239,7 @@ internal class UploadDrive(
                     val parent = b.getValue("parentFolderUuid").jsonPrimitive.content
                     val names = b["folders"]?.jsonArray?.map { it.jsonObject.getValue("plainName").jsonPrimitive.content }
                     if (names == null) {
+                        onFolderCreate?.invoke(folderCreateCalls.incrementAndGet())
                         val name = b.getValue("plainName").jsonPrimitive.content
                         if (folders.any { it.parentUuid == parent && it.plainName == name }) {
                             respond("""{"message":"Folder already exists","statusCode":409}""", HttpStatusCode.Conflict, jsonHeaders)
@@ -245,6 +253,10 @@ internal class UploadDrive(
                         folders += made
                         respond(batchAnswerOrder(made).joinToString(",", "{\"result\":[", "]}") { folderJson(it) }, HttpStatusCode.OK, jsonHeaders)
                     }
+                }
+                request.method == HttpMethod.Post && path.endsWith("/storage/trash/add") -> {
+                    body().getValue("items").jsonArray.forEach { trashed += it.jsonObject.getValue("uuid").jsonPrimitive.content }
+                    respond("{}", HttpStatusCode.OK, jsonHeaders)
                 }
                 // Replace in place: the content of a file, its name untouched.
                 request.method == HttpMethod.Put && !path.endsWith("/meta") && path.substringBeforeLast('/').endsWith("/drive/files") -> {
