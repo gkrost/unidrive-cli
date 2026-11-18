@@ -1270,7 +1270,7 @@ open class SyncEngine(
                 allRemoteChanges
             }
         reporter.onScanProgress("remote", remoteChanges.size)
-        logRemoteChanges(remoteChanges)
+        logRemoteChangeEvents(remoteChanges, remoteChangeRowLookup, fileTally)
         // UD-747 / UD-748: persist the wall-clock + final count for next
         // run's ETA computation.
         val remoteScanSecs = (System.currentTimeMillis() - remotePhaseStart) / 1000
@@ -1580,30 +1580,13 @@ open class SyncEngine(
         // safeguard tripped. The apply pass derives sequentialActions from
         // `actions`, so removing them here keeps uploads/downloads/creates
         // flowing; the deletes are re-evaluated on the next sync.
-        if (deferDeletes) {
-            val before = actions.size
-            actions = actions.filterNot { it is SyncAction.DeleteRemote || it is SyncAction.DeleteLocal }
-            log.warn(
-                "#108: deferred {} delete action(s) this cycle (daemon-mode safeguard); re-evaluated next sync",
-                before - actions.size,
-            )
-        }
+        if (deferDeletes) actions = withoutDeferredDeletes(actions)
 
         if (dryRun) {
-            val counts = mutableMapOf<String, Int>()
-            actions.forEachIndexed { index, action ->
-                val label = actionLabel(action)
-                reporter.onActionProgress(index + 1, actions.size, label, displayPath(action))
-                counts[label] = (counts[label] ?: 0) + 1
-                when (action) {
-                    is SyncAction.DownloadContent -> downloaded.incrementAndGet()
-                    is SyncAction.CreatePlaceholder -> if (action.shouldHydrate) downloaded.incrementAndGet()
-                    is SyncAction.UpdatePlaceholder -> if (action.wasHydrated) downloaded.incrementAndGet()
-                    is SyncAction.Upload -> uploaded.incrementAndGet()
-                    is SyncAction.Conflict -> conflicts.incrementAndGet()
-                    else -> {}
+            val counts =
+                tallyDryRun(actions, ::actionLabel, downloaded, uploaded, conflicts) { index, label, action ->
+                    reporter.onActionProgress(index, actions.size, label, displayPath(action))
                 }
-            }
             // UD-260: promote pending cursor (see promotePendingCursor for the
             // best-effort cursor-advance semantic on incomplete gathers).
             promotePendingCursor()
@@ -1877,20 +1860,7 @@ open class SyncEngine(
         // remain pending in the DB as remoteId=null / isHydrated=false rows. The
         // pending_cursor stays unpromoted so the next `apply` (or `sync`) finalises.
         if (skipTransfers) {
-            val pendingTransfers = actions.count { it is SyncAction.DownloadContent || it is SyncAction.Upload || it in bytesInPassTwo }
-            log.info(
-                "Refresh mode: skipping Pass 2; {} pending transfer(s) deferred (downloads + uploads)",
-                pendingTransfers,
-            )
-            val duration = System.currentTimeMillis() - startTime
-            reporter.onSyncComplete(
-                downloaded = 0,
-                uploaded = 0,
-                conflicts = conflicts.get(),
-                durationMs = duration,
-                actionCounts = actions.groupingBy { actionLabel(it) }.eachCount(),
-                failed = passOneFailures.get(),
-            )
+            completeRefresh(actions, bytesInPassTwo, conflicts.get(), passOneFailures.get(), startTime)
             return
         }
 
@@ -1906,10 +1876,8 @@ open class SyncEngine(
         // doSyncOnce so the streaming-gather executor (gatherStreamingChanges)
         // can share them. On the non-streaming path nothing else mutates
         // them before this point, so the move is behaviour-preserving.
-        // The Pass 1 actions run here (bytesInPassTwo) keep Pass 1's stop rule: CONSECUTIVE_SYNC_FAILURE_HARD_CAP failures
-        // in a row (a success resets the streak) end the pass as an upstream outage. Pass 1's streak carries over.
-        val deferredFailureStreak = AtomicInteger(consecutiveFailures)
-        val deferredCapFailure = java.util.concurrent.atomic.AtomicReference<ProviderException?>(null)
+        // The Pass 1 actions run here (bytesInPassTwo) keep Pass 1's stop rule; Pass 1's streak carries over.
+        val deferredStreak = DeferredFailureStreak(consecutiveFailures, CONSECUTIVE_SYNC_FAILURE_HARD_CAP)
         try {
             coroutineScope {
                 // A pool of perProviderConcurrency workers takes the transfers in plan order, instead of one coroutine
@@ -1933,14 +1901,7 @@ open class SyncEngine(
                                             runTransfer(
                                                 action = action,
                                                 streaming = false,
-                                                succeeded =
-                                                    when (action) {
-                                                        is SyncAction.Upload -> uploaded
-                                                        is SyncAction.DownloadContent -> downloaded
-                                                        is SyncAction.Conflict -> conflicts
-                                                        is SyncAction.CreatePlaceholder -> if (action.shouldHydrate) downloaded else AtomicInteger()
-                                                        else -> downloaded
-                                                    },
+                                                succeeded = passTwoCounter(action, uploaded, downloaded, conflicts),
                                                 transferFailures = transferFailures,
                                                 authFailure = authFailure,
                                                 stopPass = { this@coroutineScope.cancel() },
@@ -1948,25 +1909,13 @@ open class SyncEngine(
                                                 applied = {
                                                     if (action in bytesInPassTwo) {
                                                         appliedCounts.merge(actionLabel(action), 1, Int::plus)
-                                                        deferredFailureStreak.set(0)
+                                                        deferredStreak.succeeded()
                                                     }
                                                 },
                                                 failed = {
-                                                    if (action in bytesInPassTwo) {
-                                                        val streak = deferredFailureStreak.incrementAndGet()
-                                                        if (streak >= CONSECUTIVE_SYNC_FAILURE_HARD_CAP &&
-                                                            deferredCapFailure.compareAndSet(
-                                                                null,
-                                                                ProviderException("Stopping sync after $streak consecutive failures"),
-                                                            )
-                                                        ) {
-                                                            log.error(
-                                                                "Stopping sync pass: {} consecutive action failures (last on {}) — treating as upstream outage",
-                                                                streak,
-                                                                action.path,
-                                                            )
-                                                            this@coroutineScope.cancel()
-                                                        }
+                                                    if (action in bytesInPassTwo && deferredStreak.failed()) {
+                                                        log.error("Stopping sync pass: {} (last on {}) — treating as upstream outage", deferredStreak.failure?.message, action.path)
+                                                        this@coroutineScope.cancel()
                                                     }
                                                 },
                                             )
@@ -1990,13 +1939,13 @@ open class SyncEngine(
         } catch (e: CancellationException) {
             // Scope cancelled by an AuthenticationException in a child job — the rethrow happens
             // just below so callers see the auth failure, not the cancellation.
-            if (authFailure.get() == null && deferredCapFailure.get() == null) throw e
+            if (authFailure.get() == null && deferredStreak.failure == null) throw e
         }
 
         // UD-222: AuthenticationException trumps everything — surface it to the caller so token
         // refresh / re-auth flows trigger instead of a silent "0 downloaded, many failed" result.
         authFailure.get()?.let { throw it }
-        deferredCapFailure.get()?.let { throw it }
+        deferredStreak.failure?.let { throw it }
 
         // Promote unconditionally. The original gate was `transferFailures == 0`,
         // which protected against "cursor advances past a failed download and the
@@ -3137,18 +3086,6 @@ open class SyncEngine(
         destination: java.nio.file.Path,
     ): Long = Transfers.downloadByIdOrPath(provider, item, remotePath, destination)
 
-    // gkrost/unidrive-cli#451: what the file at a download's destination looked like when the transfer was
-    // cleared to start: its stats, or null stats when the path was empty (nothing there, or the pre-transfer
-    // check already moved an edit aside). The placement re-checks against this before it replaces the bytes.
-    // [absent] marks a PROVEN empty destination — distinct from an unreadable one, where null stats mean
-    // unknown: on a proven-empty destination a regular file that appears during the transfer is a new local
-    // edit with no row baseline to judge it against, and it is kept aside as such instead of being replaced.
-    private data class PreTransferGuard(
-        val path: String,
-        val stats: Pair<Long, Long>?,
-        val absent: Boolean = false,
-    )
-
     private suspend fun downloadByIdOrPathWithHash(
         item: CloudItem,
         remotePath: String,
@@ -3376,20 +3313,6 @@ open class SyncEngine(
         return keepAppearedFileAside(path, localPath, "was edited after the scan planned its $plannedFor", remoteState)
     }
 
-    // #768: what a placeholder download re-checks at its placement. [keep]: the file is kept aside there unconditionally,
-    // as one that appeared on a proven-empty path is. Otherwise an edit made after [judged] (the stats a last-writer-wins
-    // loser was backed up with), or after now, is kept.
-    private fun placementGuard(
-        path: String,
-        localPath: Path,
-        keep: Boolean,
-        judged: Pair<Long, Long>?,
-    ): PreTransferGuard {
-        if (keep) return PreTransferGuard(path, null, absent = true)
-        val stats = judged ?: statBeforeUpload(localPath)
-        return PreTransferGuard(path, stats, absent = stats == null && !Files.exists(localPath, java.nio.file.LinkOption.NOFOLLOW_LINKS))
-    }
-
     // #768: whether the local file at [path] differs from the state its row last synced: edited since the scan, or a
     // file no row baseline vouches for (isLocalFileWithoutBaseline). Moves nothing.
     private suspend fun differsFromSyncedState(
@@ -3605,33 +3528,6 @@ open class SyncEngine(
             newHash = result.hash,
             result = "success",
         )
-    }
-
-    /**
-     * gkrost/unidrive-cli#394: one `remote_change` event per file the cloud reported as new, changed or gone since the row
-     * the engine holds. Bounded: at most [FILE_EVENT_REMOTE_INSPECT_LIMIT] items are compared with their rows per pass, and
-     * [FileEventTally.REMOTE_CHANGE_LINES_PER_PASS] lines are written (the rest are counted for the summary).
-     */
-    private fun logRemoteChanges(changes: Map<String, CloudItem>) {
-        // #742 finding 6: the rows of the inspected files come from one chunked lookup, not one query per file.
-        val inspected = changes.entries.asSequence().filter { !it.value.isFolder }.take(FILE_EVENT_REMOTE_INSPECT_LIMIT).toList()
-        if (inspected.isEmpty()) return
-        val rows = remoteChangeRowLookup(inspected.map { it.key })
-        for ((path, item) in inspected) {
-            val row = rows[path]
-            val state =
-                when {
-                    item.deleted -> if (row == null) continue else "deleted"
-                    row == null -> "new"
-                    row.remoteId != item.id || row.remoteSize != item.size || row.remoteHash != item.hash -> "changed"
-                    else -> continue
-                }
-            if (fileTally.mayLogRemoteChange()) {
-                FileEvents.event(FileEvents.Phase.REMOTE_CHANGE, path, bytes = item.size, tally = fileTally, extra = listOf("state" to state))
-            } else {
-                fileTally.record(FileEvents.Phase.REMOTE_CHANGE, item.size, null, null)
-            }
-        }
     }
 
     // gkrost/unidrive-cli#57: the token a mirror write hands the provider as ifMatchETag. A provider with versions of its own
@@ -4977,83 +4873,38 @@ open class SyncEngine(
         row.remoteHash != item.hash || row.remoteSize != item.size || row.remoteModified != item.modified ||
             (row.remoteVersion != null && item.version != null && row.remoteVersion != item.version)
 
-    private fun actionLabel(action: SyncAction): String =
-        when (action) {
-            is SyncAction.CreatePlaceholder ->
-                when {
-                    action.remoteItem.isFolder -> "mkdir"
-                    Files.isRegularFile(placeholder.resolveLocal(action.path)) &&
-                        Files.size(placeholder.resolveLocal(action.path)) == action.remoteItem.size -> "adopt"
-                    else -> "placeholder"
-                }
-            is SyncAction.UpdatePlaceholder -> "update"
-            is SyncAction.TouchMetadata -> "touch"
-            is SyncAction.DownloadContent -> "down"
-            is SyncAction.MoveRemote -> "move"
-            is SyncAction.MoveLocal -> "move"
-            is SyncAction.Upload -> "up"
-            is SyncAction.DeleteLocal -> "del-local"
-            is SyncAction.DeleteRemote -> "del-remote"
-            is SyncAction.CreateRemoteFolder -> "mkdir-remote"
-            is SyncAction.Conflict -> "CONFLICT"
-            is SyncAction.RemoveEntry -> "cleanup"
-        }
+    private fun actionLabel(action: SyncAction): String = actionLabelOf(action, placeholder)
 
-    // The bytes a transfer will move, as far as they are known before it starts:
-    // the remote item's size for a download, the local file's for an upload (a
-    // file that is gone paces as nothing). The budget is paced before the
-    // transfer, so only the pre-transfer size can reserve its line time. This
-    // answers OUTSIDE every transfer's try/catch — the pace call sits before the
-    // permit — so a local-FS error here (a file vanishing between the two stats,
-    // an unreadable directory) must never throw: pace as nothing and let the
-    // transfer itself report the failure inside its own catch.
-    private fun transferBytes(action: SyncAction): Long =
-        when (action) {
-            is SyncAction.DownloadContent -> action.remoteItem.size
-            // #742 finding 5: a placeholder that downloads, and a conflict, which downloads the cloud's version or uploads
-            // the local one (keep-both does both; what moves beyond the reservation is charged as it moves).
-            is SyncAction.CreatePlaceholder -> action.remoteItem.size
-            is SyncAction.UpdatePlaceholder -> action.remoteItem.size
-            is SyncAction.Conflict ->
-                maxOf(
-                    action.remoteItem?.takeUnless { it.deleted || it.isFolder }?.size ?: 0L,
-                    transferBytes(SyncAction.Upload(action.path)),
-                )
-            is SyncAction.Upload ->
-                runCatching {
-                    placeholder.resolveLocal(action.path).let { p ->
-                        if (Files.isRegularFile(p)) Files.size(p) else 0L
-                    }
-                }.getOrDefault(0L)
-            else -> 0L
-        }
+    private fun transferBytes(action: SyncAction): Long = transferBytesOf(action, placeholder)
 
-    // #742 finding 5: a Pass 1 action whose apply moves bytes. A refused case collision (no remote item) moves none; a
-    // placeholder moves bytes when the local file is not already the remote's content (applyCreatePlaceholder's rule).
-    private fun movesBytesInPassTwo(action: SyncAction): Boolean =
-        when (action) {
-            is SyncAction.Conflict -> action.remoteItem != null
-            is SyncAction.CreatePlaceholder -> {
-                val item = action.remoteItem
-                val local = placeholder.resolveLocal(action.path)
-                !item.isFolder && item.size > 0 &&
-                    !(Files.isRegularFile(local) && Files.size(local) == item.size && !placeholder.isSparse(local, item.size))
-            }
-            is SyncAction.UpdatePlaceholder -> action.wasHydrated && !action.remoteItem.isFolder
-            else -> false
-        }
+    // archive#108: the plan without its deletes, dropped for this cycle by a daemon-mode safeguard trip.
+    private fun withoutDeferredDeletes(actions: List<SyncAction>): List<SyncAction> {
+        val kept = actions.filterNot { it is SyncAction.DeleteRemote || it is SyncAction.DeleteLocal }
+        log.warn("#108: deferred {} delete action(s) this cycle (daemon-mode safeguard); re-evaluated next sync", actions.size - kept.size)
+        return kept
+    }
 
-    // UD-740: display path used in the user-facing progress line. For move
-    // actions, expand to `from -> to` so the operator can see what was
-    // renamed where; for everything else it's just `action.path`. The
-    // failures.jsonl JSON layer keeps `path` clean (destination) and adds
-    // `from_path` when relevant — see formatFailureJson.
-    private fun displayPath(action: SyncAction): String =
-        when (action) {
-            is SyncAction.MoveRemote -> "${action.fromPath} -> ${action.path}"
-            is SyncAction.MoveLocal -> "${action.fromPath} -> ${action.path}"
-            else -> action.path
-        }
+    // UD-236: the end of a refresh pass, which skips Pass 2: its transfers stay pending for the next `apply` or `sync`.
+    private fun completeRefresh(
+        actions: List<SyncAction>,
+        bytesInPassTwo: Set<SyncAction>,
+        conflicts: Int,
+        failed: Int,
+        startTime: Long,
+    ) {
+        val pendingTransfers = actions.count { it is SyncAction.DownloadContent || it is SyncAction.Upload || it in bytesInPassTwo }
+        log.info("Refresh mode: skipping Pass 2; {} pending transfer(s) deferred (downloads + uploads)", pendingTransfers)
+        reporter.onSyncComplete(
+            downloaded = 0,
+            uploaded = 0,
+            conflicts = conflicts,
+            durationMs = System.currentTimeMillis() - startTime,
+            actionCounts = actions.groupingBy { actionLabel(it) }.eachCount(),
+            failed = failed,
+        )
+    }
+
+    private fun movesBytesInPassTwo(action: SyncAction): Boolean = movesBytesInPassTwo(action, placeholder)
 
     // archive#737: PlaceholderManager kept a local file that was in the way of a remote folder as the
     // conflict copy [copy]. Surface it like a keep-both conflict. A pending upload's row is dropped:
@@ -5439,7 +5290,6 @@ open class SyncEngine(
     companion object {
         // gkrost/unidrive-cli#394: the TRACE progress of an upload is written once per this many bytes.
         private const val FILE_TRACE_STEP_BYTES = 4L * 1024 * 1024
-        private const val FILE_EVENT_REMOTE_INSPECT_LIMIT = 20_000
 
         const val CONSECUTIVE_SYNC_FAILURE_HARD_CAP: Int = 20
 
@@ -5451,36 +5301,6 @@ open class SyncEngine(
 
         /** The most actions Pass 1 puts into one batch before it commits, however fast they run. */
         internal const val PASS1_COMMIT_MAX_ACTIONS: Int = 1_000
-
-        /** How many " (n)" names keepBothCopyPath tries before it refuses. */
-        internal const val KEEP_BOTH_MAX_NAME_ATTEMPTS: Int = 1000
-
-        /**
-         * archive#738: the keep-both side-copy path for [path] at [stamp]: `dir/stem.conflict-local-<stamp>.ext`, and
-         * `dir/stem.conflict-local-<stamp> (n).ext` (n = 2, 3, …) while [isTaken] says the name is in use. The
-         * extension is taken from the file name only, so a dot in a folder name never splits the path.
-         * The stem is cut (archive#1091, on a code-point boundary) so the whole name stays within 255 UTF-16 units.
-         * Throws [IllegalStateException] rather than reuse a taken name once [KEEP_BOTH_MAX_NAME_ATTEMPTS] are spent.
-         */
-        internal fun keepBothCopyPath(
-            path: String,
-            stamp: String,
-            isTaken: (String) -> Boolean,
-        ): String {
-            val cut = path.lastIndexOf('/')
-            val dir = if (cut >= 0) path.substring(0, cut + 1) else ""
-            val leaf = path.substring(cut + 1)
-            val ext = leaf.substringAfterLast(".", "")
-            val stem = if (ext.isNotEmpty()) leaf.substringBeforeLast(".") else leaf
-            val dotExt = if (ext.isNotEmpty()) ".$ext" else ""
-            for (n in 1..KEEP_BOTH_MAX_NAME_ATTEMPTS) {
-                val counter = if (n == 1) "" else " ($n)"
-                val tail = ".conflict-local-$stamp$counter$dotExt"
-                val candidate = "$dir${org.krost.unidrive.io.NameLimit.fitStem(stem, tail.length)}$tail"
-                if (!isTaken(candidate)) return candidate
-            }
-            error("no free keep-both copy name for $path after $KEEP_BOTH_MAX_NAME_ATTEMPTS attempts")
-        }
 
         // archive#560 U2b: the enumeration's and the gather's constants live in
         // RemoteEnumeration and RemoteGather (see there); these names stay for callers.
@@ -5514,49 +5334,6 @@ open class SyncEngine(
         const val FULL_ENUMERATION_ITEMS_KEY: String = RemoteEnumeration.FULL_ENUMERATION_ITEMS_KEY
         const val FULL_ENUMERATION_FOLDERS_KEY: String = RemoteEnumeration.FULL_ENUMERATION_FOLDERS_KEY
         const val FULL_ENUMERATION_MS_KEY: String = RemoteEnumeration.FULL_ENUMERATION_MS_KEY
-
-        /**
-         * #216: one failures.jsonl line, built with kotlinx like [formatSkippedOpJson], so a path or a message with `"`,
-         * `\` or a line break stays one valid record that reads back as written. The fields and their order are the ones
-         * the hand-built template wrote: `ts`, `action`, `path`, `from_path` (moves only), `error`.
-         */
-        internal fun formatFailureJson(
-            kind: String,
-            action: SyncAction,
-            error: Throwable,
-            ts: Instant,
-        ): String {
-            // UD-740: a move also records its source, so a post-mortem reader sees what was renamed;
-            // `path` keeps its destination meaning.
-            val fromPath =
-                when (action) {
-                    is SyncAction.MoveRemote -> action.fromPath
-                    is SyncAction.MoveLocal -> action.fromPath
-                    else -> null
-                }
-            return kotlinx.serialization.json
-                .buildJsonObject {
-                    put("ts", kotlinx.serialization.json.JsonPrimitive(ts.toString()))
-                    put("action", kotlinx.serialization.json.JsonPrimitive(kind))
-                    put("path", kotlinx.serialization.json.JsonPrimitive(action.path))
-                    if (fromPath != null) put("from_path", kotlinx.serialization.json.JsonPrimitive(fromPath))
-                    put("error", kotlinx.serialization.json.JsonPrimitive(error.message ?: error.javaClass.simpleName))
-                }.toString()
-        }
-
-        internal fun formatSkippedOpJson(
-            action: String,
-            path: String,
-            reason: String,
-            ts: Instant,
-        ): String =
-            kotlinx.serialization.json
-                .buildJsonObject {
-                    put("ts", kotlinx.serialization.json.JsonPrimitive(ts.toString()))
-                    put("action", kotlinx.serialization.json.JsonPrimitive(action))
-                    put("path", kotlinx.serialization.json.JsonPrimitive(path))
-                    put("reason", kotlinx.serialization.json.JsonPrimitive(reason))
-                }.toString()
 
         fun defaultHydrationCacheRoot(): Path =
             System.getenv("XDG_CACHE_HOME")?.let { Paths.get(it) }

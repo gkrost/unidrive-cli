@@ -2841,7 +2841,7 @@ class SyncEngineTest {
         // dependency, so this unit test exercises exactly the hazard.
         val nasty = "/Doc \"with\" \\back and\nnewline\t\r"
         val ts = Instant.parse("2026-05-17T10:00:00Z")
-        val line = SyncEngine.formatSkippedOpJson(action = "del-remote", path = nasty, reason = "top_level_never_hydrated", ts = ts)
+        val line = formatSkippedOpJson(action = "del-remote", path = nasty, reason = "top_level_never_hydrated", ts = ts)
 
         // The output must be a single line of valid JSON.
         assertTrue(!line.contains('\n'), "formatted line must not contain a raw newline; got: $line")
@@ -4794,16 +4794,16 @@ class SyncEngineTest {
     @Test
     fun `keep_both_copy_name_puts_the_counter_before_the_extension_and_ignores_dots_in_folders`() {
         val taken = mutableSetOf<String>()
-        val first = SyncEngine.keepBothCopyPath("/my.dir/c.txt", "20260505T102030") { it in taken }
+        val first = keepBothCopyPath("/my.dir/c.txt", "20260505T102030") { it in taken }
         assertEquals("/my.dir/c.conflict-local-20260505T102030.txt", first)
         taken += first
-        val second = SyncEngine.keepBothCopyPath("/my.dir/c.txt", "20260505T102030") { it in taken }
+        val second = keepBothCopyPath("/my.dir/c.txt", "20260505T102030") { it in taken }
         assertEquals("/my.dir/c.conflict-local-20260505T102030 (2).txt", second)
         assertEquals(
             "/my.dir/README.conflict-local-20260505T102030",
-            SyncEngine.keepBothCopyPath("/my.dir/README", "20260505T102030") { false },
+            keepBothCopyPath("/my.dir/README", "20260505T102030") { false },
         )
-        assertFailsWith<IllegalStateException> { SyncEngine.keepBothCopyPath("/c.txt", "20260505T102030") { true } }
+        assertFailsWith<IllegalStateException> { keepBothCopyPath("/c.txt", "20260505T102030") { true } }
     }
 
     @Test
