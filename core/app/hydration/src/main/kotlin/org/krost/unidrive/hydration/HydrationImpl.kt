@@ -623,7 +623,7 @@ class HydrationImpl(
 
     override suspend fun openForRead(connectionId: String, handleId: String, path: String): OpenResult =
         when (val target = views.readTarget(path)) {
-            is HydrationViews.ReadTarget.Real -> openForReadAt(connectionId, handleId, target.path)
+            is HydrationViews.ReadTarget.Real -> stateDb.strictNameRefusal(target.path)?.let { OpenResult.Failed(it) } ?: openForReadAt(connectionId, handleId, target.path)
             HydrationViews.ReadTarget.Missing -> OpenResult.Failed(HydrationError.UnknownPath)
         }
 
@@ -2575,7 +2575,7 @@ class HydrationImpl(
         connectionId: String?,
     ): HydrateResult =
         when (val target = views.readTarget(path)) {
-            is HydrationViews.ReadTarget.Real -> hydrateAt(target.path, connectionId)
+            is HydrationViews.ReadTarget.Real -> stateDb.strictNameRefusal(target.path)?.let { HydrateResult.Failed(it) } ?: hydrateAt(target.path, connectionId)
             HydrationViews.ReadTarget.Missing -> HydrateResult.Failed(HydrationError.UnknownPath)
         }
 
