@@ -269,20 +269,45 @@ class VaultDecryptCommand : Runnable {
         }
 
         val passphrase = readPassphrase("Vault passphrase: ")
-        val data = vault.read(passphrase)
+        println(decryptVault(baseDir, passphrase) { System.err.println("Warning: $it") })
+    }
+}
 
-        val configPath = baseDir.resolve("config.toml")
-        ConfigFileTransaction.withLock(configPath) {
-            if (data.isEmpty()) {
-                println("Vault is empty — nothing to restore.")
-                vault.delete()
-                return@withLock
-            }
-            val configContent = if (Files.exists(configPath)) Files.readString(configPath) else "[general]\n"
-            val restored = restoreVaultCredentials(configContent, data)
-            ConfigFileTransaction.writeAtomically(configPath, restored)
+/**
+ * `vault decrypt` past the passphrase: restores the vault of [baseDir] into its config.toml; returns the line to print.
+ * An entry whose profile is no longer configured (#749 finding 7: a `profile remove` that found the vault locked) has no
+ * section to go back into: it is skipped with one [warn] naming `vault forget`, and stays in the vault, which is then
+ * rewritten with only those entries instead of deleted.
+ */
+internal fun decryptVault(
+    baseDir: java.nio.file.Path,
+    passphrase: CharArray,
+    warn: (String) -> Unit,
+): String {
+    val vault = Vault(baseDir.resolve("vault.enc"))
+    val data = vault.read(passphrase)
+    val configPath = baseDir.resolve("config.toml")
+    return ConfigFileTransaction.withLock(configPath) {
+        if (data.isEmpty()) {
             vault.delete()
-            println("Credentials restored to config.toml. Vault deleted.")
+            return@withLock "Vault is empty — nothing to restore."
+        }
+        val configContent = if (Files.exists(configPath)) Files.readString(configPath) else "[general]\n"
+        val configured = SyncConfig.parseRaw(configContent, configPath.toString()).providers.keys
+        val restorable = data.filterKeys { it in configured }
+        val orphans = data - restorable.keys
+        for (name in orphans.keys) {
+            warn("the vault entry of profile '$name' has no config section and was not restored; drop it with `unidrive vault forget $name`")
+        }
+        if (restorable.isNotEmpty()) {
+            ConfigFileTransaction.writeAtomically(configPath, restoreVaultCredentials(configContent, restorable))
+        }
+        if (orphans.isEmpty()) {
+            vault.delete()
+            "Credentials restored to config.toml. Vault deleted."
+        } else {
+            vault.write(passphrase, orphans)
+            "Credentials of ${restorable.size} profile(s) restored to config.toml; the vault keeps ${orphans.size} orphan entry(ies)."
         }
     }
 }
