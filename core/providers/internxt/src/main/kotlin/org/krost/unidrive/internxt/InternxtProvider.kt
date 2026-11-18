@@ -2123,8 +2123,16 @@ class InternxtProvider(
                 false
             }
         if (existingRemoteId != null && !archivedPrior) {
-            val replaced =
-                try {
+            // The object a replace names is always the one this upload finished: in this call, or in an earlier attempt
+            // of the same content whose tombstone this call resumed at FINISH_DONE. Only the resumed one can be stale.
+            val landedBefore =
+                if (tomb?.stage == UploadTombstone.Stage.FINISH_DONE) {
+                    resumedReplaceLanded(existingRemoteId, bucket, bucketEntry.id, fileSize, remotePath, pathHashStr)
+                } else {
+                    null
+                }
+            var replaced =
+                landedBefore ?: try {
                     api
                         .replaceFile(
                             uuid = existingRemoteId,
@@ -2142,6 +2150,17 @@ class InternxtProvider(
                     log.info("replace of {} had already landed (fileId={}); adopting", remotePath, bucketEntry.id)
                     current
                 }
+            // The server answers 200 to a replace and still may not name the uploaded object (it accepts an older fileId
+            // too): only a file that names the uploaded object counts as replaced. The tombstone stays for the next attempt.
+            if (replaced.fileId != bucketEntry.id) {
+                val current = api.getFileMeta(existingRemoteId)
+                if (current.fileId != bucketEntry.id) {
+                    throw ProviderException(
+                        "the replace of $remotePath did not take: the server reports object ${current.fileId}, not the uploaded ${bucketEntry.id}",
+                    )
+                }
+                replaced = current
+            }
             finalItem = replaced.toCloudItem(parentPath)
         } else {
             // A create, or the create that follows the archive rename of a replace: the same answers to a 409 and to a
@@ -2484,6 +2503,40 @@ class InternxtProvider(
             requiredBytes = required,
             usableBytes = usable,
         )
+    }
+
+    // A replace whose bucket entry was finished by an earlier attempt (resumed at FINISH_DONE). The file naming that
+    // object already (and the size) means the earlier replace landed: its meta row is the result, nothing is sent. A file
+    // naming another object may have been replaced by someone else since, and the server drops the replaced object: a
+    // replace naming ours would then leave the file without one (it accepts an older fileId with 200, live 2026-11-18).
+    // So the bridge must still hold ours; when it does not, the resume state is dropped and the attempt fails retryably,
+    // and the next one uploads afresh. Null: the replace is to be sent.
+    @Suppress("ThrowsCount")
+    private suspend fun resumedReplaceLanded(
+        existingRemoteId: String,
+        bucket: String,
+        entryId: String,
+        fileSize: Long,
+        remotePath: String,
+        pathHash: String,
+    ): InternxtFile? {
+        val current = api.getFileMeta(existingRemoteId)
+        if (current.fileId == entryId && current.size?.toLongOrNull() == fileSize) {
+            log.info("replace of {} had landed in an earlier attempt (fileId={}); adopting", remotePath, entryId)
+            return current
+        }
+        try {
+            api.getBridgeFileInfo(bucket, entryId)
+        } catch (e: InternxtApiException) {
+            if (!isBucketEntryNotFound(e)) throw e
+            withContext(Dispatchers.IO) { tombstoneStore.discard(pathHash) }
+            throw ProviderException(
+                "the object finished for $remotePath in an earlier attempt ($entryId) is gone and the file names " +
+                    "${current.fileId}; not replacing with it, the next attempt uploads afresh",
+                cause = e,
+            )
+        }
+        return null
     }
 
     // A create's 409 names a remote of the same size: read it (decrypted into the staging directory, deleted right after)
