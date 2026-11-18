@@ -2948,7 +2948,9 @@ class HydrationImpl(
         return ListResult.Entry(
             path = e.path,
             size = size,
-            mtimeEpochMillis = e.localMtime ?: e.lastSynced.toEpochMilli(),
+            // Live drive: a clean cloud-backed file lists its cloud mtime, not the time its cache copy was (re-)downloaded.
+            mtimeEpochMillis = e.remoteModified?.takeIf { e.remoteId != null && e.editBase == null && !pendingUpload }?.toEpochMilli()
+                ?: e.localMtime ?: e.lastSynced.toEpochMilli(),
             isHydrated = e.isHydrated,
             isFolder = e.isFolder,
             remoteModifiedEpochMillis = e.remoteModified?.toEpochMilli(),
