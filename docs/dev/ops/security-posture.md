@@ -8,7 +8,11 @@ This repo is a public, JVM (Kotlin) Gradle multi-module project: the UniDrive sy
 core plus daemon, CLI, and provider modules (OneDrive, Internxt). It talks to cloud
 providers over OAuth/HTTP and therefore handles credentials and tokens — integration
 tests can run against real provider tokens, gated by `UNIDRIVE_INTEGRATION_TESTS`.
-That credential-handling property is what shapes the priorities below.
+That credential-handling property is what shapes the priorities below. The security
+limits a provider's protocol itself brings (Internxt's one permanent mnemonic, its
+login KDF, what its sharing exposes) are not GitHub settings; they live with the
+provider: [core/providers/internxt/README.md](../../../core/providers/internxt/README.md),
+section *Security model and limits*.
 
 ## Status 2026-10-26 (what changed since the audit below)
 
