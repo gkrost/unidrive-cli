@@ -130,10 +130,17 @@ class UploadIgnore(
  * logical path) is downloaded on purpose by [fetched] (capped, outside the cache), so its folder's rules apply before
  * the file is ever opened. Without [fetched], or while that download is too large or fails, its directory is held
  * back (fail closed).
+ *
+ * gkrost/unidrive-cli#775: a rule file only this computer has (never uploaded, often because it ignores itself, as a venv's
+ * own `.gitignore` does) is known to the engine through its cache copy alone. When that copy is gone while its row still
+ * says the bytes are here ([lost], asked with the logical path: a wiped or emptied hydration cache), the rules are not
+ * absent but unknown: its directory is held back (fail closed, with the held-back WARN) instead of uploading what they
+ * kept local. Writing the file through the mount again ends the hold, and deleting it through the mount drops its row.
  */
 class CacheIgnoreSource(
     cacheDir: Path,
     private val fetched: CloudRuleFiles? = null,
+    private val lost: (path: String) -> Boolean = { false },
     private val inCloud: (path: String) -> Boolean,
 ) : IgnoreFileSource {
     private val files = FileSystemIgnoreSource(cacheDir)
@@ -141,7 +148,12 @@ class CacheIgnoreSource(
 
     override fun probe(path: String): RuleFileProbe =
         when (val probe = files.probe(path)) {
-            RuleFileProbe.Absent -> if (inCloud("/$path")) cloudProbe(path) else probe
+            RuleFileProbe.Absent ->
+                when {
+                    inCloud("/$path") -> cloudProbe(path)
+                    lost("/$path") -> RuleFileProbe.Unreadable(LOST)
+                    else -> probe
+                }
             else -> probe.also { fromCloud.remove(path) }
         }
 
@@ -158,6 +170,11 @@ class CacheIgnoreSource(
 
     companion object {
         const val NOT_DOWNLOADED = "in the cloud but not downloaded to this computer; open it once"
+
+        /** gkrost/unidrive-cli#775: the reason of a local-only rule file whose only copy (in the hydration cache) is gone. */
+        const val LOST =
+            "never uploaded, and its only copy in the hydration cache is gone; write it through the mount again " +
+                "(or delete it there) to end the hold"
     }
 }
 

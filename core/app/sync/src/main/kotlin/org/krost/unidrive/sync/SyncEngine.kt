@@ -303,6 +303,8 @@ open class SyncEngine(
                 org.krost.unidrive.sync.ignore.CacheIgnoreSource(
                     hydrationCacheRoot(cacheRoot ?: defaultHydrationCacheRoot(), cacheKey),
                     inCloud = { path -> db.getEntry(path)?.let { !it.isFolder && it.remoteId != null } == true },
+                    // gkrost/unidrive-cli#775: a never-uploaded row that says its bytes are here, while the cache has no copy.
+                    lost = { path -> db.getEntry(path)?.let { !it.isFolder && it.remoteId == null && it.isHydrated } == true },
                     fetched =
                         org.krost.unidrive.sync.ignore.CloudRuleFiles(
                             dir = ignoreRuleFilesRoot(cacheRoot ?: defaultHydrationCacheRoot(), cacheKey),
@@ -383,12 +385,13 @@ open class SyncEngine(
     }
 
     /**
-     * archive#660: true when the cloud holds the rule file [path] and this computer does not have its bytes: a row whose
-     * download is still to come (or failed), or a file this pass's listing reports that is not here yet.
+     * archive#660: true when the cloud holds the rule file [path] and this computer does not have its bytes: a pending download,
+     * a file the listing reports that is not here yet, or (#642) an unchanged local copy older than the listed one (not on UPLOAD).
      */
     private fun ruleFileNotDownloaded(path: String): Boolean {
         val row = db.getEntry(path)
-        if (row != null) return !row.isFolder && row.remoteId != null && !row.isHydrated
+        val listed = passRemoteChanges[path].takeIf { syncDirection != SyncDirection.UPLOAD }
+        if (row != null) return !row.isFolder && row.remoteId != null && (!row.isHydrated || staleLocalRuleFile(row, listed, safeResolveLocalOrNull(syncRoot, path)))
         val item = passRemoteChanges[path] ?: return false
         if (item.deleted || item.isFolder) return false
         val local = safeResolveLocalOrNull(syncRoot, path) ?: return false
@@ -2284,7 +2287,7 @@ open class SyncEngine(
     ): Path? {
         if (!ruleFileNotDownloaded(path) || item.size < 0L || item.size > maxBytes) return null
         val local = safeResolveLocalOrNull(syncRoot, path) ?: return null
-        if (Files.exists(local, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return null
+        if (Files.exists(local, java.nio.file.LinkOption.NOFOLLOW_LINKS) && db.getEntry(path)?.isHydrated != true) return null
         if (planExcludePatterns.any { Reconciler.matchesGlob(path, it) } || guard.isReadOnlyPath(path)) return null
         // Its folder, as the rules above it decide (asking for the file itself would read the folder's own rules, the
         // file not here yet, and report it as unreadable just before it is downloaded).
@@ -2302,7 +2305,7 @@ open class SyncEngine(
     ): Boolean {
         val transfers = guard.ruleFileTransfers
         if (transfers.isPaused) return false
-        val previous = db.getEntry(path)
+        val previous = RuleFileBefore.of(db.getEntry(path), local)
         try {
             local.parent?.let { Files.createDirectories(it) }
             // Reserve the shared budget before the runner runs: the rule file's permit
@@ -2320,9 +2323,8 @@ open class SyncEngine(
             return false
         }
         if (!offLoop { HashVerifier.verify(local, item.hash, provider.hashAlgorithm()) }) {
-            // Not the cloud's copy: it is not read as the rules. The plan downloads it again.
-            runCatching { Files.deleteIfExists(local) }
-            if (previous != null) db.upsertEntry(previous) else db.deleteEntry(path)
+            // Not the cloud's copy: it is not read as the rules, and what was here before is put back. The plan downloads it again.
+            previous.restore(db, path, local)
             log.warn("ignore rule file {} does not match the cloud copy after its download: its folder waits for it", path)
             return false
         }

@@ -105,4 +105,20 @@ class StateDatabaseChunkedRemovalTest {
         assertEquals(0, db.getEntryCount(), "the alive count follows the flips")
         for (n in 0 until 7) assertNull(db.getEntry("/r$n.txt"))
     }
+
+    // gkrost/unidrive-cli#782: a row without a remote id is stored with a `local:` synthetic, which the expected-row guard's
+    // `remote_id IS NULL` never meets. On purpose: a cloud tombstone at its path cannot end a file the cloud never had.
+    @Test
+    fun `a never-uploaded row is not flipped by a guarded reap of its path`() {
+        db.upsertEntry(entry("/placeholder.txt").copy(remoteId = null, remoteHash = null))
+        db.upsertEntry(entry("/tracked.txt"))
+        val expected = listOf("/placeholder.txt", "/tracked.txt").associateWith { assertNotNull(db.getEntry(it)) }
+        assertNull(expected.getValue("/placeholder.txt").remoteId, "precondition: the synthetic id reads back as null")
+
+        val deleted = db.markDeletedChunked(expected.keys, expectedRows = expected)
+
+        assertEquals(listOf("/tracked.txt"), deleted, "only the row with a remote id is reaped")
+        assertNotNull(db.getEntry("/placeholder.txt"), "the never-uploaded row stays alive")
+        assertEquals(1, db.getEntryCount(), "the alive count drops by the flipped row only")
+    }
 }

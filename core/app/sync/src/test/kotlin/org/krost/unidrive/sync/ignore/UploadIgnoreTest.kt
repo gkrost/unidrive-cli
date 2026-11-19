@@ -135,6 +135,45 @@ class UploadIgnoreTest {
         assertFalse("/local/.unidrive.ignore" in asked, "the cache copy answers before the cloud is asked")
     }
 
+    // gkrost/unidrive-cli#775: a local-only rule file whose cache copy is gone holds its folder back, and says why, once.
+    @Test
+    fun aLocalOnlyRuleFileWhoseCacheCopyIsGoneHoldsItsFolderBackWithAWarning() {
+        val cache = TestScratch.directory("unidrive-ignore-lost")
+        val known = setOf("/venv/.gitignore")
+        val u = ignore(CacheIgnoreSource(cache, lost = { it in known }) { false }, IgnoreSettings(honorGitignore = true))
+
+        assertTrue(u.isIgnored("/venv/lib/site.py", false), "what the lost rules kept local is not uploaded")
+        assertTrue(u.isIgnored("/venv/lib/other.py", false))
+        assertEquals(CacheIgnoreSource.LOST, u.heldBack().single().reason)
+        assertFalse(u.isIgnored("/elsewhere/x.py", false), "other folders are not held back")
+        assertEquals(1, appender.list.count { it.level == Level.WARN && it.formattedMessage.contains("/venv/.gitignore") })
+    }
+
+    // gkrost/unidrive-cli#775: the hold ends when the rule file is written through the mount again (its cache copy is back).
+    @Test
+    fun aLostRuleFileWrittenAgainAppliesItsRulesAndEndsTheHold() {
+        val cache = TestScratch.directory("unidrive-ignore-lost-back")
+        val u = ignore(CacheIgnoreSource(cache, lost = { it == "/venv/.gitignore" }) { false }, IgnoreSettings(honorGitignore = true))
+        assertTrue(u.isIgnored("/venv/lib/site.py", false))
+
+        Files.createDirectories(cache.resolve("venv"))
+        Files.writeString(cache.resolve("venv/.gitignore"), "*.pyc\n")
+        u.ruleFileWritten("/venv/.gitignore")
+
+        assertTrue(u.heldBack().isEmpty(), "nothing is held back once the copy is there")
+        assertFalse(u.isIgnored("/venv/lib/site.py", false), "the file's own rules decide again")
+        assertTrue(u.isIgnored("/venv/lib/site.pyc", false))
+    }
+
+    // gkrost/unidrive-cli#775: a rule file nobody knows of (no row, no copy) is absent, as before: nothing is held back.
+    @Test
+    fun aRuleFileWithoutARowOrACopyIsAbsentAsBefore() {
+        val u = ignore(CacheIgnoreSource(TestScratch.directory("unidrive-ignore-none"), lost = { false }) { false })
+
+        assertFalse(u.isIgnored("/venv/lib/site.py", false))
+        assertTrue(u.heldBack().isEmpty())
+    }
+
     @Test
     fun theCacheOfRuleFilesIsCappedLeastRecentlyUsedFirst() {
         val src = MemoryIgnoreSource((1..5).associate { "d$it/.unidrive.ignore" to "*.x\n" })
