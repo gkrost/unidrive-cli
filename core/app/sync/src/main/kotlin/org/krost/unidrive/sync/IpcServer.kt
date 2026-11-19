@@ -35,7 +35,7 @@ class IpcServer(
     // null (no handshake) is for the unit tests of the bare server only.
     private val auth: IpcAuth? = null,
     // How many connections are served at once; one more is refused with too_many_clients.
-    private val maxClients: Int = readMaxClientsFromEnv(),
+    internal val maxClients: Int = readMaxClientsFromEnv(),
     // A connection that sent no request for this long is closed (0 = never); see idleExpired.
     private val idleTimeoutMs: Long = readIdleTimeoutFromEnv(),
     // Monotonic milliseconds for the idle timeout; injectable so tests move time instead of waiting.
