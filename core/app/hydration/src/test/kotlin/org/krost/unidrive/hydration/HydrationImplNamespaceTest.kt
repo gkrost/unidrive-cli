@@ -669,6 +669,7 @@ class HydrationImplNamespaceTest {
         isFolder: Boolean = false,
         isHydrated: Boolean = !isFolder,
         editBase: String? = null,
+        lastSynced: Instant = Instant.now(),
     ) = SyncEntry(
         path = path,
         remoteId = remoteId,
@@ -680,7 +681,7 @@ class HydrationImplNamespaceTest {
         isFolder = isFolder,
         isPinned = false,
         isHydrated = isHydrated,
-        lastSynced = Instant.now(),
+        lastSynced = lastSynced,
         editBase = editBase,
     )
 
@@ -692,13 +693,15 @@ class HydrationImplNamespaceTest {
 
     // A hydrated file as the mount leaves it: the cache copy written first, then the row that records its stamp as the
     // baseline (MountEngine's hydrate does exactly this), so the copy is clean.
-    private fun Env.syncedFile(path: String, remoteId: String): Path {
+    // [syncedAt]: when the row was written from the cloud (gkrost/unidrive-cli#824's lag window reads it); the copy is older.
+    private fun Env.syncedFile(path: String, remoteId: String, syncedAt: Instant? = null): Path {
         val cached = cacheBytes(path)
+        syncedAt?.let { Files.setLastModifiedTime(cached, java.nio.file.attribute.FileTime.from(it.minusSeconds(1))) }
         db.upsertEntry(
             row(path, remoteId).copy(
                 localMtime = Files.getLastModifiedTime(cached).toMillis(),
                 localSize = Files.size(cached),
-                lastSynced = Instant.now(),
+                lastSynced = syncedAt ?: Instant.now(),
             ),
         )
         return cached
@@ -799,11 +802,14 @@ class HydrationImplNamespaceTest {
 
     // ── gkrost/unidrive-cli#824: a stale view of a folder the cloud already emptied or deleted settles, never more ──
 
+    // Written from the cloud well outside the settle's lag window (the #824 case: 52 s).
+    private val settled: Instant get() = Instant.now().minusSeconds(52)
+
     @Test
     fun rmdir_is_not_blocked_by_a_stale_row_whose_child_is_gone_in_the_cloud() = runTest {
         val env = freshEnv()
-        env.db.upsertEntry(row("/dir", "rid-dir", isFolder = true))
-        val cached = env.syncedFile("/dir/a.txt", "rid-a")
+        env.db.upsertEntry(row("/dir", "rid-dir", isFolder = true, lastSynced = settled))
+        val cached = env.syncedFile("/dir/a.txt", "rid-a", settled)
         env.provider.children = emptyList() // another client deleted a.txt; the poll has not seen it yet
 
         val (result, lines) = capturingLog { env.impl.rmdir("/dir") }
@@ -818,8 +824,8 @@ class HydrationImplNamespaceTest {
     @Test
     fun rmdir_still_refuses_an_unobserved_live_child_after_settling_stale_rows() = runTest {
         val env = freshEnv()
-        env.db.upsertEntry(row("/dir", "rid-dir", isFolder = true))
-        env.syncedFile("/dir/a.txt", "rid-a")
+        env.db.upsertEntry(row("/dir", "rid-dir", isFolder = true, lastSynced = settled))
+        env.syncedFile("/dir/a.txt", "rid-a", settled)
         env.provider.children = listOf(listed(row("/dir/new.txt", "rid-new")))
 
         assertEquals(RmdirResult.NotEmpty("remote_unobserved", "/dir/new.txt"), env.impl.rmdir("/dir"))
@@ -832,16 +838,18 @@ class HydrationImplNamespaceTest {
         for (folderGone in listOf(false, true)) {
             // Each set-up leaves the row of /dir/a.txt and answers its cache copy.
             for ((name, setUp) in listOf<Pair<String, Env.() -> Path>>(
-                "an edit that failed to upload" to { db.upsertEntry(row("/dir/a.txt", "rid-a", editBase = "base-hash")); cacheBytes("/dir/a.txt") },
-                "a never-uploaded file" to { db.upsertEntry(row("/dir/a.txt", remoteId = null)); cacheBytes("/dir/a.txt") },
+                "an edit that failed to upload" to {
+                    db.upsertEntry(row("/dir/a.txt", "rid-a", editBase = "base-hash", lastSynced = settled)); cacheBytes("/dir/a.txt")
+                },
+                "a never-uploaded file" to { db.upsertEntry(row("/dir/a.txt", remoteId = null, lastSynced = settled)); cacheBytes("/dir/a.txt") },
                 "a clean file open for write" to {
-                    syncedFile("/dir/a.txt", "rid-a").also {
+                    syncedFile("/dir/a.txt", "rid-a", settled).also {
                         impl.openSets["conn"] = java.util.concurrent.ConcurrentHashMap(mapOf("wh-1" to "/dir/a.txt"))
                     }
                 },
             )) {
                 val env = freshEnv()
-                env.db.upsertEntry(row("/dir", "rid-dir", isFolder = true))
+                env.db.upsertEntry(row("/dir", "rid-dir", isFolder = true, lastSynced = settled))
                 val only = env.setUp()
                 val child = env.db.getEntry("/dir/a.txt")!!
                 env.provider.gone = folderGone
@@ -861,9 +869,9 @@ class HydrationImplNamespaceTest {
     @Test
     fun rmdir_of_a_folder_already_gone_in_the_cloud_answers_ok_and_leaves_no_rows() = runTest {
         val env = freshEnv()
-        env.db.upsertEntry(row("/dir", "rid-dir", isFolder = true))
-        env.db.upsertEntry(row("/dir/sub", "rid-sub", isFolder = true))
-        val cached = env.syncedFile("/dir/sub/a.txt", "rid-a")
+        env.db.upsertEntry(row("/dir", "rid-dir", isFolder = true, lastSynced = settled))
+        env.db.upsertEntry(row("/dir/sub", "rid-sub", isFolder = true, lastSynced = settled))
+        val cached = env.syncedFile("/dir/sub/a.txt", "rid-a", settled)
         env.provider.gone = true
 
         assertEquals(RmdirResult.Ok, env.impl.rmdir("/dir"))
@@ -876,7 +884,7 @@ class HydrationImplNamespaceTest {
     @Test
     fun rmdir_of_a_rowless_folder_already_gone_in_the_cloud_answers_ok_and_leaves_no_rows() = runTest {
         val env = freshEnv()
-        env.syncedFile("/dir/a.txt", "rid-a") // the folder's row went with an earlier delete that kept this one
+        env.syncedFile("/dir/a.txt", "rid-a", settled) // the folder's row went with an earlier delete that kept this one
         env.provider.gone = true
 
         assertEquals(RmdirResult.Ok, env.impl.rmdir("/dir"))
@@ -884,9 +892,47 @@ class HydrationImplNamespaceTest {
         assertTrue(!env.db.hasEntriesBelow("/dir/"), "no row is left below the folder")
 
         val present = freshEnv()
-        present.syncedFile("/dir/a.txt", "rid-a")
+        present.syncedFile("/dir/a.txt", "rid-a", settled)
         assertEquals(RmdirResult.NotEmpty("alive_descendants"), present.impl.rmdir("/dir"), "a folder still in the cloud is not settled rowless")
         assertTrue(present.db.getEntry("/dir/a.txt") != null)
+    }
+
+    @Test
+    fun rmdir_settle_is_deferred_for_a_row_written_from_the_cloud_inside_the_lag_window() = runTest {
+        for (folderGone in listOf(false, true)) {
+            val env = freshEnv()
+            env.db.upsertEntry(row("/dir", "rid-dir", isFolder = true, lastSynced = settled))
+            val cached = env.syncedFile("/dir/a.txt", "rid-a", Instant.now().minusSeconds(2)) // a listing may not show it yet
+            env.provider.gone = folderGone
+
+            assertEquals(RmdirResult.NotEmpty("alive_descendants"), env.impl.rmdir("/dir"), "folder gone=$folderGone")
+            assertEquals(null, env.provider.lastDeletedPath, "folder gone=$folderGone: nothing may be deleted in the cloud")
+            assertTrue(env.db.getEntry("/dir/a.txt") != null, "folder gone=$folderGone: the row stays")
+            assertTrue(Files.exists(cached), "folder gone=$folderGone: the cache copy stays")
+        }
+    }
+
+    @Test
+    fun rmdir_of_a_folder_gone_in_the_cloud_is_deferred_while_its_own_row_is_inside_the_lag_window() = runTest {
+        val env = freshEnv()
+        env.db.upsertEntry(row("/dir", "rid-dir", isFolder = true, lastSynced = Instant.now().minusSeconds(2)))
+        env.syncedFile("/dir/a.txt", "rid-a", settled)
+        env.provider.gone = true // the not-found may lag the folder's own create elsewhere
+
+        assertEquals(RmdirResult.NotEmpty("alive_descendants"), env.impl.rmdir("/dir"))
+        assertTrue(env.db.getEntry("/dir") != null, "the folder row stays")
+    }
+
+    @Test
+    fun rmdir_settle_lag_window_is_exclusive_at_its_edge() {
+        val now = Instant.parse("2026-11-19T12:00:00Z")
+        val window = RmdirStaleRowSettle.SETTLE_LISTING_LAG_WINDOW
+        val atEdge = row("/dir/edge.txt", "rid-edge", lastSynced = now.minus(window))
+        val justInside = row("/dir/inside.txt", "rid-inside", lastSynced = now.minus(window).plusMillis(1))
+
+        assertEquals(null, RmdirStaleRowSettle.insideLagWindow(listOf(atEdge), now), "a row exactly the window old settles")
+        assertEquals(justInside, RmdirStaleRowSettle.insideLagWindow(listOf(atEdge, justInside), now))
+        assertEquals(java.time.Duration.ofSeconds(10), window)
     }
 
     @Test
