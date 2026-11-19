@@ -191,6 +191,72 @@ class CloudRelocatorTest {
             )
         }
 
+    // -- gkrost/unidrive-cli#826: the target root is created, or the run stops with one clear error -------------
+
+    @Test
+    fun `826 - a missing target root is created before any file lands in it`() =
+        runTest {
+            source.children["/src"] = listOf(cloudItem("/src/f.txt", size = 10))
+            source.fileContents["/src/f.txt"] = ByteArray(10)
+
+            val events = CloudRelocator(source, target).migrate("/src", "/new").toList()
+
+            assertEquals(listOf("/new"), target.createdFolders)
+            assertEquals(listOf("/new/f.txt"), target.uploadedPaths)
+            assertEquals(0, events.filterIsInstance<MigrateEvent.Completed>().single().errorCount)
+        }
+
+    @Test
+    fun `826 - missing ancestors of the target root are created top-down and an existing one is not created again`() =
+        runTest {
+            target.existingFolders.add("/existing")
+            source.children["/src"] = listOf(cloudItem("/src/f.txt", size = 10))
+            source.fileContents["/src/f.txt"] = ByteArray(10)
+
+            val events = CloudRelocator(source, target).migrate("/src", "/existing/a/b").toList()
+
+            assertEquals(listOf("/existing/a", "/existing/a/b"), target.createdFolders)
+            assertEquals(listOf("/existing/a/b/f.txt"), target.uploadedPaths)
+            assertEquals(0, events.filterIsInstance<MigrateEvent.Completed>().single().errorCount)
+        }
+
+    @Test
+    fun `826 - an existing target root is used as it is and nothing is created for it`() =
+        runTest {
+            target.existingFolders.add("/dst")
+            source.children["/src"] = listOf(cloudItem("/src/f.txt", size = 10))
+            source.fileContents["/src/f.txt"] = ByteArray(10)
+
+            val events = CloudRelocator(source, target).migrate("/src", "/dst").toList()
+
+            assertEquals(emptyList(), target.createdFolders)
+            assertEquals(listOf("/dst/f.txt"), target.uploadedPaths)
+            assertEquals(0, events.filterIsInstance<MigrateEvent.Completed>().single().errorCount)
+        }
+
+    @Test
+    fun `826 - a failed create of the target root is one clear error and transfers nothing`() =
+        runTest {
+            target.createFolderFailPaths.add("/new")
+            source.children["/src"] = listOf(cloudItem("/src/a.txt", size = 10), cloudItem("/src/b.txt", size = 10))
+            source.fileContents["/src/a.txt"] = ByteArray(10)
+            source.fileContents["/src/b.txt"] = ByteArray(10)
+            val manifest = MigrationManifest()
+
+            val events = CloudRelocator(source, target).migrate("/src", "/new", manifest = manifest).toList()
+
+            val error = events.filterIsInstance<MigrateEvent.Error>().single().message
+            assertTrue(error.contains("TargetRootException: Could not create the target folder /new: "), error)
+            assertTrue(error.contains("nothing was transferred"), error)
+            assertFalse(error.contains("trashed", ignoreCase = true), error)
+            assertEquals(emptyList(), target.uploadedPaths)
+            assertTrue(manifest.entries.isEmpty(), "nothing is recorded for a delete-source pass to act on")
+            val completed = events.filterIsInstance<MigrateEvent.Completed>().single()
+            assertEquals(1, completed.errorCount)
+            assertEquals(0, completed.doneFiles)
+            assertEquals(2, completed.totalFiles)
+        }
+
     // -- gkrost/unidrive-cli#63: the scratch file is per transfer, not per leaf name ---------------------------
 
     @Test
@@ -1138,7 +1204,29 @@ class CloudRelocatorTest {
             return children[path] ?: emptyList()
         }
 
-        override suspend fun getMetadata(path: String): CloudItem = throw UnsupportedOperationException("not needed for relocator tests")
+        // gkrost/unidrive-cli#826: the folders the target already holds, and the paths whose createFolder fails.
+        val existingFolders = mutableSetOf<String>()
+        val createFolderFailPaths = mutableSetOf<String>()
+
+        override suspend fun getMetadata(path: String): CloudItem =
+            if (path in existingFolders) {
+                folderItem(path)
+            } else {
+                throw ProviderException("Folder not found: $path")
+            }
+
+        private fun folderItem(path: String) =
+            CloudItem(
+                id = "id-$path",
+                name = path.substringAfterLast("/"),
+                path = path,
+                size = 0,
+                isFolder = true,
+                modified = Instant.now(),
+                created = Instant.now(),
+                hash = null,
+                mimeType = null,
+            )
 
         override suspend fun download(
             remotePath: String,
@@ -1184,18 +1272,9 @@ class CloudRelocatorTest {
         override suspend fun delete(remotePath: String, ifMatchETag: String?) {}
 
         override suspend fun createFolder(path: String): CloudItem {
+            if (path in createFolderFailPaths) throw ProviderException("Create folder failed: 409 Conflict for $path")
             createdFolders.add(path)
-            return CloudItem(
-                id = "id-$path",
-                name = path.substringAfterLast("/"),
-                path = path,
-                size = 0,
-                isFolder = true,
-                modified = Instant.now(),
-                created = Instant.now(),
-                hash = null,
-                mimeType = null,
-            )
+            return folderItem(path)
         }
 
         override suspend fun move(
