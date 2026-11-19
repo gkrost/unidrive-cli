@@ -4,9 +4,11 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.nio.ByteBuffer
 import javax.crypto.AEADBadTagException
 import com.google.crypto.tink.KeysetHandle
 import com.google.crypto.tink.StreamingAead
+import com.google.crypto.tink.streamingaead.StreamingAeadConfig
 
 /**
  * The Tink content algorithm of the X-tra layer (prototype, no wiring yet — `xtra_algorithm` grows only with the
@@ -16,16 +18,16 @@ import com.google.crypto.tink.StreamingAead
  * 64 KiB segment size, so the first segment carries [XtraTinkKeyStore]-derived constants of plaintext only (see
  * [plaintextSizeOf]).
  *
- * The strategy owns its key material end-to-end (the #802 SPI): the keyset lives in [XtraTinkKeyStore], and the
- * XTRA header's wrapped-key slot is vestigial — zero-filled on the way in, a placeholder on the way back, its
- * length still part of the stored layout [plaintextSizeOf] inverts.
+ * The strategy owns its key material end-to-end (the #802 SPI): the keyset lives in [XtraTinkKeyStore]. The XTRA
+ * header's wrapped-key slot carries no key; it names the sealing keyset's primary key id, so a file sealed by
+ * another keyset is told apart from a tampered one (Tink reports both with the same message).
  *
  * Measured against the sweep (520–675 MiB/s streaming, seekable channel ~28 ms per ranged MiB on idle hardware):
  * the fastest of the candidates, with the tradeoff that a stored file decrypts only with Tink code — no external
  * recovery tool, unlike age-v1. The keyset is loaded lazily, so listings-only commands never demand a passphrase.
  */
 class TinkStreamingStrategy(
-    keyStore: Lazy<XtraTinkKeyStore>,
+    private val keyStore: Lazy<XtraTinkKeyStore>,
     private val passphrase: () -> CharArray,
 ) : XtraEncryptionStrategy {
     // The Tink types stay inside this module: the caller hands the key store and the passphrase, the handle is
@@ -39,14 +41,34 @@ class TinkStreamingStrategy(
     // Tink draws its own salt and nonce prefixes per file; nothing external is mixed in.
     override val ivLength: Int = 0
 
-    // The vestigial slot's length, kept in the stored layout [plaintextSizeOf] inverts.
+    // The slot's length, kept in the stored layout [plaintextSizeOf] inverts.
     override val wrappedKeyLength: Int = VESTIGIAL_KEY_LENGTH
 
-    // The slot is layout-only here: zero-filled (it carries no key material), and filled without the keyset —
-    // no passphrase demand belongs to the write path of an algorithm whose keys live in the keyset store.
-    override fun wrapFileKey(fileKey: ByteArray): ByteArray = ByteArray(wrappedKeyLength)
+    // The slot carries no key material: [FINGERPRINT_MAGIC] ‖ the primary key id (big-endian) ‖ zeros. The
+    // encrypt right after loads the keyset anyway, so naming its key id demands nothing the write path does not.
+    override fun wrapFileKey(fileKey: ByteArray): ByteArray =
+        ByteBuffer.allocate(wrappedKeyLength).put(FINGERPRINT_MAGIC).putInt(handle.value.primary.id).array()
 
-    override fun unwrapFileKey(wrapped: ByteArray): ByteArray = ByteArray(0)
+    // Tink answers a foreign keyset with the same "No matching key" message as a damaged header, which the
+    // provider turns into a permanent content refusal. Checked here, a wrong or replaced keyset is a key problem
+    // of this installation instead — the file itself is fine and decrypts once the right keyset is back.
+    override fun unwrapFileKey(wrapped: ByteArray): ByteArray {
+        // A slot without the magic names no keyset; the decrypt then answers for the file (a damaged slot is a
+        // damaged header, and Tink refuses the stream either way).
+        val prefix = FINGERPRINT_MAGIC.size + Int.SIZE_BYTES
+        if (wrapped.size < prefix || !wrapped.copyOfRange(0, FINGERPRINT_MAGIC.size).contentEquals(FINGERPRINT_MAGIC)) {
+            return ByteArray(0)
+        }
+        val sealedBy = ByteBuffer.wrap(wrapped, FINGERPRINT_MAGIC.size, Int.SIZE_BYTES).getInt()
+        val held = (0 until handle.value.size()).map { handle.value.getAt(it).id }
+        if (sealedBy !in held) {
+            throw XtraKeysetMismatchException(
+                "X-tra Tink file was sealed by key id ${sealedBy.toUInt()}, which the keyset in ${keyStore.value.path} " +
+                    "does not hold: restore the keyset that wrote it",
+            )
+        }
+        return ByteArray(0)
+    }
 
     // The stream's constant header (random salt + nonce prefix), measured from a zero-byte encrypt with a
     // throwaway keyset minus that empty payload's own final chunk tag — an empty payload is one empty final
@@ -211,6 +233,13 @@ class TinkStreamingStrategy(
     }
 
     companion object {
+        // See XtraTinkKeyStore: the registry must be populated in every process, not only the one that generated.
+        init {
+            StreamingAeadConfig.register()
+        }
+
+        private val FINGERPRINT_MAGIC = "TKID".toByteArray()
+
         // The prototype's id; a permanent id is part of the adoption decision, not of this spike.
         const val PROTOTYPE_ALGORITHM_ID: Byte = 3
         private const val VESTIGIAL_KEY_LENGTH = 256
@@ -224,3 +253,8 @@ class TinkStreamingStrategy(
         private const val TAG_MISMATCH_MESSAGE = "Tag mismatch"
     }
 }
+
+/** A Tink file sealed by a keyset this installation does not hold: a key problem here, not damaged content. */
+class XtraKeysetMismatchException(
+    message: String,
+) : IllegalStateException(message)

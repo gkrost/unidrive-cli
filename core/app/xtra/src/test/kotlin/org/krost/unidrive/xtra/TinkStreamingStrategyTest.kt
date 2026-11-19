@@ -144,6 +144,54 @@ class TinkStreamingStrategyTest {
         }
     }
 
+    @Test
+    fun `the header slot names the sealing keyset and only that keyset accepts it`() {
+        val writer = strategy()
+        val slot = writer.wrapFileKey(ByteArray(32))
+        assertEquals(writer.wrappedKeyLength, slot.size)
+        writer.unwrapFileKey(slot)
+
+        assertFailsWith<XtraKeysetMismatchException> { strategy().unwrapFileKey(slot) }
+    }
+
+    @Test
+    fun `generate refuses to replace an existing keyset`() {
+        val path = TestScratch.directory("xtra-tink-test").resolve("xtra-tink.key")
+        val store = XtraTinkKeyStore(path)
+        store.generate(PASSPHRASE)
+        val before = java.nio.file.Files.readAllBytes(path)
+
+        assertFailsWith<IllegalStateException> { store.generate(PASSPHRASE) }
+        assertContentEquals(before, java.nio.file.Files.readAllBytes(path))
+    }
+
+    // Tink's registry is per process. Every test above generates its keyset in this JVM first, which registers
+    // Tink as a side effect; the daemon after setup never generates. A child JVM that only loads the keyset must
+    // still answer listings, decrypt what the setup process wrote, and encrypt. If this test is removed, a
+    // registration that lives only in generate() regresses silently.
+    @Test
+    fun `a process that never generated loads, lists, decrypts and encrypts`() {
+        val dir = TestScratch.directory("xtra-tink-fresh-jvm")
+        val keyPath = dir.resolve("xtra-tink.key")
+        val store = XtraTinkKeyStore(keyPath)
+        store.generate(PASSPHRASE)
+        val writer = TinkStreamingStrategy(lazy { store }, { PASSPHRASE })
+        val plaintext = ByteArray(200_000) { (it * 31 + 7).toByte() }
+        val bodyPath = dir.resolve("body.bin")
+        val plainPath = dir.resolve("plain.bin")
+        java.nio.file.Files.write(bodyPath, encryptOf(writer, plaintext))
+        java.nio.file.Files.write(plainPath, plaintext)
+
+        val java = java.nio.file.Path.of(System.getProperty("java.home"), "bin", "java").toString()
+        val process = ProcessBuilder(
+            java, "-cp", System.getProperty("java.class.path"),
+            TinkFreshJvmProbe::class.java.name, keyPath.toString(), bodyPath.toString(), plainPath.toString(),
+        ).redirectErrorStream(true).start()
+        val output = process.inputStream.bufferedReader().readText()
+        assertEquals(0, process.waitFor(), output)
+        assertEquals("ok", output.trim().lines().last(), output)
+    }
+
     // A local disk error must NOT surface as an authentication refusal: the provider maps AEADBadTagException
     // to the engines' permanent content refusal, and a staged-file read error is retryable local I/O. Tink
     // propagates foreign IOExceptions with their original message (probed) — the translation must preserve it.
@@ -235,5 +283,34 @@ private class TrackingOutput : OutputStream() {
 
     override fun close() {
         closed = true
+    }
+}
+
+/**
+ * The child process of the fresh-JVM test: it only loads the keyset (never generates), so Tink is registered
+ * here by the classes themselves or not at all. The listing answer comes first, before any keyset is loaded.
+ */
+object TinkFreshJvmProbe {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        val (keyPath, bodyPath, plainPath) = args.map { java.nio.file.Path.of(it) }
+        val passphrase = { "testpass1234".toCharArray() }
+        val strategy = TinkStreamingStrategy(lazy { XtraTinkKeyStore(keyPath) }, passphrase)
+        val body = java.nio.file.Files.readAllBytes(bodyPath)
+        val plaintext = java.nio.file.Files.readAllBytes(plainPath)
+
+        val stored = 10 + strategy.wrappedKeyLength + strategy.ivLength + body.size
+        check(strategy.plaintextSizeOf(stored.toLong()) == plaintext.size.toLong()) { "listing size" }
+
+        val decrypted = ByteArrayOutputStream()
+        strategy.decrypt(ByteArrayInputStream(body), decrypted, ByteArray(0), ByteArray(0))
+        check(decrypted.toByteArray().contentEquals(plaintext)) { "decrypt" }
+
+        val sealed = ByteArrayOutputStream()
+        strategy.encrypt(ByteArrayInputStream(plaintext), sealed, ByteArray(0), ByteArray(0))
+        val again = ByteArrayOutputStream()
+        strategy.decrypt(ByteArrayInputStream(sealed.toByteArray()), again, ByteArray(0), ByteArray(0))
+        check(again.toByteArray().contentEquals(plaintext)) { "encrypt round-trip" }
+        println("ok")
     }
 }

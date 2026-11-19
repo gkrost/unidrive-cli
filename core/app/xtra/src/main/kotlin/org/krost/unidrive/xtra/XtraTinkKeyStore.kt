@@ -33,11 +33,13 @@ class XtraTinkKeyStore(
 
     fun exists(): Boolean = Files.exists(keyPath)
 
+    // Never over an existing keyset: it is the only key material of every file it sealed, and a replacement
+    // would turn each of them into a file sealed by another keyset.
     fun generate(passphrase: CharArray) {
         require(passphrase.size >= XtraKeyManager.MIN_PASSPHRASE_LENGTH) {
             "Passphrase must be at least ${XtraKeyManager.MIN_PASSPHRASE_LENGTH} characters"
         }
-        StreamingAeadConfig.register()
+        check(!exists()) { "X-tra Tink key file already exists, refusing to replace it: $keyPath" }
         val handle = KeysetHandle.generateNew(PARAMETERS)
         val serialized = TinkProtoKeysetFormat.serializeKeyset(handle, InsecureSecretKeyAccess.get())
         writeKeyFile(passphrase, serialized)
@@ -114,6 +116,12 @@ class XtraTinkKeyStore(
     }
 
     companion object {
+        // Tink resolves keyset parameters and primitives through its registry. Registering when the class loads
+        // (not in generate) is what lets a later process — the daemon after setup — load, list and decrypt.
+        init {
+            StreamingAeadConfig.register()
+        }
+
         private const val SALT_LENGTH = 16
         private const val IV_LENGTH = 12
         private const val KEY_LENGTH_BITS = 256

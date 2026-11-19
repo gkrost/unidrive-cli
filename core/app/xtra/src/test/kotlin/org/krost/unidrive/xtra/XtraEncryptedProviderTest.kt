@@ -603,6 +603,29 @@ class XtraEncryptedProviderTest {
         kotlinx.coroutines.runBlocking { reader.download("/r.bin", dest) }
         assertContentEquals(original, Files.readAllBytes(dest))
     }
+
+    // Tink reports a foreign keyset with the same message as a damaged header. A wrong or replaced keyset must
+    // not quarantine every file as tampered: it is this installation's key problem, and the file stays readable
+    // once the keyset that sealed it is back.
+    @Test
+    fun `tink file sealed by another keyset is a key mismatch, not a content refusal`() {
+        val storage = mutableMapOf<String, ByteArray>()
+        val writerDir = TestScratch.directory("xtra-tink-mismatch-write")
+        val writer = tinkProvider(InMemoryProvider(storage), writerDir)
+        val localFile = writerDir.resolve("m.txt")
+        Files.writeString(localFile, "sealed by the first keyset")
+        kotlinx.coroutines.runBlocking { writer.upload(localFile, "/m.txt") }
+
+        val otherDir = TestScratch.directory("xtra-tink-mismatch-other")
+        val reader = tinkProvider(InMemoryProvider(storage), otherDir)
+        val dest = otherDir.resolve("m.txt")
+        Files.writeString(dest, "the previous content")
+        val failure = assertFailsWith<XtraKeysetMismatchException> {
+            kotlinx.coroutines.runBlocking { reader.download("/m.txt", dest) }
+        }
+        assertTrue(failure.message!!.contains(otherDir.resolve("xtra-tink.key").toString()), failure.message)
+        assertEquals("the previous content", Files.readString(dest))
+    }
 }
 
 /** The inner provider of the tests: a byte-array store behind the current [CloudProvider] SPI. */
