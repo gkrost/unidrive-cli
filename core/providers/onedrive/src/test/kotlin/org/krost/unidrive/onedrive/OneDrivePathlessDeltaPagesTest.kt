@@ -145,6 +145,50 @@ class OneDrivePathlessDeltaPagesTest {
             provider.close()
         }
 
+    // A folder whose lookup carried parentReference.path, as a mixed drive answers (#835).
+    private fun folderAt(
+        id: String,
+        name: String,
+        parent: String,
+        parentPath: String,
+    ) = """{"id": "$id", "name": "$name", "folder": {"childCount": 1}, "parentReference": {"id": "$parent", "path": "/drive/root:$parentPath", "driveId": "b!drive"}}"""
+
+    private val treeWithPaths =
+        mapOf(
+            "D2" to folderAt("D2", "Sub", "D1", "/Docs"),
+            "D1" to folderAt("D1", "Docs", "R", ""),
+            "R" to root,
+        )
+
+    @Test
+    fun `a kept folder with a parent path follows a later page that renames its ancestor`() =
+        runTest {
+            // F1 has D2 looked up (it carries a path, so D1 is not); page 2 renames D1 and shows only a child of D2.
+            val provider =
+                providerOver(
+                    listOf(listOf(file("F1", "a.txt", "D2")), listOf(folder("D1", "Papers", "R"), file("F2", "b.txt", "D2"))),
+                    treeWithPaths::get,
+                )
+
+            val items = provider.walk()
+
+            assertEquals("/Docs/Sub/a.txt", items.pathOf("F1"))
+            assertEquals("/Papers/Sub/b.txt", items.pathOf("F2"), "not the parent path D2 was kept with before the rename")
+            provider.close()
+        }
+
+    @Test
+    fun `a folder with a parent path whose parent was never seen costs no lookup of that parent`() =
+        runTest {
+            val provider = providerOver(listOf(listOf(file("F1", "a.txt", "D2"))), treeWithPaths::get)
+
+            val items = provider.walk()
+
+            assertEquals("/Docs/Sub/a.txt", items.pathOf("F1"))
+            assertEquals(listOf("D2"), lookups, "the path D2 came with names its parent; D1 and the root are not asked for")
+            provider.close()
+        }
+
     @Test
     fun `a folder a later page deletes is asked for again, and an item below it is left out`() =
         runTest {

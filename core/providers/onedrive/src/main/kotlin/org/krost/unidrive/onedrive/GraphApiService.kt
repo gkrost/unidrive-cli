@@ -1304,6 +1304,8 @@ class GraphApiService(
             buildJsonObject {
                 putJsonObject("item") {
                     put("@microsoft.graph.conflictBehavior", conflictBehavior)
+                    // #16: the expected size lets OneDrive check the quota before a byte is sent (507 at the create, not mid-upload).
+                    put("fileSize", fileSize)
                     if (fileSystemInfo != null) {
                         putJsonObject("fileSystemInfo") {
                             fileSystemInfo.createdDateTime?.let { put("createdDateTime", it) }
@@ -1499,6 +1501,8 @@ class GraphApiService(
                     if (!lastTry) return ChunkRetry(waitMs, probe = false)
                     GraphApiException("Rate limited (429) at offset $currentOffset after ${CHUNK_RETRY_DELAYS_MS.size} retries: ${response.status}", status)
                 }
+                // #16: the drive is full; a retry meets the same answer, and the stored session can resume once space is freed.
+                status == INSUFFICIENT_STORAGE -> remoteSpaceRefused("Chunk upload at offset $currentOffset", truncateErrorBody(response.bodyAsText()), extractRequestId(response))
                 // Transient server error (5xx, 408), or a range the server already holds part of (416: a resend after
                 // a broken PUT whose probe told nothing) — query status and retry
                 status == 408 || status == 416 || status >= 500 -> {
@@ -1690,12 +1694,16 @@ class GraphApiService(
             )
         }
         if (!response.status.isSuccess()) {
-            // UD-203: capture request-id for support-ticket correlation.
-            throw GraphApiException(
-                "${what?.let { "$it failed" } ?: "API error"}: ${response.status} - ${truncateErrorBody(response.bodyAsText())}",
-                response.status.value,
-                requestId = extractRequestId(response),
-            )
+            // UD-203: capture request-id for support-ticket correlation. #16: a 507 is the typed space refusal.
+            throw if (response.status.value == INSUFFICIENT_STORAGE) {
+                remoteSpaceRefused(what ?: "Request", truncateErrorBody(response.bodyAsText()), extractRequestId(response))
+            } else {
+                GraphApiException(
+                    "${what?.let { "$it failed" } ?: "API error"}: ${response.status} - ${truncateErrorBody(response.bodyAsText())}",
+                    response.status.value,
+                    requestId = extractRequestId(response),
+                )
+            }
         }
         return response
     }
