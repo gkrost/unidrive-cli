@@ -17,6 +17,10 @@ dependencies {
     implementation(libs.kage)
     implementation(libs.bouncycastle.bcprov) { version { strictly("1.87") } }
 
+    // The Tink content strategy (prototype): AES-GCM-HKDF streaming, and the AES-SIV daead the encrypted-name
+    // layer would build on. Transitive gson/protobuf enter the jar; the size delta is measured in the spike.
+    implementation(libs.tink)
+
     testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.coroutines.test)
     // The mount rig's IPC replies are JSON, as HydrationIpcHandler answers them.
