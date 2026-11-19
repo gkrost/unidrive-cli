@@ -29,6 +29,14 @@ import org.krost.unidrive.ProviderException
  * alone — no unidrive code in the recovery path — and the format's chunk layout supports seekable decryption
  * (kage's `decryptSeekable`, which [rangedReader] serves plaintext ranges over — the basis of the future ranged
  * hydration). The identity is loaded lazily, so listings-only commands never touch the key store.
+ *
+ * The limit that recovery path sets: the age format has no associated data, so this strategy cannot bind the
+ * [XtraHeader] to its seal (the `header` of [encrypt] and [decrypt] is ignored) — binding it would mean a body that
+ * `age -d` no longer opens. The header's only field this algorithm consumes is the algorithm byte, which the provider
+ * checks before any key demand (a file naming another algorithm is refused, not read as age); the slot is vestigial
+ * and the IV empty, so a changed slot byte changes nothing the decrypt reads (a changed length prefix shifts the age
+ * file out of its parse), and the age file's own header MAC and ChaCha20-Poly1305 seal still authenticate every
+ * content byte.
  */
 class AgeV1Strategy(
     keyStore: Lazy<XtraAgeKeyStore>,
@@ -87,6 +95,7 @@ class AgeV1Strategy(
         output: OutputStream,
         fileKey: ByteArray,
         iv: ByteArray,
+        header: ByteArray,
     ) {
         // The fileKey and iv are the AES-GCM strategy's per-file parameters; this algorithm's file key is drawn
         // and X25519-wrapped inside the age format itself.
@@ -101,6 +110,7 @@ class AgeV1Strategy(
         output: OutputStream,
         fileKey: ByteArray,
         iv: ByteArray,
+        header: ByteArray,
     ) {
         try {
             Age.decryptStream(listOf<Identity>(identity.value), input, CloseShield(output))
@@ -111,37 +121,27 @@ class AgeV1Strategy(
 
     /**
      * Opens [AgeV1RangedReader] over one stored object: [source] serves the stored bytes (the X-tra header
-     * included), [storedSize] the size the listing answered for it. The header is validated here — a file that
-     * is not this algorithm's ciphertext refuses the open (the same fail-closed posture as the whole-file path)
-     * — and the age file behind it goes to kage's seekable decrypt, which authenticates the payload's last
-     * chunk up front, so a truncated or tail-tampered object fails the open itself. The sizes must agree with
-     * what the listings answer for the same stored object: the engines hold reads against that size. The
-     * identity is demanded here, as [decrypt] demands it, so listings-only commands never open a reader.
+     * included), [storedSize] the size the listing answered for it. The header goes through the same checks as the
+     * whole-file download ([validHeaderFor]), so a stored file is answered the same way whichever path reads it: a
+     * file of another algorithm is [XtraAlgorithmMismatchException], a damaged header a content refusal. The age
+     * file behind it goes to kage's seekable decrypt, which authenticates the payload's last chunk up front, so a
+     * truncated or tail-tampered object fails the open itself ([AEADBadTagException]). The sizes must agree with
+     * what the listings answer for the same stored object: the engines hold reads against that size. Every other
+     * failure, a source that ends early included, is a [ProviderException] — kage's own types stay inside the
+     * module. The identity is demanded only after the header and size checks, as [decrypt] demands it.
      */
-    // The refusals are the contract: each names one way the stored object is not this algorithm's ciphertext,
-    // so the open throws per case.
+    // The refusals are the contract: each names one way the stored object cannot be served, so the open throws per case.
     @Suppress("ThrowsCount", "TooGenericExceptionCaught") // the open's integrity verdict arrives as kage's own unchecked types
     fun rangedReader(
         source: RangedCiphertextSource,
         storedSize: Long,
     ): AgeV1RangedReader {
-        val header = XtraHeader.read(ByteArrayInputStream(headOf(source, (HEADER_FIXED_BYTES + wrappedKeyLength + ivLength).toInt())))
-        val valid = when (header) {
-            is XtraHeader.ReadResult.NotEncrypted ->
-                throw ProviderException("File is not XTRA-encrypted")
-            is XtraHeader.ReadResult.Corrupted ->
-                throw ProviderException("XTRA header corrupted: ${header.reason}")
-            is XtraHeader.ReadResult.Valid -> header
-        }
-        if (valid.algorithmId != algorithmId) {
-            throw ProviderException("the stored file's X-tra algorithm is not this strategy's: ${valid.algorithmId}")
-        }
+        val headerLength = (HEADER_FIXED_BYTES + wrappedKeyLength + ivLength).toInt()
+        validHeaderFor(this, XtraHeader.read(ByteArrayInputStream(headOf(source, headerLength))), "stored object")
         val expectedSize = plaintextSizeOf(storedSize)
             ?: throw ProviderException("stored size holds no well-formed file of this algorithm: $storedSize")
-        // The age file starts where the header's declared lengths put it; the source kage sees serves it from
-        // there, so kage's positions stay positions inside the age file.
-        val headerLength = (HEADER_FIXED_BYTES + valid.wrappedKey.size + valid.iv.size).toInt()
         return try {
+            // The source kage sees starts at the age file, so kage's positions stay positions inside it.
             val seekable = Age.decryptSeekable(
                 listOf<Identity>(identity.value),
                 RandomAccessSource { ciphertext, destOffset, length, sourceOffset ->
@@ -158,7 +158,7 @@ class AgeV1Strategy(
             }
             AgeV1RangedReader(seekable)
         } catch (e: Exception) {
-            throw authenticationRefusal(e)
+            throw rangedFailure(e)
         }
     }
 
@@ -199,11 +199,20 @@ internal fun authenticationRefusal(e: Exception): Exception =
         e
     }
 
+// The ranged paths' translation: an authentication failure is the refusal, a ProviderException stays as it is,
+// and anything else — kage's own StreamException when the source ends early, say — becomes a ProviderException,
+// so no kage type reaches a caller outside this module. The whole-file decrypt keeps its rethrow as it is.
+internal fun rangedFailure(e: Exception): Exception =
+    when (val translated = authenticationRefusal(e)) {
+        is AEADBadTagException, is ProviderException -> translated
+        else -> ProviderException("age ranged read failed: ${e.message}", e)
+    }
+
 private fun carriesAuthenticationFailure(e: Throwable): Boolean =
     generateSequence(e as Throwable?) { it.cause }.any { it is InvalidCipherTextException }
 
-// The stored object's first bytes, however short the source answers: a short read is the source's right, and
-// the header read refuses the truncated result (a source that answers nothing is not an X-tra file).
+// The stored object's first bytes, over as many short reads as the source answers; a source that answers no byte
+// (the end, by the source contract) leaves a truncated head, which the header read refuses.
 private fun headOf(
     source: RangedCiphertextSource,
     length: Int,

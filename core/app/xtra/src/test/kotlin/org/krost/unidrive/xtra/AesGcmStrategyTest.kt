@@ -17,6 +17,9 @@ class AesGcmStrategyTest {
     private fun fileKey() = ByteArray(32).also { SecureRandom().nextBytes(it) }
     private fun iv(strategy: AesGcmStrategy) = ByteArray(strategy.ivLength).also { SecureRandom().nextBytes(it) }
 
+    // The associated data the provider hands in (the serialized XtraHeader); the cipher tests bind a fixed one.
+    private val aad = "XTRA-header-under-test".toByteArray()
+
     // The header slot's key journey, which the strategy (not the provider) owns: RSA-OAEP in, RSA-OAEP out.
     @Test
     fun `wrap and unwrap carry the file key through the header's slot`() {
@@ -37,12 +40,12 @@ class AesGcmStrategyTest {
         val plaintext = "Hello, X-tra!".toByteArray()
 
         val encrypted = ByteArrayOutputStream().also { out ->
-            strategy.encrypt(ByteArrayInputStream(plaintext), out, key, iv)
+            strategy.encrypt(ByteArrayInputStream(plaintext), out, key, iv, aad)
         }.toByteArray()
         kotlin.test.assertNotEquals(plaintext.toList(), encrypted.toList())
 
         val decrypted = ByteArrayOutputStream().also { out ->
-            strategy.decrypt(ByteArrayInputStream(encrypted), out, key, iv)
+            strategy.decrypt(ByteArrayInputStream(encrypted), out, key, iv, aad)
         }.toByteArray()
         assertContentEquals(plaintext, decrypted)
     }
@@ -54,12 +57,12 @@ class AesGcmStrategyTest {
         val iv = iv(strategy)
 
         val encrypted = ByteArrayOutputStream().also { out ->
-            strategy.encrypt(ByteArrayInputStream(ByteArray(0)), out, key, iv)
+            strategy.encrypt(ByteArrayInputStream(ByteArray(0)), out, key, iv, aad)
         }.toByteArray()
         assertEquals(16, encrypted.size) // the GCM tag of an empty plaintext
 
         val decrypted = ByteArrayOutputStream().also { out ->
-            strategy.decrypt(ByteArrayInputStream(encrypted), out, key, iv)
+            strategy.decrypt(ByteArrayInputStream(encrypted), out, key, iv, aad)
         }.toByteArray()
         assertEquals(0, decrypted.size)
     }
@@ -72,10 +75,10 @@ class AesGcmStrategyTest {
         val plaintext = ByteArray(200_000).also { SecureRandom().nextBytes(it) }
 
         val encrypted = ByteArrayOutputStream().also { out ->
-            strategy.encrypt(ByteArrayInputStream(plaintext), out, key, iv)
+            strategy.encrypt(ByteArrayInputStream(plaintext), out, key, iv, aad)
         }.toByteArray()
         val decrypted = ByteArrayOutputStream().also { out ->
-            strategy.decrypt(ByteArrayInputStream(encrypted), out, key, iv)
+            strategy.decrypt(ByteArrayInputStream(encrypted), out, key, iv, aad)
         }.toByteArray()
         assertContentEquals(plaintext, decrypted)
     }
@@ -86,12 +89,12 @@ class AesGcmStrategyTest {
         val key = fileKey()
         val iv = iv(strategy)
         val encrypted = ByteArrayOutputStream().also { out ->
-            strategy.encrypt(ByteArrayInputStream("payload".toByteArray()), out, key, iv)
+            strategy.encrypt(ByteArrayInputStream("payload".toByteArray()), out, key, iv, aad)
         }.toByteArray()
         encrypted[encrypted.size - 1] = (encrypted[encrypted.size - 1].toInt() xor 1).toByte()
 
         assertFailsWith<Exception> {
-            strategy.decrypt(ByteArrayInputStream(encrypted), ByteArrayOutputStream(), key, iv)
+            strategy.decrypt(ByteArrayInputStream(encrypted), ByteArrayOutputStream(), key, iv, aad)
         }
     }
 
@@ -100,11 +103,11 @@ class AesGcmStrategyTest {
         val strategy = strategy()
         val iv = iv(strategy)
         val encrypted = ByteArrayOutputStream().also { out ->
-            strategy.encrypt(ByteArrayInputStream("payload".toByteArray()), out, fileKey(), iv)
+            strategy.encrypt(ByteArrayInputStream("payload".toByteArray()), out, fileKey(), iv, aad)
         }.toByteArray()
 
         assertFailsWith<Exception> {
-            strategy.decrypt(ByteArrayInputStream(encrypted), ByteArrayOutputStream(), fileKey(), iv)
+            strategy.decrypt(ByteArrayInputStream(encrypted), ByteArrayOutputStream(), fileKey(), iv, aad)
         }
     }
 
@@ -138,13 +141,13 @@ class AesGcmStrategyTest {
         val iv = iv(strategy)
         val plaintext = ByteArray(3 * 65536).also { SecureRandom().nextBytes(it) }
         val encrypted = ByteArrayOutputStream().also { out ->
-            strategy.encrypt(ByteArrayInputStream(plaintext), out, key, iv)
+            strategy.encrypt(ByteArrayInputStream(plaintext), out, key, iv, aad)
         }.toByteArray()
         assertEquals(3 * 65536 + 3 * 16, encrypted.size)
 
         val cut = encrypted.copyOfRange(0, 2 * (65536 + 16))
         assertFailsWith<Exception> {
-            strategy.decrypt(ByteArrayInputStream(cut), ByteArrayOutputStream(), key, iv)
+            strategy.decrypt(ByteArrayInputStream(cut), ByteArrayOutputStream(), key, iv, aad)
         }
     }
 
@@ -154,18 +157,40 @@ class AesGcmStrategyTest {
         val key = fileKey()
         val iv = iv(strategy)
         val encryptedOfA = ByteArrayOutputStream().also { out ->
-            strategy.encrypt(ByteArrayInputStream(ByteArray(2 * 65536)), out, key, iv)
+            strategy.encrypt(ByteArrayInputStream(ByteArray(2 * 65536)), out, key, iv, aad)
         }.toByteArray()
         // Segment 2 of another file with the same IV, spliced in: its nonce names segment 2, so the splice is a
         // legal-looking frame — the header IV's random prefix is what makes such a frame never verify.
         val otherIv = ByteArray(12).also { SecureRandom().nextBytes(it) }
         val other = ByteArrayOutputStream().also { out ->
-            strategy.encrypt(ByteArrayInputStream(ByteArray(65536)), out, key, otherIv)
+            strategy.encrypt(ByteArrayInputStream(ByteArray(65536)), out, key, otherIv, aad)
         }.toByteArray()
         val spliced = encryptedOfA.copyOfRange(0, 65536 + 16) + other.copyOfRange(65536, 65536 + 16)
 
         assertFailsWith<Exception> {
-            strategy.decrypt(ByteArrayInputStream(spliced), ByteArrayOutputStream(), key, iv)
+            strategy.decrypt(ByteArrayInputStream(spliced), ByteArrayOutputStream(), key, iv, aad)
+        }
+    }
+
+    // The header is the seal's associated data: a decrypt under any other header bytes fails the first tag, even
+    // with the right key and IV — the IV's counter bytes and the wrapped-key slot included.
+    @Test
+    fun `a decrypt under a changed header fails the seal`() {
+        val strategy = strategy()
+        val key = fileKey()
+        val iv = iv(strategy)
+        val header = XtraHeader.serialize(1, ByteArray(256) { it.toByte() }, iv)
+        val encrypted = ByteArrayOutputStream().also { out ->
+            strategy.encrypt(ByteArrayInputStream("payload".toByteArray()), out, key, iv, header)
+        }.toByteArray()
+        assertContentEquals(
+            "payload".toByteArray(),
+            ByteArrayOutputStream().also { strategy.decrypt(ByteArrayInputStream(encrypted), it, key, iv, header) }.toByteArray(),
+        )
+
+        val changed = header.copyOf().also { it[header.size - 1] = (it[header.size - 1].toInt() xor 1).toByte() }
+        assertFailsWith<javax.crypto.AEADBadTagException> {
+            strategy.decrypt(ByteArrayInputStream(encrypted), ByteArrayOutputStream(), key, iv, changed)
         }
     }
 }

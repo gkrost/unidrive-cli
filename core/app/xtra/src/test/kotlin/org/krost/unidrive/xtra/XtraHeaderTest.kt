@@ -21,6 +21,9 @@ class XtraHeaderTest {
         assertEquals(1.toByte(), valid.algorithmId)
         assertContentEquals(wrappedKey, valid.wrappedKey)
         assertContentEquals(iv, valid.iv)
+        // The bytes a reader rebuilds are the bytes the writer stored: the associated data both sides bind.
+        assertContentEquals(out.toByteArray(), valid.bytes)
+        assertContentEquals(out.toByteArray(), XtraHeader.serialize(1, wrappedKey, iv))
     }
 
     @Test

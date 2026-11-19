@@ -2,7 +2,9 @@ package org.krost.unidrive.xtra
 
 import java.io.InputStream
 import java.io.OutputStream
+import javax.crypto.BadPaddingException
 import javax.crypto.Cipher
+import javax.crypto.IllegalBlockSizeException
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
@@ -12,10 +14,16 @@ import javax.crypto.spec.SecretKeySpec
  * decrypt holds the entire file in one array, so a 2 GB backup would need 2 GB of daemon heap; per-segment frames
  * bound the memory to two segments and let a truncated or spliced stream fail its tag (the segment index and the
  * last-segment flag ride in the nonce, so segments cannot be reordered, dropped or truncated undetected). This is
- * the on-disk format of algorithm 1; changing it needs a new algorithm id.
+ * the on-disk format of algorithm 1; changing it needs a new algorithm id (the header binding below changed it
+ * in place once, while the layer was unreleased and no stored file had to survive).
  *
  * The strategy owns its key material: the installation's RSA pair ([XtraKeyManager], handed in lazy, so the
  * passphrase demand waits for the first content operation) wraps each per-file key into the header's slot.
+ *
+ * Every segment binds the serialized [XtraHeader] (magic through IV) as its associated data, so a header byte changed
+ * after the write fails the first segment's tag like a changed body byte — the IV's counter bytes, which the nonce
+ * overwrites, and the wrapped-key slot included. (A wrapped-key slot changed in place mostly fails earlier, in the
+ * RSA-OAEP unwrap, which cannot tell a changed slot from another installation's key; both are refused as content.)
  *
  * The nonce is the header's IV with the low bytes meaning counter and flag: bytes 4..10 hold the segment index
  * big-endian (7 bytes, 2^56 segments), byte 11 is 0 for a normal segment and 1 for the last one. The header's
@@ -33,7 +41,20 @@ class AesGcmStrategy(
     // what demands the passphrase, and it fires on the first content operation only.
     override fun wrapFileKey(fileKey: ByteArray): ByteArray = keys.value.wrapKey(fileKey)
 
-    override fun unwrapFileKey(wrapped: ByteArray): ByteArray = keys.value.unwrapKey(wrapped)
+    // A slot that does not unwrap is refused like a failed seal (owner decision, #821): RSA-OAEP cannot tell a
+    // changed slot from another installation's key, and both are answered as damaged content. The load stays
+    // outside the translation — a wrong passphrase or a missing key file is this installation's error, never the
+    // file's.
+    override fun unwrapFileKey(wrapped: ByteArray): ByteArray {
+        val manager = keys.value
+        try {
+            return manager.unwrapKey(wrapped)
+        } catch (e: BadPaddingException) {
+            throw XtraFileKeyRefusedException("X-tra file key does not unwrap: ${e.message}", e)
+        } catch (e: IllegalBlockSizeException) {
+            throw XtraFileKeyRefusedException("X-tra file key does not unwrap: ${e.message}", e)
+        }
+    }
 
     override fun plaintextSizeOf(ciphertextSize: Long): Long? {
         val fixed = headerFixedBytes() + wrappedKeyLength + ivLength
@@ -61,17 +82,18 @@ class AesGcmStrategy(
         output: OutputStream,
         fileKey: ByteArray,
         iv: ByteArray,
+        header: ByteArray,
     ) {
         var segment = input.readNBytes(SEGMENT_SIZE)
         var index = 0L
         while (segment.isNotEmpty()) {
             val next = input.readNBytes(SEGMENT_SIZE)
-            output.write(cipher(fileKey, nonce(iv, index, last = next.isEmpty()), Cipher.ENCRYPT_MODE).doFinal(segment))
+            output.write(cipher(fileKey, nonce(iv, index, last = next.isEmpty()), header, Cipher.ENCRYPT_MODE).doFinal(segment))
             index++
             segment = next
         }
         // An empty plaintext is one final empty segment, so a zero-byte file is a header and a tag.
-        if (index == 0L) output.write(cipher(fileKey, nonce(iv, 0, last = true), Cipher.ENCRYPT_MODE).doFinal(ByteArray(0)))
+        if (index == 0L) output.write(cipher(fileKey, nonce(iv, 0, last = true), header, Cipher.ENCRYPT_MODE).doFinal(ByteArray(0)))
     }
 
     override fun decrypt(
@@ -79,6 +101,7 @@ class AesGcmStrategy(
         output: OutputStream,
         fileKey: ByteArray,
         iv: ByteArray,
+        header: ByteArray,
     ) {
         var segment = input.readNBytes(SEGMENT_SIZE + TAG_BYTES)
         var index = 0L
@@ -86,7 +109,7 @@ class AesGcmStrategy(
             val next = input.readNBytes(SEGMENT_SIZE + TAG_BYTES)
             // One segment ahead, so a full-size final segment is decrypted with the last-segment nonce it was
             // written under; a stream that stops early fails its tag instead of yielding short plaintext.
-            val plaintext = cipher(fileKey, nonce(iv, index, last = next.isEmpty()), Cipher.DECRYPT_MODE).doFinal(segment)
+            val plaintext = cipher(fileKey, nonce(iv, index, last = next.isEmpty()), header, Cipher.DECRYPT_MODE).doFinal(segment)
             output.write(plaintext)
             index++
             segment = next
@@ -97,8 +120,13 @@ class AesGcmStrategy(
     private fun cipher(
         fileKey: ByteArray,
         nonce: ByteArray,
+        header: ByteArray,
         mode: Int,
-    ): Cipher = Cipher.getInstance("AES/GCM/NoPadding").also { it.init(mode, SecretKeySpec(fileKey, "AES"), GCMParameterSpec(TAG_BITS, nonce)) }
+    ): Cipher =
+        Cipher.getInstance("AES/GCM/NoPadding").also {
+            it.init(mode, SecretKeySpec(fileKey, "AES"), GCMParameterSpec(TAG_BITS, nonce))
+            it.updateAAD(header)
+        }
 
     // The IV doubles as the nonce template: bytes 4..10 the big-endian segment index, byte 11 the last-segment
     // flag. The first 4 bytes stay the random per-file prefix, so no two files share a nonce and no two segments

@@ -8,6 +8,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.testing.TestScratch
 
@@ -29,7 +30,7 @@ class AgeV1RangedReaderTest {
         plaintext: ByteArray,
     ): ByteArray {
         val ageFile = ByteArrayOutputStream().also { out ->
-            strategy.encrypt(ByteArrayInputStream(plaintext), out, ByteArray(strategy.wrappedKeyLength), ByteArray(strategy.ivLength))
+            strategy.encrypt(ByteArrayInputStream(plaintext), out, ByteArray(strategy.wrappedKeyLength), ByteArray(strategy.ivLength), ByteArray(0))
         }.toByteArray()
         return ByteArrayOutputStream().also { out ->
             XtraHeader.write(out, strategy.algorithmId, strategy.wrapFileKey(ByteArray(32)), ByteArray(strategy.ivLength))
@@ -45,7 +46,7 @@ class AgeV1RangedReaderTest {
         val input = ByteArrayInputStream(stored)
         XtraHeader.read(input)
         return ByteArrayOutputStream().also { out ->
-            strategy.decrypt(input, out, ByteArray(strategy.wrappedKeyLength), ByteArray(strategy.ivLength))
+            strategy.decrypt(input, out, ByteArray(strategy.wrappedKeyLength), ByteArray(strategy.ivLength), ByteArray(0))
         }.toByteArray()
     }
 
@@ -176,15 +177,71 @@ class AgeV1RangedReaderTest {
         }
     }
 
+    // Truncation is a property of the stored bytes: another attempt reads the same object, so it is the same
+    // permanent refusal as the whole-file decrypt's. If these tests are loosened to "any exception", a truncated
+    // object silently becomes a retry-forever failure.
     @Test
-    fun `a truncated stored object fails the open`() {
+    fun `an object cut at a chunk boundary refuses the open as an authentication failure`() {
+        val strategy = strategy()
+        val stored = storedOf(strategy, randomBytes(4 * chunk))
+        val cut = stored.copyOf(stored.size - (chunk + 16))
+
+        assertFailsWith<AEADBadTagException> { readerOver(strategy, cut) }
+    }
+
+    @Test
+    fun `an object cut inside a chunk refuses the open as an authentication failure`() {
         val strategy = strategy()
         val stored = storedOf(strategy, randomBytes(4 * chunk))
         val cut = stored.copyOf(stored.size - 100_000)
 
-        assertFailsWith<Exception> {
-            readerOver(strategy, cut)
+        assertFailsWith<AEADBadTagException> { readerOver(strategy, cut) }
+    }
+
+    // A listing larger than the object (a stale size) is not damaged content: the source ends early, kage answers
+    // with its own StreamException, and the reader hands out a ProviderException, never a kage type.
+    @Test
+    fun `a source that ends before the listed size fails as a provider error, not a refusal`() {
+        val strategy = strategy()
+        val stored = storedOf(strategy, randomBytes(2 * chunk))
+        val listedSize = storedOf(strategy, randomBytes(3 * chunk)).size.toLong()
+
+        val failure = assertFailsWith<ProviderException> { strategy.rangedReader(sourceOver(stored), listedSize) }
+        assertEquals(ProviderException::class, failure::class, "a subtype would be a classification: $failure")
+        assertTrue(failure.cause != null && failure.cause!!::class.qualifiedName!!.startsWith("kage."), "$failure")
+    }
+
+    // The source contract allows short reads anywhere: one byte per call must serve the open and every read.
+    @Test
+    fun `a source answering one byte per call serves the open and a multi-chunk range`() {
+        val strategy = strategy()
+        val plaintext = randomBytes(3 * chunk + 123)
+        val stored = storedOf(strategy, plaintext)
+        val trickle = RangedCiphertextSource { position, buffer, offset, length ->
+            if (position >= stored.size) {
+                -1
+            } else {
+                buffer[offset] = stored[position.toInt()]
+                if (length == 0) 0 else 1
+            }
         }
+        val reader = strategy.rangedReader(trickle, stored.size.toLong())
+
+        assertContentEquals(plaintext.copyOfRange(chunk - 7, 2 * chunk + 9), readSlice(reader, (chunk - 7).toLong(), chunk + 16))
+    }
+
+    @Test
+    fun `a read into part of a buffer fills only that part`() {
+        val strategy = strategy()
+        val plaintext = randomBytes(2 * chunk)
+        val reader = readerOver(strategy, storedOf(strategy, plaintext))
+        val buffer = ByteArray(64) { 0x11 }
+
+        assertEquals(32, reader.readAt(buffer, 16, 32, (chunk - 10).toLong()))
+        assertContentEquals(ByteArray(16) { 0x11 }, buffer.copyOfRange(0, 16))
+        assertContentEquals(plaintext.copyOfRange(chunk - 10, chunk + 22), buffer.copyOfRange(16, 48))
+        assertContentEquals(ByteArray(16) { 0x11 }, buffer.copyOfRange(48, 64))
+        assertFailsWith<IllegalArgumentException> { reader.readAt(buffer, 60, 8, 0) }
     }
 
     @Test
@@ -210,17 +267,29 @@ class AgeV1RangedReaderTest {
         }
     }
 
+    // The same answers as the whole-file download (validHeaderFor): a file of another algorithm is the retryable
+    // mismatch that comes back after a switch back, and no identity is demanded for it.
     @Test
-    fun `a stored file of another algorithm refuses the open`() {
-        val strategy = strategy()
+    fun `a stored file of another algorithm refuses the open as an algorithm mismatch without a key demand`() {
+        val noKey = AgeV1Strategy(lazy { error("the identity must not be demanded") }, { error("no passphrase") })
         val other = ByteArrayOutputStream().also { out ->
-            XtraHeader.write(out, 1, ByteArray(strategy.wrappedKeyLength), ByteArray(0))
+            XtraHeader.write(out, 1, ByteArray(noKey.wrappedKeyLength), ByteArray(0))
             out.write(ByteArray(64))
         }.toByteArray()
 
-        assertFailsWith<ProviderException> {
-            readerOver(strategy, other)
+        assertFailsWith<XtraAlgorithmMismatchException> {
+            noKey.rangedReader(sourceOver(other), other.size.toLong())
         }
+    }
+
+    @Test
+    fun `a damaged length prefix refuses the open as content`() {
+        val strategy = strategy()
+        val stored = storedOf(strategy, randomBytes(chunk))
+        stored[7] = (stored[7].toInt() xor 0x01).toByte() // the wrapped-key length prefix's low byte
+
+        val refused = assertFailsWith<org.krost.unidrive.RemoteContentRefusedDownloadException> { readerOver(strategy, stored) }
+        assertEquals("header corrupted", refused.reason)
     }
 
     @Test
