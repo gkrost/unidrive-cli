@@ -57,6 +57,18 @@ sync_root = "~/Internxt"
 # an outbound connection renewed every 30 minutes). false = poll only. Default true; other providers ignore it.
 # remote_notifications = true
 
+# Client-side encryption of this profile's file content (the X-tra layer): files are encrypted before they
+# reach the provider and decrypted on the way back; names, sizes and the tree stay as they are. One key per
+# installation, beside config.toml (`unidrive xtra init`, or `unidrive xtra init-age` for age-v1). Absent = off.
+# xtra_encryption = false
+
+# The X-tra content algorithm when xtra_encryption is on. aes-gcm (the default) is the built-in algorithm;
+# age-v1 stores each file's content as a standard age-encryption.org/v1 body, which an offline `age` tool
+# decrypts from the identity alone (`unidrive xtra init-age` writes it, `xtra export-age` backs it up).
+# Switching the key does not re-encrypt what already exists: every stored file's header names the algorithm
+# that must decrypt it, and a file written under the other one is refused until the key names it again.
+# xtra_algorithm = "aes-gcm"
+
 # exclude_patterns = ["/dev/git/**"]   # added to [general] exclude_patterns; same syntax
 
 # The sync policy of this profile alone; each key overrides the same-named [general] key. A backup profile
