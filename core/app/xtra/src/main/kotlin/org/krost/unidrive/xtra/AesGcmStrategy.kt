@@ -61,6 +61,7 @@ class AesGcmStrategy(
         output: OutputStream,
         fileKey: ByteArray,
         iv: ByteArray,
+        wrappedKey: ByteArray,
     ) {
         var segment = input.readNBytes(SEGMENT_SIZE)
         var index = 0L
@@ -79,6 +80,7 @@ class AesGcmStrategy(
         output: OutputStream,
         fileKey: ByteArray,
         iv: ByteArray,
+        wrappedKey: ByteArray,
     ) {
         var segment = input.readNBytes(SEGMENT_SIZE + TAG_BYTES)
         var index = 0L

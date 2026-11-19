@@ -42,7 +42,11 @@ class XtraTinkKeyStore(
         check(!exists()) { "X-tra Tink key file already exists, refusing to replace it: $keyPath" }
         val handle = KeysetHandle.generateNew(PARAMETERS)
         val serialized = TinkProtoKeysetFormat.serializeKeyset(handle, InsecureSecretKeyAccess.get())
-        writeKeyFile(passphrase, serialized)
+        try {
+            writeKeyFile(passphrase, serialized)
+        } finally {
+            serialized.fill(0)
+        }
     }
 
     fun load(passphrase: CharArray): KeysetHandle {
@@ -54,7 +58,11 @@ class XtraTinkKeyStore(
         val iv = blob.copyOfRange(SALT_LENGTH, SALT_LENGTH + IV_LENGTH)
         val encrypted = blob.copyOfRange(SALT_LENGTH + IV_LENGTH, blob.size)
         val serialized = decryptBlob(deriveKey(passphrase, salt), iv, encrypted)
-        return TinkProtoKeysetFormat.parseKeyset(serialized, InsecureSecretKeyAccess.get())
+        try {
+            return TinkProtoKeysetFormat.parseKeyset(serialized, InsecureSecretKeyAccess.get())
+        } finally {
+            serialized.fill(0)
+        }
     }
 
     private fun writeKeyFile(
@@ -73,8 +81,13 @@ class XtraTinkKeyStore(
             check(onDisk.size >= SALT_LENGTH + IV_LENGTH + GCM_TAG_BITS / 8) { "The new key file is truncated; the old one was kept." }
             val diskIv = onDisk.copyOfRange(SALT_LENGTH, SALT_LENGTH + IV_LENGTH)
             val diskCiphertext = onDisk.copyOfRange(SALT_LENGTH + IV_LENGTH, onDisk.size)
-            check(decryptBlob(key, diskIv, diskCiphertext).contentEquals(serializedKeyset)) {
-                "The new key file is not what was written or does not decrypt; the old one was kept."
+            val verified = decryptBlob(key, diskIv, diskCiphertext)
+            try {
+                check(verified.contentEquals(serializedKeyset)) {
+                    "The new key file is not what was written or does not decrypt; the old one was kept."
+                }
+            } finally {
+                verified.fill(0)
             }
         })
     }
@@ -84,9 +97,16 @@ class XtraTinkKeyStore(
         salt: ByteArray,
     ): SecretKey {
         val spec = PBEKeySpec(passphrase, salt, PBKDF2_ITERATIONS, KEY_LENGTH_BITS)
-        val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
-        val raw = factory.generateSecret(spec).encoded
-        return SecretKeySpec(raw, "AES")
+        try {
+            val raw = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
+            try {
+                return SecretKeySpec(raw, "AES")
+            } finally {
+                raw.fill(0)
+            }
+        } finally {
+            spec.clearPassword()
+        }
     }
 
     private fun encryptBlob(

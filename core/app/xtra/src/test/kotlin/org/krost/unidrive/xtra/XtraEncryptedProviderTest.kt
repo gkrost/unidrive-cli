@@ -456,6 +456,31 @@ class XtraEncryptedProviderTest {
     }
 
     @Test
+    fun `a file from another algorithm refuses before asking for this profile key`() {
+        val dir = TestScratch.directory("xtra-algorithm-mismatch")
+        val storage = mutableMapOf<String, ByteArray>()
+        val inner = InMemoryProvider(storage)
+        val source = dir.resolve("source.txt")
+        Files.writeString(source, "stored content")
+
+        val ageWriter = ageProvider(inner, dir)
+        kotlinx.coroutines.runBlocking { ageWriter.upload(source, "/age.txt") }
+        val aesReader = provider(inner, AesGcmStrategy(lazy<XtraKeyManager> { error("RSA key demanded") }))
+        val ageFailure = assertFailsWith<org.krost.unidrive.RemoteContentRefusedDownloadException> {
+            kotlinx.coroutines.runBlocking { aesReader.download("/age.txt", dir.resolve("age-dl.txt")) }
+        }
+        assertEquals("algorithm_mismatch", ageFailure.reason)
+
+        val aesWriter = provider(inner, keys(dir))
+        kotlinx.coroutines.runBlocking { aesWriter.upload(source, "/aes.txt") }
+        val ageReader = provider(inner, AgeV1Strategy(lazy<XtraAgeKeyStore> { error("age key demanded") }, { error("passphrase demanded") }))
+        val aesFailure = assertFailsWith<org.krost.unidrive.RemoteContentRefusedDownloadException> {
+            kotlinx.coroutines.runBlocking { ageReader.download("/aes.txt", dir.resolve("aes-dl.txt")) }
+        }
+        assertEquals("algorithm_mismatch", aesFailure.reason)
+    }
+
+    @Test
     fun `age-v1 tampered ciphertext refuses the download and keeps the previous file`() {
         val tmpDir = TestScratch.directory("xtra-age-provider-test")
         val storage = mutableMapOf<String, ByteArray>()
@@ -556,6 +581,25 @@ class XtraEncryptedProviderTest {
         }
         assertEquals("authentication failed", failure.reason)
         assertContentEquals("the previous content".toByteArray(), Files.readAllBytes(dest))
+    }
+
+    @Test
+    fun `tink header slot is authenticated with the body`() {
+        val dir = TestScratch.directory("xtra-tink-header-test")
+        val storage = mutableMapOf<String, ByteArray>()
+        val xtra = tinkProvider(InMemoryProvider(storage), dir)
+        val source = dir.resolve("source.txt")
+        Files.writeString(source, "sealed with this header")
+        kotlinx.coroutines.runBlocking { xtra.upload(source, "/header.txt") }
+        val stored = storage.getValue("/header.txt")
+        stored[8 + 200] = (stored[8 + 200].toInt() xor 0x01).toByte() // outside TKID and its key id
+
+        val destination = dir.resolve("download.txt")
+        Files.writeString(destination, "previous content")
+        assertFailsWith<org.krost.unidrive.RemoteContentRefusedDownloadException> {
+            kotlinx.coroutines.runBlocking { xtra.download("/header.txt", destination) }
+        }
+        assertEquals("previous content", Files.readString(destination))
     }
 
     @Test

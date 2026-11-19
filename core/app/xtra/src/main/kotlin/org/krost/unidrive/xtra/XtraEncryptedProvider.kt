@@ -100,7 +100,7 @@ class XtraEncryptedProvider(
             FileOutputStream(tmp.toFile()).use { out ->
                 XtraHeader.write(out, strategy.algorithmId, wrappedKey, iv)
                 FileInputStream(localPath.toFile()).use { input ->
-                    strategy.encrypt(input, out, fileKey, iv)
+                    strategy.encrypt(input, out, fileKey, iv, wrappedKey)
                 }
             }
             return inner.upload(tmp, remotePath, existingRemoteId, ifMatchETag, onProgress).plaintextSized(strategy)
@@ -212,9 +212,24 @@ private suspend fun decrypt(
                 throw ProviderException("File is not XTRA-encrypted: $encryptedFile")
             is XtraHeader.ReadResult.Corrupted ->
                 throw ProviderException("XTRA header corrupted: ${result.reason}")
-            is XtraHeader.ReadResult.Valid ->
-                decryptStaged(strategy, input, strategy.unwrapFileKey(result.wrappedKey), result.iv, destination, encryptedFile)
+            is XtraHeader.ReadResult.Valid -> {
+                requireMatchingAlgorithm(result.algorithmId, strategy.algorithmId, encryptedFile)
+                decryptStaged(strategy, input, strategy.unwrapFileKey(result.wrappedKey), result.iv, result.wrappedKey, destination, encryptedFile)
+            }
         }
+    }
+}
+
+private fun requireMatchingAlgorithm(
+    stored: Byte,
+    configured: Byte,
+    encryptedFile: Path,
+) {
+    if (stored != configured) {
+        throw RemoteContentRefusedDownloadException(
+            "X-tra content uses algorithm $stored, profile uses $configured: $encryptedFile",
+            "algorithm_mismatch",
+        )
     }
 }
 
@@ -234,6 +249,7 @@ private suspend fun decryptStaged(
     input: InputStream,
     fileKey: ByteArray,
     iv: ByteArray,
+    wrappedKey: ByteArray,
     destination: Path,
     encryptedFile: Path,
 ) {
@@ -243,7 +259,7 @@ private suspend fun decryptStaged(
     try {
         createOwnerOnlyStagingFile(staging)
         FileOutputStream(staging.toFile()).use { out ->
-            strategy.decrypt(input, out, fileKey, iv)
+            strategy.decrypt(input, out, fileKey, iv, wrappedKey)
             out.fd.sync()
         }
         takePreviousPermissions(absolute, staging)

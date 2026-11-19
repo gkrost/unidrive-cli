@@ -20,7 +20,7 @@ class TinkStreamingStrategyTest {
     private fun strategy(): TinkStreamingStrategy {
         val store = XtraTinkKeyStore(TestScratch.directory("xtra-tink-test").resolve("xtra-tink.key"))
         store.generate(PASSPHRASE)
-        return TinkStreamingStrategy(lazy { store }, { PASSPHRASE })
+        return TinkStreamingStrategy(lazy { store }, { PASSPHRASE.copyOf() })
     }
 
     private fun encryptOf(
@@ -113,6 +113,13 @@ class TinkStreamingStrategyTest {
     }
 
     @Test
+    fun `a tag failure is recognized by its cause rather than provider wording`() {
+        val failure = IOException("provider-specific wording", AEADBadTagException("tag"))
+        assertTrue(TinkStreamingStrategy.isIntegrityFailure(failure))
+        assertEquals(false, TinkStreamingStrategy.isIntegrityFailure(IOException("Tag mismatch without a cause")))
+    }
+
+    @Test
     fun `a tampered header fails the decrypt as an authentication refusal`() {
         val strategy = strategy()
         val encrypted = encryptOf(strategy, "payload".toByteArray())
@@ -175,7 +182,7 @@ class TinkStreamingStrategyTest {
         val keyPath = dir.resolve("xtra-tink.key")
         val store = XtraTinkKeyStore(keyPath)
         store.generate(PASSPHRASE)
-        val writer = TinkStreamingStrategy(lazy { store }, { PASSPHRASE })
+        val writer = TinkStreamingStrategy(lazy { store }, { PASSPHRASE.copyOf() })
         val plaintext = ByteArray(200_000) { (it * 31 + 7).toByte() }
         val bodyPath = dir.resolve("body.bin")
         val plainPath = dir.resolve("plain.bin")

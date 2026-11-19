@@ -32,7 +32,14 @@ class TinkStreamingStrategy(
 ) : XtraEncryptionStrategy {
     // The Tink types stay inside this module: the caller hands the key store and the passphrase, the handle is
     // loaded here.
-    private val handle: Lazy<KeysetHandle> = lazy { keyStore.value.load(passphrase()) }
+    private val handle: Lazy<KeysetHandle> = lazy {
+        val phrase = passphrase()
+        try {
+            keyStore.value.load(phrase)
+        } finally {
+            phrase.fill('\u0000')
+        }
+    }
 
     private val streamingAead: StreamingAead by lazy { handle.value.getPrimitive(StreamingAead::class.java) }
 
@@ -114,10 +121,11 @@ class TinkStreamingStrategy(
         output: OutputStream,
         fileKey: ByteArray,
         iv: ByteArray,
+        wrappedKey: ByteArray,
     ) {
         // The fileKey and iv are the AES-GCM strategy's per-file parameters; this algorithm's keys live in the
         // keyset. Closing the Tink stream emits the final segment's tag — required, or the decrypt refuses.
-        streamingAead.newEncryptingStream(CloseShield(output), ASSOCIATED_DATA).use { stream ->
+        streamingAead.newEncryptingStream(CloseShield(output), associatedData(wrappedKey)).use { stream ->
             val buffer = ByteArray(COPY_BUFFER)
             var read: Int
             while (input.read(buffer).also { read = it } != -1) stream.write(buffer, 0, read)
@@ -131,17 +139,18 @@ class TinkStreamingStrategy(
     // header is parsed, Tink swallows a source stream's IOException, treats the stream as ended and raises its
     // own integrity message (probed). Classification therefore leans on guards around our streams: whatever
     // our source or our output threw is the true, retryable local cause and is rethrown verbatim; only an
-    // IOException with a Tink integrity message and no guard failure is a seal failure, which becomes
+    // IOException with an authentication cause (or Tink's uncategorized header message) and no guard failure is a seal failure, which becomes
     // AEADBadTagException — the provider's permanent content refusal.
     override fun decrypt(
         input: InputStream,
         output: OutputStream,
         fileKey: ByteArray,
         iv: ByteArray,
+        wrappedKey: ByteArray,
     ) {
         val source = GuardedSource(input)
         val sink = GuardedOutput(output)
-        val decrypting = streamingAead.newDecryptingStream(source, ASSOCIATED_DATA)
+        val decrypting = streamingAead.newDecryptingStream(source, associatedData(wrappedKey))
         val buffer = ByteArray(COPY_BUFFER)
         try {
             var read: Int
@@ -149,7 +158,7 @@ class TinkStreamingStrategy(
         } catch (e: IOException) {
             source.failure?.let { throw it }
             sink.failure?.let { throw it }
-            if (e.message == NO_MATCHING_KEY_MESSAGE || e.message?.startsWith(TAG_MISMATCH_MESSAGE) == true) {
+            if (isIntegrityFailure(e)) {
                 val refused = AEADBadTagException(e.message)
                 refused.initCause(e)
                 throw refused
@@ -249,8 +258,14 @@ class TinkStreamingStrategy(
         private const val SEGMENT_CAPACITY_PLAIN = SEGMENT_SIZE - TAG_BYTES
         private const val COPY_BUFFER = 64 * 1024
         private val ASSOCIATED_DATA = "unidrive-xtra-tink".toByteArray()
+
+        private fun associatedData(wrappedKey: ByteArray): ByteArray = ASSOCIATED_DATA + PROTOTYPE_ALGORITHM_ID + wrappedKey
         private const val NO_MATCHING_KEY_MESSAGE = "No matching key found for the ciphertext in the stream."
-        private const val TAG_MISMATCH_MESSAGE = "Tag mismatch"
+
+        // SunJCE supplies a typed cause for segment tags; Tink's header refusal has no typed cause.
+        internal fun isIntegrityFailure(error: IOException): Boolean =
+            generateSequence<Throwable>(error) { it.cause }.any { it is AEADBadTagException } ||
+                error.message == NO_MATCHING_KEY_MESSAGE
     }
 }
 
