@@ -7,13 +7,21 @@ import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.RemoteObjectAuditReport
 import org.krost.unidrive.RemoteObjectStatus
 import org.krost.unidrive.authenticateAndLog
+import org.krost.unidrive.engine.BackupsNamespace
+import org.krost.unidrive.engine.CachePaths
+import org.krost.unidrive.engine.PlacedNamespace
+import org.krost.unidrive.engine.TrashNamespace
+import org.krost.unidrive.engine.ViewNamespaces
 import org.krost.unidrive.io.OwnerOnlyAtomicWrite
 import org.krost.unidrive.io.engineKey
 import org.krost.unidrive.sync.HashVerifier
 import org.krost.unidrive.sync.PathNormalizer
+import org.krost.unidrive.sync.ProfileMode
 import org.krost.unidrive.sync.Reconciler
 import org.krost.unidrive.sync.StateDatabase
+import org.krost.unidrive.sync.SyncEngine
 import org.krost.unidrive.sync.SyncScope
+import org.krost.unidrive.sync.model.SyncEntry
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
 import picocli.CommandLine.ParentCommand
@@ -48,6 +56,7 @@ import java.util.concurrent.Callable
     name = "verify",
     description = [
         "Audit convergence of the local sync_root, state.db, and a live remote listing (report-only).",
+        "A mount profile has no sync_root: state.db is audited against the live listing and the hydration cache.",
         "Exit codes: 0 converged, 1 divergence found, 2 could not audit.",
     ],
     mixinStandardHelpOptions = true,
@@ -101,11 +110,6 @@ class VerifyCommand : Callable<Int> {
             System.err.println("verify: no state.db for profile '${profile.name}' — run a sync first, then audit it.")
             return EXIT_UNAUDITABLE
         }
-        val syncRoot = profile.syncRoot
-        if (!Files.isDirectory(syncRoot)) {
-            System.err.println("verify: sync root '$syncRoot' does not exist — cannot audit.")
-            return EXIT_UNAUDITABLE
-        }
         // The same exclude set the engine syncs with: anything the engine would
         // never transfer (sidecars, OS junk, user patterns) must not count as
         // divergence in any of the three views.
@@ -115,10 +119,18 @@ class VerifyCommand : Callable<Int> {
         // out-of-scope rows as db-only/remote-only divergences instead of ignoring them.
         // The boundary is the one sync works within: --sync-path, else the profile's sync_path (archive#1083).
         val scope = effectiveScope(config.syncPaths)
+        // #825: a mount profile has no sync_root; its audit holds state.db against the live listing alone.
+        val mount = profile.mode == ProfileMode.MOUNT
+        val syncRoot = profile.syncRoot
+        if (!mount && !Files.isDirectory(syncRoot)) {
+            System.err.println("verify: sync root '$syncRoot' does not exist — cannot audit.")
+            return EXIT_UNAUDITABLE
+        }
         if (scope.isNotEmpty()) {
             val origin = if (syncPaths.isNotEmpty()) "--sync-path" else "the profile's sync_path"
             println("verify: audit limited to ${scope.joinToString(", ")} ($origin)")
         }
+        if (mount) return auditMount(profile.name, dbPath, excludes, scope)
 
         // Read-only snapshot of the rows; closed before any other source is walked. The open itself is
         // read-only (#100): the existence check above keeps a missing state.db from being created, and
@@ -134,29 +146,7 @@ class VerifyCommand : Callable<Int> {
 
         val provider = parent.createProvider()
         val algorithm = if (deep) provider.hashAlgorithm() else null
-        val remoteFiles: Map<String, CloudItem> =
-            try {
-                runBlocking {
-                    provider.authenticateAndLog()
-                    listRemoteFiles(provider, excludes, scope)
-                }
-            } catch (e: AuthenticationException) {
-                System.err.print(
-                    parent.renderAuthError(
-                        e,
-                        provider.id,
-                        provider.displayName,
-                        parent.verbose,
-                        runCatching { parent.resolveCurrentProfile().name }.getOrNull(),
-                    ),
-                )
-                return EXIT_UNAUDITABLE
-            } catch (e: Exception) {
-                System.err.println("verify: provider listing failed: ${e.message ?: e.javaClass.simpleName}")
-                return EXIT_UNAUDITABLE
-            } finally {
-                provider.close()
-            }
+        val remoteFiles = listRemoteOrReport(provider, excludes, scope) ?: return EXIT_UNAUDITABLE
         if (deep && algorithm == null) {
             System.err.println(
                 "verify: provider '${provider.displayName}' has no verifiable hash algorithm — " +
@@ -180,6 +170,83 @@ class VerifyCommand : Callable<Int> {
                 },
             )
         println(VerifyAudit.formatReport(profile.name, report))
+        return if (report.converged) EXIT_CONVERGED else EXIT_DIVERGED
+    }
+
+    /**
+     * The live remote listing within [scope], or null after the reason is printed (authentication or listing failure).
+     * Closes [provider] either way.
+     */
+    private fun listRemoteOrReport(
+        provider: CloudProvider,
+        excludes: List<String>,
+        scope: List<String>,
+    ): Map<String, CloudItem>? =
+        try {
+            runBlocking {
+                provider.authenticateAndLog()
+                listRemoteFiles(provider, excludes, scope)
+            }
+        } catch (e: AuthenticationException) {
+            System.err.print(
+                parent.renderAuthError(
+                    e,
+                    provider.id,
+                    provider.displayName,
+                    parent.verbose,
+                    runCatching { parent.resolveCurrentProfile().name }.getOrNull(),
+                ),
+            )
+            null
+        } catch (e: Exception) {
+            System.err.println("verify: provider listing failed: ${e.message ?: e.javaClass.simpleName}")
+            null
+        } finally {
+            provider.close()
+        }
+
+    /**
+     * #825: the mount-mode audit. No local walk (a mount profile has no sync_root): the state.db rows against the live
+     * remote listing, and each hydrated row against its hydration cache copy. Read-only like the three-way audit: the
+     * database is opened read-only and closed before the provider is asked, the cache is only stat'ed.
+     */
+    private fun auditMount(
+        profileName: String,
+        dbPath: Path,
+        excludes: List<String>,
+        scope: List<String>,
+    ): Int {
+        if (deep) System.err.println("verify: --deep has no local content to hash on a mount profile; comparing sizes and etags.")
+        val db = StateDatabase(dbPath, readOnly = true)
+        db.initialize()
+        // The trash and backups folders are rows under a root the daemon places (found by its stable key, whatever it is
+        // called); the views are never rows, but a key of theirs is skipped all the same.
+        val virtualRoots = listOf(TrashNamespace(), BackupsNamespace())
+        val dbEntries =
+            try {
+                virtualRoots.forEach { it.refresh(db) }
+                db.getAllEntries().filter { (scope.isEmpty() || SyncScope.contains(it.path, scope)) && !isExcluded(it.path, excludes) }
+            } finally {
+                db.close()
+            }
+        val isVirtual = { row: SyncEntry ->
+            virtualRoots.any { it.contains(row.path) } ||
+                row.remoteId?.let { PlacedNamespace.isAnyOwnKey(it) || it.startsWith(ViewNamespaces.ROOT_KEY_PREFIX) } == true
+        }
+        val remoteFiles = listRemoteOrReport(parent.createProvider(), excludes, scope) ?: return EXIT_UNAUDITABLE
+        val cacheDir = SyncEngine.hydrationCacheRoot(cacheRoot(), profileName)
+        // One pass over the cache folder for every row: the folders the rows share are probed once, not once per
+        // row (#585 measured the real-path walk of a per-row resolve at ~8 ms a file; CachePaths.Pass exists for
+        // passes over rows). A row the pass cannot answer throws — a copy that is not there — and reads as null.
+        val cachePass = CachePaths.Pass(cacheDir)
+        val report =
+            VerifyAudit.auditMount(
+                dbEntries = dbEntries,
+                remoteFiles = remoteFiles,
+                isVirtual = isVirtual,
+                cacheCopySize = { row -> runCatching { cachePass.sizeOf(row.path) }.getOrNull() },
+            )
+        println(VerifyAudit.formatMountReport(profileName, report))
         return if (report.converged) EXIT_CONVERGED else EXIT_DIVERGED
     }
 
@@ -399,6 +466,9 @@ class VerifyCommand : Callable<Int> {
         const val EXIT_CONVERGED = 0
         const val EXIT_DIVERGED = 1
         const val EXIT_UNAUDITABLE = 2
+
+        /** Where the hydration caches live; a test points it at its own folder. */
+        internal var cacheRoot: () -> Path = { SyncEngine.defaultHydrationCacheRoot() }
         private const val REPORT_TEMP_PREFIX = ".unidrive-verify-"
         private const val REPORT_TEMP_SUFFIX = ".json.tmp"
     }
