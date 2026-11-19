@@ -68,6 +68,12 @@ sealed class MigrateEvent {
     }
 }
 
+/** gkrost/unidrive-cli#826: the relocate target root is not a folder and could not be made one. */
+class TargetRootException(
+    message: String,
+    cause: Throwable? = null,
+) : Exception(message, cause)
+
 class CloudRelocator(
     private val source: CloudProvider,
     private val target: CloudProvider,
@@ -237,6 +243,75 @@ class CloudRelocator(
             src.size,
         )
     }
+
+    /** What the target holds at a path: a folder, a file, or nothing the lookup could show (absent, or the lookup failed). */
+    private enum class TargetEntry { FOLDER, FILE, UNKNOWN }
+
+    private suspend fun targetEntry(path: String): TargetEntry =
+        try {
+            if (target.getMetadata(path).isFolder) TargetEntry.FOLDER else TargetEntry.FILE
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log.debug("getMetadata for target '{}' failed: {}: {}", path, e.javaClass.simpleName, e.message)
+            TargetEntry.UNKNOWN
+        }
+
+    /**
+     * gkrost/unidrive-cli#826: makes sure the target root [targetPath] is a folder, creating it and its missing
+     * ancestors top-down, or throws [TargetRootException] when it cannot.
+     *
+     * An existing root costs one lookup and nothing else. A folder is created only after a lookup did not show it;
+     * a create that fails is accepted when a second lookup then shows the folder (a 409 for a folder that is there:
+     * OneDrive answers it for a true duplicate). Anything else — Internxt's 409 whose only twin is trashed (#767),
+     * a refused name, an outage — stops the run before any transfer, under its own name.
+     */
+    private suspend fun ensureTargetRoot(targetPath: String) {
+        val segments = targetPath.split('/').filter { it.isNotEmpty() }
+        if (segments.isEmpty()) return
+        val rootEntry = targetEntry(targetPath)
+        if (rootEntry == TargetEntry.FOLDER) return
+        var parentCreated = false
+        for (depth in 1..segments.size) {
+            val prefix = "/" + segments.take(depth).joinToString("/")
+            val forRoot = if (depth < segments.size) " (for --target-path $targetPath)" else ""
+            // Below a folder this run created there is nothing to look up; the root itself was looked up above.
+            val entry =
+                when {
+                    parentCreated -> TargetEntry.UNKNOWN
+                    depth == segments.size -> rootEntry
+                    else -> targetEntry(prefix)
+                }
+            if (entry == TargetEntry.FOLDER) continue
+            if (entry == TargetEntry.FILE) {
+                throw TargetRootException("Target path $prefix is a file, not a folder$forRoot; nothing was transferred")
+            }
+            val failure = createTargetFolder(prefix)
+            if (failure != null) {
+                throw TargetRootException(
+                    "Could not create the target folder $prefix$forRoot: " +
+                        "${failure.javaClass.simpleName}: ${failure.message}; nothing was transferred",
+                    failure,
+                )
+            }
+            parentCreated = true
+        }
+    }
+
+    /**
+     * Creates [path] on the target; null when it is a folder afterwards, else the create's failure. A failed create is
+     * forgiven only when a lookup then shows the folder (it was there: the create answered a 409).
+     */
+    private suspend fun createTargetFolder(path: String): Exception? =
+        try {
+            target.createFolder(path)
+            log.info("Created target folder {}", path)
+            null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (targetEntry(path) == TargetEntry.FOLDER) null else e
+        }
 
     fun migrate(
         sourcePath: String,
@@ -442,6 +517,10 @@ class CloudRelocator(
 
             try {
                 try {
+                    // gkrost/unidrive-cli#826: the walk creates the source's subfolders, not the target root, so a missing
+                    // root failed every file as "parent gone (trashed?)". A root that cannot be made fails the run in the
+                    // catch below, once and under its own name, before any file moves.
+                    ensureTargetRoot(targetPath)
                     coroutineScope { walk(sourcePath, targetPath) }
                 } catch (e: CancellationException) {
                     throw e

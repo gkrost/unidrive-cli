@@ -817,6 +817,38 @@ class RelocateCommandTest {
     }
 
     @Test
+    fun `826 - a target root that cannot be created stops the run before any transfer and the source is kept`() {
+        withLocalProfiles { src, dst, config ->
+            write(src, "docs/a.txt", "a")
+            // A file where the target root's parent must be: the root cannot be made.
+            write(dst, "taken", "x")
+
+            val r =
+                runCli(
+                    config,
+                    "yes\n",
+                    "relocate",
+                    "--from",
+                    "src",
+                    "--to",
+                    "dst",
+                    "--source-path",
+                    "/docs",
+                    "--target-path",
+                    "/taken/new",
+                    "--delete-source",
+                )
+
+            assertTrue(r.exit != 0, "relocate must fail; stdout: ${r.out}; stderr: ${r.err}")
+            assertTrue(r.err.contains("Target path /taken is a file, not a folder"), "stderr names the target root; stderr: ${r.err}")
+            assertTrue(!r.err.contains("trashed?"), "no file is blamed on a trash; stderr: ${r.err}")
+            assertTrue(!r.out.contains("Deleting source files"), "the delete pass never starts; stdout: ${r.out}")
+            assertEquals("a", java.nio.file.Files.readString(src.resolve("docs/a.txt")), "the source copy survives")
+            assertEquals("x", java.nio.file.Files.readString(dst.resolve("taken")), "the target file is untouched")
+        }
+    }
+
+    @Test
     fun `a relocate where an upload failed exits non-zero and reports the failure`() {
         withLocalProfiles { src, dst, config ->
             write(src, "ok.txt", "ok")
