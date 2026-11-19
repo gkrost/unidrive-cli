@@ -27,6 +27,14 @@ import org.bouncycastle.crypto.InvalidCipherTextException
  * alone — no unidrive code in the recovery path — and the format's chunk layout supports seekable decryption
  * (kage's `decryptSeekable`), the basis of the future ranged hydration. The identity is loaded lazily, so
  * listings-only commands never touch the key store.
+ *
+ * The limit that recovery path sets: the age format has no associated data, so this strategy cannot bind the
+ * [XtraHeader] to its seal (the `header` of [encrypt] and [decrypt] is ignored) — binding it would mean a body that
+ * `age -d` no longer opens. The header's only field this algorithm consumes is the algorithm byte, which the provider
+ * checks before any key demand (a file naming another algorithm is refused, not read as age); the slot is vestigial
+ * and the IV empty, so a changed slot byte changes nothing the decrypt reads (a changed length prefix shifts the age
+ * file out of its parse), and the age file's own header MAC and ChaCha20-Poly1305 seal still authenticate every
+ * content byte.
  */
 class AgeV1Strategy(
     keyStore: Lazy<XtraAgeKeyStore>,
@@ -85,7 +93,7 @@ class AgeV1Strategy(
         output: OutputStream,
         fileKey: ByteArray,
         iv: ByteArray,
-        wrappedKey: ByteArray,
+        header: ByteArray,
     ) {
         // The fileKey and iv are the AES-GCM strategy's per-file parameters; this algorithm's file key is drawn
         // and X25519-wrapped inside the age format itself.
@@ -100,7 +108,7 @@ class AgeV1Strategy(
         output: OutputStream,
         fileKey: ByteArray,
         iv: ByteArray,
-        wrappedKey: ByteArray,
+        header: ByteArray,
     ) {
         try {
             Age.decryptStream(listOf<Identity>(identity.value), input, CloseShield(output))

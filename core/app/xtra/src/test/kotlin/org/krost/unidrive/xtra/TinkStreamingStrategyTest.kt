@@ -15,6 +15,9 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import org.krost.unidrive.testing.TestScratch
 
+// The XTRA header the strategy is handed in these tests (the provider's own are in XtraEncryptedProviderTest).
+private val TEST_HEADER = XtraHeader.serialize(TinkStreamingStrategy.PROTOTYPE_ALGORITHM_ID, ByteArray(256), ByteArray(0))
+
 class TinkStreamingStrategyTest {
 
     private fun strategy(): TinkStreamingStrategy {
@@ -27,14 +30,14 @@ class TinkStreamingStrategyTest {
         strategy: TinkStreamingStrategy,
         plaintext: ByteArray,
     ): ByteArray = ByteArrayOutputStream().also { out ->
-        strategy.encrypt(ByteArrayInputStream(plaintext), out, ByteArray(strategy.wrappedKeyLength), ByteArray(strategy.ivLength))
+        strategy.encrypt(ByteArrayInputStream(plaintext), out, ByteArray(strategy.wrappedKeyLength), ByteArray(strategy.ivLength), TEST_HEADER)
     }.toByteArray()
 
     private fun decryptOf(
         strategy: TinkStreamingStrategy,
         ciphertext: ByteArray,
     ): ByteArray = ByteArrayOutputStream().also { out ->
-        strategy.decrypt(ByteArrayInputStream(ciphertext), out, ByteArray(strategy.wrappedKeyLength), ByteArray(strategy.ivLength))
+        strategy.decrypt(ByteArrayInputStream(ciphertext), out, ByteArray(strategy.wrappedKeyLength), ByteArray(strategy.ivLength), TEST_HEADER)
     }.toByteArray()
 
     @Test
@@ -117,6 +120,18 @@ class TinkStreamingStrategyTest {
         val failure = IOException("provider-specific wording", AEADBadTagException("tag"))
         assertTrue(TinkStreamingStrategy.isIntegrityFailure(failure))
         assertEquals(false, TinkStreamingStrategy.isIntegrityFailure(IOException("Tag mismatch without a cause")))
+    }
+
+    // The XTRA header is the stream's associated data: a decrypt under any other header bytes fails the seal.
+    @Test
+    fun `a decrypt under a changed XTRA header fails as an authentication refusal`() {
+        val strategy = strategy()
+        val encrypted = encryptOf(strategy, "payload".toByteArray())
+        val otherHeader = TEST_HEADER.copyOf().also { it[it.size - 3] = (it[it.size - 3].toInt() xor 0x01).toByte() }
+
+        assertFailsWith<AEADBadTagException> {
+            strategy.decrypt(ByteArrayInputStream(encrypted), ByteArrayOutputStream(), ByteArray(0), ByteArray(0), otherHeader)
+        }
     }
 
     @Test
@@ -216,7 +231,7 @@ class TinkStreamingStrategyTest {
             }
         }
         val failure = assertFailsWith<IOException> {
-            strategy.decrypt(failingSource, ByteArrayOutputStream(), ByteArray(strategy.wrappedKeyLength), ByteArray(strategy.ivLength))
+            strategy.decrypt(failingSource, ByteArrayOutputStream(), ByteArray(strategy.wrappedKeyLength), ByteArray(strategy.ivLength), TEST_HEADER)
         }
         assertEquals("disk read error on the staged ciphertext", failure.message)
     }
@@ -238,7 +253,7 @@ class TinkStreamingStrategyTest {
             }
         }
         val failure = assertFailsWith<IOException> {
-            strategy.decrypt(ByteArrayInputStream(encrypted), failingSink, ByteArray(strategy.wrappedKeyLength), ByteArray(strategy.ivLength))
+            strategy.decrypt(ByteArrayInputStream(encrypted), failingSink, ByteArray(strategy.wrappedKeyLength), ByteArray(strategy.ivLength), TEST_HEADER)
         }
         assertEquals("disk full on the staging file", failure.message)
     }
@@ -250,12 +265,12 @@ class TinkStreamingStrategyTest {
         val strategy = strategy()
 
         val encOut = TrackingOutput()
-        strategy.encrypt(ByteArrayInputStream("payload".toByteArray()), encOut, ByteArray(strategy.wrappedKeyLength), ByteArray(strategy.ivLength))
+        strategy.encrypt(ByteArrayInputStream("payload".toByteArray()), encOut, ByteArray(strategy.wrappedKeyLength), ByteArray(strategy.ivLength), TEST_HEADER)
         assertEquals(false, encOut.closed, "encrypt must not close the caller's output")
         assertContentEquals("payload".toByteArray(), decryptOf(strategy, encOut.bytes), "encrypt must have finalized")
 
         val decOut = TrackingOutput()
-        strategy.decrypt(ByteArrayInputStream(encryptOf(strategy, "payload".toByteArray())), decOut, ByteArray(strategy.wrappedKeyLength), ByteArray(strategy.ivLength))
+        strategy.decrypt(ByteArrayInputStream(encryptOf(strategy, "payload".toByteArray())), decOut, ByteArray(strategy.wrappedKeyLength), ByteArray(strategy.ivLength), TEST_HEADER)
         assertEquals(false, decOut.closed, "decrypt must not close the caller's output")
         assertContentEquals("payload".toByteArray(), decOut.bytes)
     }
@@ -310,13 +325,13 @@ object TinkFreshJvmProbe {
         check(strategy.plaintextSizeOf(stored.toLong()) == plaintext.size.toLong()) { "listing size" }
 
         val decrypted = ByteArrayOutputStream()
-        strategy.decrypt(ByteArrayInputStream(body), decrypted, ByteArray(0), ByteArray(0))
+        strategy.decrypt(ByteArrayInputStream(body), decrypted, ByteArray(0), ByteArray(0), TEST_HEADER)
         check(decrypted.toByteArray().contentEquals(plaintext)) { "decrypt" }
 
         val sealed = ByteArrayOutputStream()
-        strategy.encrypt(ByteArrayInputStream(plaintext), sealed, ByteArray(0), ByteArray(0))
+        strategy.encrypt(ByteArrayInputStream(plaintext), sealed, ByteArray(0), ByteArray(0), TEST_HEADER)
         val again = ByteArrayOutputStream()
-        strategy.decrypt(ByteArrayInputStream(sealed.toByteArray()), again, ByteArray(0), ByteArray(0))
+        strategy.decrypt(ByteArrayInputStream(sealed.toByteArray()), again, ByteArray(0), ByteArray(0), TEST_HEADER)
         check(again.toByteArray().contentEquals(plaintext)) { "encrypt round-trip" }
         println("ok")
     }

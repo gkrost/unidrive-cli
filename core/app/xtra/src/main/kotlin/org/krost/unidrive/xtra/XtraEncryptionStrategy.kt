@@ -41,24 +41,33 @@ interface XtraEncryptionStrategy {
     fun wrapFileKey(fileKey: ByteArray): ByteArray
 
     /**
-     * The file key the header's wrapped-key slot carries for [decrypt]. Called only on a valid header of this
-     * strategy's algorithm byte; an algorithm that ignores the slot answers a placeholder its decrypt ignores too.
+     * The file key the header's wrapped-key slot carries for [decrypt]. Called only on a valid header whose algorithm
+     * byte is this strategy's [algorithmId] (the provider refuses any other before a key is demanded); an algorithm that
+     * ignores the slot answers a placeholder its decrypt ignores too.
      */
     fun unwrapFileKey(wrapped: ByteArray): ByteArray
 
+    /**
+     * Seals [input] into [output] under [fileKey] and [iv]. [header] is the serialized [XtraHeader] the stored file
+     * starts with ([XtraHeader.serialize]: magic, version, algorithm id, the wrapped-key slot and the IV): a strategy
+     * whose format carries associated data binds it, so a header byte changed after the write fails the seal like a
+     * changed body byte. A strategy whose format cannot carry it (age-v1: the body must stay a standard age file)
+     * ignores it and says so in its KDoc.
+     */
     fun encrypt(
         input: InputStream,
         output: OutputStream,
         fileKey: ByteArray,
         iv: ByteArray,
-        wrappedKey: ByteArray = ByteArray(0),
+        header: ByteArray,
     )
 
+    /** The inverse of [encrypt]; [header] is the header as read ([XtraHeader.ReadResult.Valid.bytes]). */
     fun decrypt(
         input: InputStream,
         output: OutputStream,
         fileKey: ByteArray,
         iv: ByteArray,
-        wrappedKey: ByteArray = ByteArray(0),
+        header: ByteArray,
     )
 }

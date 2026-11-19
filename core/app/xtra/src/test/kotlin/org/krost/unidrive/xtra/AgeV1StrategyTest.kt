@@ -31,14 +31,14 @@ class AgeV1StrategyTest {
         strategy: AgeV1Strategy,
         plaintext: ByteArray,
     ): ByteArray = ByteArrayOutputStream().also { out ->
-        strategy.encrypt(ByteArrayInputStream(plaintext), out, ByteArray(strategy.wrappedKeyLength), ByteArray(strategy.ivLength))
+        strategy.encrypt(ByteArrayInputStream(plaintext), out, ByteArray(strategy.wrappedKeyLength), ByteArray(strategy.ivLength), ByteArray(0))
     }.toByteArray()
 
     private fun decryptOf(
         strategy: AgeV1Strategy,
         ciphertext: ByteArray,
     ): ByteArray = ByteArrayOutputStream().also { out ->
-        strategy.decrypt(ByteArrayInputStream(ciphertext), out, ByteArray(strategy.wrappedKeyLength), ByteArray(strategy.ivLength))
+        strategy.decrypt(ByteArrayInputStream(ciphertext), out, ByteArray(strategy.wrappedKeyLength), ByteArray(strategy.ivLength), ByteArray(0))
     }.toByteArray()
 
     @Test

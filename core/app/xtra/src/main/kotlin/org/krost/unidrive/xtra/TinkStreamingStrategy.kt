@@ -13,7 +13,9 @@ import com.google.crypto.tink.streamingaead.StreamingAeadConfig
 /**
  * The Tink content algorithm of the X-tra layer (prototype, no wiring yet — `xtra_algorithm` grows only with the
  * adoption decision): Tink's AES-GCM-HKDF streaming ([XtraTinkKeyStore.PARAMETERS] — 256-bit content keys, SHA-256
- * HKDF, 64 KiB ciphertext segments) under the associated data [ASSOCIATED_DATA]. A stored file's body is a Tink
+ * HKDF, 64 KiB ciphertext segments) under the associated data [AAD_PREFIX] ‖ the serialized XTRA header (magic through
+ * IV, the wrapped-key slot with its "TKID" key id included), so a header byte changed after the write fails the seal
+ * like a changed body byte. A stored file's body is a Tink
  * stream: a constant-size header (random salt + nonce prefix) followed by segments whose tags ride inside the
  * 64 KiB segment size, so the first segment carries [XtraTinkKeyStore]-derived constants of plaintext only (see
  * [plaintextSizeOf]).
@@ -84,7 +86,7 @@ class TinkStreamingStrategy(
     private val headerBytes: Long by lazy {
         val throwaway = KeysetHandle.generateNew(XtraTinkKeyStore.PARAMETERS)
         val out = ByteArrayOutputStream()
-        throwaway.getPrimitive(StreamingAead::class.java).newEncryptingStream(out, ASSOCIATED_DATA).use { stream ->
+        throwaway.getPrimitive(StreamingAead::class.java).newEncryptingStream(out, AAD_PREFIX).use { stream ->
             stream.write(ByteArray(0))
         }
         out.size().toLong() - TAG_BYTES
@@ -121,11 +123,11 @@ class TinkStreamingStrategy(
         output: OutputStream,
         fileKey: ByteArray,
         iv: ByteArray,
-        wrappedKey: ByteArray,
+        header: ByteArray,
     ) {
         // The fileKey and iv are the AES-GCM strategy's per-file parameters; this algorithm's keys live in the
         // keyset. Closing the Tink stream emits the final segment's tag — required, or the decrypt refuses.
-        streamingAead.newEncryptingStream(CloseShield(output), associatedData(wrappedKey)).use { stream ->
+        streamingAead.newEncryptingStream(CloseShield(output), associatedData(header)).use { stream ->
             val buffer = ByteArray(COPY_BUFFER)
             var read: Int
             while (input.read(buffer).also { read = it } != -1) stream.write(buffer, 0, read)
@@ -146,11 +148,11 @@ class TinkStreamingStrategy(
         output: OutputStream,
         fileKey: ByteArray,
         iv: ByteArray,
-        wrappedKey: ByteArray,
+        header: ByteArray,
     ) {
         val source = GuardedSource(input)
         val sink = GuardedOutput(output)
-        val decrypting = streamingAead.newDecryptingStream(source, associatedData(wrappedKey))
+        val decrypting = streamingAead.newDecryptingStream(source, associatedData(header))
         val buffer = ByteArray(COPY_BUFFER)
         try {
             var read: Int
@@ -257,9 +259,11 @@ class TinkStreamingStrategy(
         private const val SEGMENT_SIZE = 64L * 1024
         private const val SEGMENT_CAPACITY_PLAIN = SEGMENT_SIZE - TAG_BYTES
         private const val COPY_BUFFER = 64 * 1024
-        private val ASSOCIATED_DATA = "unidrive-xtra-tink".toByteArray()
 
-        private fun associatedData(wrappedKey: ByteArray): ByteArray = ASSOCIATED_DATA + PROTOTYPE_ALGORITHM_ID + wrappedKey
+        // Domain separation: the header bytes alone could in principle be another context's associated data.
+        private val AAD_PREFIX = "unidrive-xtra-tink".toByteArray()
+
+        private fun associatedData(header: ByteArray): ByteArray = AAD_PREFIX + header
         private const val NO_MATCHING_KEY_MESSAGE = "No matching key found for the ciphertext in the stream."
 
         // SunJCE supplies a typed cause for segment tags; Tink's header refusal has no typed cause.
