@@ -240,7 +240,7 @@ internal object ProfileSettings {
                 description = "the X-tra content algorithm when xtra_encryption is on: aes-gcm or age-v1 (default aes-gcm); switching does not re-encrypt files already stored",
                 needsDaemonRestart = true,
                 toToml = { _, raw -> xtraAlgorithmToml(raw) },
-                read = { rp -> JsonPrimitive(rp.xtra_algorithm ?: "aes-gcm") },
+                read = { rp -> JsonPrimitive(effectiveXtraAlgorithm(rp)) },
             ),
         )
 
@@ -297,6 +297,58 @@ internal object ProfileSettings {
             "false" -> "false"
             else -> throw ProfileCommandError("invalid_value", "$SHOW_BACKUPS must be auto, true or false, got '$raw'")
         }
+
+    /** The algorithm a profile runs with: the stored name trimmed and lower-cased, aes-gcm when unset or blank. */
+    fun effectiveXtraAlgorithm(rp: RawProvider): String = rp.xtra_algorithm?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: "aes-gcm"
+
+    /** The key file the effective algorithm needs, beside config.toml. */
+    fun xtraKeyFile(
+        configDir: Path,
+        algorithm: String,
+    ): Path = configDir.resolve(if (algorithm == "age-v1") "xtra-age.key" else "xtra.key")
+
+    /** Whether the profile has sync state: a non-empty state.db (or its WAL) in the profile's folder. */
+    fun hasSyncState(profileDir: Path): Boolean =
+        listOf("state.db", "state.db-wal").any { f ->
+            val p = profileDir.resolve(f)
+            Files.isRegularFile(p) && runCatching { Files.size(p) > 0 }.getOrDefault(true)
+        }
+
+    /**
+     * The guards of an xtra_encryption / xtra_algorithm edit. `state_present`: the effective value changes while the
+     * profile has sync state, unless [force] (stored files are not re-encrypted); an edit that leaves the effective value
+     * as it is, or unsets a key to its current default, is not a change. `key_missing`: the profile would end up with
+     * encryption on and the key file of its effective algorithm is not beside config.toml; [force] does not waive it.
+     */
+    fun checkXtraEdit(
+        key: String,
+        spec: Spec,
+        current: RawProvider,
+        edited: RawProvider,
+        configDir: Path,
+        profile: String,
+        force: Boolean,
+    ) {
+        if (key != XTRA_ENCRYPTION && key != XTRA_ALGORITHM) return
+        if (!force && spec.read(current) != spec.read(edited) && hasSyncState(configDir.resolve(profile))) {
+            throw ProfileCommandError(
+                "state_present",
+                "profile '$profile' already has sync state; changing $key does not re-encrypt the files already stored. " +
+                    "Pass --force to change it anyway.",
+            )
+        }
+        if (edited.xtra_encryption != true) return
+        val algorithm = effectiveXtraAlgorithm(edited)
+        val keyFile = xtraKeyFile(configDir, algorithm)
+        if (!Files.exists(keyFile)) {
+            val init = if (algorithm == "age-v1") "unidrive xtra init-age" else "unidrive xtra init"
+            throw ProfileCommandError(
+                "key_missing",
+                "xtra_encryption would be on with $algorithm but ${keyFile.fileName} does not exist beside config.toml; " +
+                    "create it first with `$init`.",
+            )
+        }
+    }
 
     private fun xtraAlgorithmToml(raw: String): String =
         when (raw.trim().lowercase()) {
@@ -483,6 +535,12 @@ class ProfileSetCommand : Callable<Int> {
     @Option(names = ["--unset"], description = ["Remove the key instead of setting it"])
     var unset: Boolean = false
 
+    @Option(
+        names = ["--force"],
+        description = ["Change xtra_encryption / xtra_algorithm although the profile has sync state (stored files are not re-encrypted)"],
+    )
+    var force: Boolean = false
+
     @Option(names = ["--json"], description = ["Print the result (or the refusal) as one JSON object on stdout"])
     var json: Boolean = false
 
@@ -550,6 +608,7 @@ class ProfileSetCommand : Callable<Int> {
                 null
             } ?: throw ProfileCommandError("invalid_value", "the value for $key does not produce a valid config")
         ProfileSettings.refuseSharedVirtualRoot(key, reread)
+        ProfileSettings.checkXtraEdit(key, spec, current, reread, configPath.parent, name, force)
         try {
             writeConfigAtomically(configPath, edited)
         } catch (e: IOException) {

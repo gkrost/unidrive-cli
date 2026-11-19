@@ -612,6 +612,7 @@ class ProfileJsonCommandTest {
     @Test
     fun `set xtra_encryption turns it on and off, reports the old value and leaves the rest byte for byte`() {
         writeConfig(twoProfiles)
+        Files.writeString(dir.resolve("xtra.key"), "k")
 
         assertEquals(0, run("profile", "set", "work", "xtra_encryption", "true", "--json"), stderr())
         val r = json()
@@ -658,6 +659,111 @@ class ProfileJsonCommandTest {
             assertEquals("invalid_value", json().getValue("error").jsonPrimitive.content, "value '$bad'")
         }
         assertEquals(twoProfiles, config())
+    }
+
+    private fun withState() {
+        Files.createDirectories(dir.resolve("work"))
+        Files.write(dir.resolve("work").resolve("state.db"), byteArrayOf(1, 2, 3))
+    }
+
+    private fun errorOf(vararg args: String): String {
+        assertEquals(1, run(*args, "--json"), stderr())
+        return json().getValue("error").jsonPrimitive.content
+    }
+
+    @Test
+    fun `set xtra keys on a profile with state is refused unless forced`() {
+        writeConfig(twoProfiles)
+        Files.writeString(dir.resolve("xtra.key"), "k")
+        withState()
+
+        assertEquals("state_present", errorOf("profile", "set", "work", "xtra_encryption", "true"))
+        assertTrue(json().getValue("message").jsonPrimitive.content.contains("not re-encrypt"))
+        assertEquals("state_present", errorOf("profile", "set", "work", "xtra_algorithm", "age-v1"))
+        assertEquals(twoProfiles, config())
+
+        assertEquals(0, run("profile", "set", "work", "xtra_encryption", "true", "--force", "--json"), stderr())
+        assertTrue(listed("work").getValue("xtra_encryption").jsonPrimitive.boolean)
+    }
+
+    @Test
+    fun `set xtra key to the value already in force is allowed with state present`() {
+        writeConfig(twoProfiles)
+        withState()
+
+        assertEquals(0, run("profile", "set", "work", "xtra_encryption", "false", "--json"), stderr())
+        assertEquals(0, run("profile", "set", "work", "xtra_algorithm", "aes-gcm", "--json"), stderr())
+        assertEquals(0, run("profile", "set", "work", "xtra_algorithm", "--unset", "--json"), stderr())
+    }
+
+    @Test
+    fun `unset of an effective xtra value is refused with state, and allowed once the profile has none`() {
+        writeConfig(twoProfiles)
+        Files.writeString(dir.resolve("xtra.key"), "k")
+        assertEquals(0, run("profile", "set", "work", "xtra_encryption", "true", "--json"), stderr())
+        withState()
+
+        assertEquals("state_present", errorOf("profile", "set", "work", "xtra_encryption", "--unset"))
+        Files.delete(dir.resolve("work").resolve("state.db"))
+        assertEquals(0, run("profile", "set", "work", "xtra_encryption", "--unset", "--json"), stderr())
+    }
+
+    @Test
+    fun `an empty state db does not count as state`() {
+        writeConfig(twoProfiles)
+        Files.writeString(dir.resolve("xtra.key"), "k")
+        Files.createDirectories(dir.resolve("work"))
+        Files.write(dir.resolve("work").resolve("state.db"), ByteArray(0))
+
+        assertEquals(0, run("profile", "set", "work", "xtra_encryption", "true", "--json"), stderr())
+    }
+
+    @Test
+    fun `set xtra_encryption true without the aes-gcm key is refused with key_missing and --force does not bypass it`() {
+        writeConfig(twoProfiles)
+
+        assertEquals("key_missing", errorOf("profile", "set", "work", "xtra_encryption", "true"))
+        assertTrue(json().getValue("message").jsonPrimitive.content.contains("unidrive xtra init"))
+        assertEquals("key_missing", errorOf("profile", "set", "work", "xtra_encryption", "true", "--force"))
+        assertEquals(twoProfiles, config())
+    }
+
+    @Test
+    fun `set xtra_encryption true needs xtra-age key when the algorithm is age-v1`() {
+        writeConfig(twoProfiles.replace(withPoll, withPoll + "xtra_algorithm = \"age-v1\"\n"))
+        Files.writeString(dir.resolve("xtra.key"), "k")
+
+        assertEquals("key_missing", errorOf("profile", "set", "work", "xtra_encryption", "true"))
+        assertTrue(json().getValue("message").jsonPrimitive.content.contains("xtra init-age"))
+        Files.writeString(dir.resolve("xtra-age.key"), "k")
+        assertEquals(0, run("profile", "set", "work", "xtra_encryption", "true", "--json"), stderr())
+    }
+
+    @Test
+    fun `set xtra_algorithm while encryption is on needs the new algorithm's key`() {
+        writeConfig(twoProfiles)
+        Files.writeString(dir.resolve("xtra.key"), "k")
+        assertEquals(0, run("profile", "set", "work", "xtra_encryption", "true", "--json"), stderr())
+
+        assertEquals("key_missing", errorOf("profile", "set", "work", "xtra_algorithm", "age-v1"))
+        assertTrue(json().getValue("message").jsonPrimitive.content.contains("xtra init-age"))
+        Files.writeString(dir.resolve("xtra-age.key"), "k")
+        assertEquals(0, run("profile", "set", "work", "xtra_algorithm", "age-v1", "--json"), stderr())
+
+        // back to aes-gcm: its key is still there
+        assertEquals(0, run("profile", "set", "work", "xtra_algorithm", "aes-gcm", "--json"), stderr())
+    }
+
+    @Test
+    fun `set xtra_algorithm with encryption off needs no key`() {
+        writeConfig(twoProfiles)
+        assertEquals(0, run("profile", "set", "work", "xtra_algorithm", "age-v1", "--json"), stderr())
+    }
+
+    @Test
+    fun `list reports a hand-written algorithm name normalised`() {
+        writeConfig(twoProfiles.replace(withPoll, withPoll + "xtra_algorithm = \" AGE-V1 \"\n"))
+        assertEquals("age-v1", listed("work").getValue("xtra_algorithm").jsonPrimitive.content)
     }
 
     // -- profile set / list: the name of the read-only trash folder --------------------------------

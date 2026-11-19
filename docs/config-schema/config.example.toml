@@ -59,7 +59,7 @@ sync_root = "~/Internxt"
 
 # Client-side encryption of this profile's file content (the X-tra layer): files are encrypted before they
 # reach the provider and decrypted on the way back; names, sizes and the tree stay as they are. One key per
-# installation, beside config.toml (`unidrive xtra init`). Absent = off.
+# installation, beside config.toml (`unidrive xtra init`, or `unidrive xtra init-age` for age-v1). Absent = off.
 # xtra_encryption = false
 
 # The X-tra content algorithm when xtra_encryption is on. aes-gcm (the default) is the built-in algorithm;
