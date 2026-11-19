@@ -285,7 +285,9 @@ class InternxtAmbiguousPathTest {
             val provider = newProvider()
             provider.listChildren("/docs")
             provider.deleteById("sub-uuid", "/docs/sub", isFolder = true)
-            assertTrue("GET /drive/folders/sub-uuid/meta" in requestLog, "log: $requestLog")
+            // The listing named the item's own parent and kind, so the delete fast path asks no meta at all —
+            // neither the item's nor the chain's; the trash call is the whole delete.
+            assertTrue("GET /drive/folders/sub-uuid/meta" !in requestLog, "log: $requestLog")
             assertTrue(
                 "GET /drive/folders/docs-uuid/meta" !in requestLog,
                 "the parent chain was seeded by the listing; log: $requestLog",
