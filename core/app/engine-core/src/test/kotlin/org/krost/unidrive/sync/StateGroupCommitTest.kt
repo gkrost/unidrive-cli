@@ -268,14 +268,19 @@ class StateGroupCommitTest {
         runBlocking {
             // "/p" queues first but its call is dispatched late (the gate); "/l" queues second and is dispatched at once, so its caller
             // drains the group of one that holds "/p" (maxGroup 1), and "/p" throws an Error there.
+            // gkrost/unidrive-cli#781: the test waits for the gated dispatch itself, not only for "/p" to have queued. Its row is
+            // queued before its call reaches the dispatcher, so waiting for the queue let "/l" take the gated first dispatch now
+            // and then, and "/l" then waited out the gate that only opens after it returned.
             val firstDispatch = AtomicBoolean(true)
             val gate = CountDownLatch(1)
+            val firstGated = CountDownLatch(1)
             val gated =
                 object : CoroutineDispatcher() {
                     override fun dispatch(
                         context: CoroutineContext,
                         block: Runnable,
                     ) = if (firstDispatch.compareAndSet(true, false)) {
+                        firstGated.countDown()
                         Dispatchers.IO.dispatch(context, Runnable {
                             gate.await(20, TimeUnit.SECONDS)
                             block.run()
@@ -289,7 +294,7 @@ class StateGroupCommitTest {
                     if (entry.path == "/p") throw OutOfMemoryError("test") else db.upsertEntry(entry, keepMarks)
                 }
             val p = async(Dispatchers.Default) { runCatching { group.upsertEntry(row("/p")) } }
-            awaitTrue("the row of /p queued") { group.queued == 1 }
+            awaitTrue("the call of /p is held at the gate with its row queued") { firstGated.count == 0L && group.queued == 1 }
             val l = async(Dispatchers.Default) { runCatching { group.upsertEntry(row("/l")) } }
             val lOutcome = withTimeout(20_000) { l.await() }
             assertTrue(lOutcome.exceptionOrNull() is OutOfMemoryError, "the caller that drained the failing group sees its Error: $lOutcome")

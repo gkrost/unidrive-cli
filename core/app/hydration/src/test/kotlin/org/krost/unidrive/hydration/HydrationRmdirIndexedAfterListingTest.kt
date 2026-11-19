@@ -136,16 +136,27 @@ class HydrationRmdirIndexedAfterListingTest {
         request: String,
     ): String = env.handler.handle("conn1", request).trim()
 
+    // gkrost/unidrive-cli#781: the guard compares a row's lastSynced with the instant of the client's listing, both read from
+    // the wall clock. Two steps the test orders must also be ordered on that clock: this returns once the clock reads later
+    // than when it was called, so whatever is stamped next is stamped strictly after everything stamped before. No timeout:
+    // the clock always moves on.
+    private fun clockMovesOn() {
+        val mark = Instant.now()
+        while (!Instant.now().isAfter(mark)) Thread.onSpinWait()
+    }
+
     @Test
     fun `a recursive rmdir refuses a cloud item indexed after the folder was last listed whole`() = runTest {
         val env = Env()
         env.provider.folders += "/dir"
         env.provider.files["/dir/kept.txt"] = "kept bytes"
         env.mount.enumerateRemoteIntoState(reset = false)
+        clockMovesOn()
 
         // The client's comparison is built on this listing.
         val listed = handle(env, """{"verb":"hydration.list","prefix":"/dir"}""")
         assertTrue(listed.contains("\"complete\":true"), "the folder is listed whole: $listed")
+        clockMovesOn()
 
         // A cloud item arrives and the engine indexes it; the client has not listed again.
         env.provider.files["/dir/x4.txt"] = "new bytes"
@@ -167,10 +178,13 @@ class HydrationRmdirIndexedAfterListingTest {
         env.provider.folders += "/dir"
         env.provider.files["/dir/kept.txt"] = "kept bytes"
         env.mount.enumerateRemoteIntoState(reset = false)
+        clockMovesOn()
         assertTrue(handle(env, """{"verb":"hydration.list","prefix":"/dir"}""").contains("\"complete\":true"))
+        clockMovesOn()
 
         env.provider.files["/dir/x4.txt"] = "new bytes"
         env.mount.enumerateRemoteIntoState(reset = false)
+        clockMovesOn()
         assertTrue(
             handle(env, """{"verb":"hydration.rmdir","path":"/dir","recursive":true}""")
                 .contains("\"error\":\"not_empty\""),
