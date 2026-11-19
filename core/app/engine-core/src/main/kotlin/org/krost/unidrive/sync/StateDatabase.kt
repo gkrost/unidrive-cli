@@ -1916,13 +1916,13 @@ class StateDatabase(
     }
 
     /**
-     * windows#454 item 9: flips every alive row of [paths] to `DELETED` (\`last_synced\` = now, exactly what
-     * [markDeleted] writes), in chunks of [chunkSize] rows. Each chunk is its own transaction commit unless a manual
-     * batch is open, so a large reap never holds the monitor — and every writer behind it — for one unbounded
-     * transaction (the merge was chunked for the same reason, archive#147). The caller does its row lookups and file
-     * checks BEFORE calling this. When [expectedRows] is supplied, each flip also requires the same remote identity
-     * and hydration state, no edit base and no pending local action. This keeps a write begun after the caller's
-     * check from being tombstoned. Returns only paths actually flipped.
+     * windows#454 item 9: flips every alive row of [paths] to `DELETED` (`last_synced` = now, as [markDeleted]), in chunks of
+     * [chunkSize] rows, each its own commit unless a manual batch is open: a large reap never holds the monitor (and every
+     * writer behind it) for one unbounded transaction (archive#147). The caller looks rows up and checks files BEFORE this.
+     * With [expectedRows], a flip also requires the same remote identity and hydration state, no edit base and no pending local
+     * action, so a write begun after the caller's check is not tombstoned. Returns only paths actually flipped.
+     * gkrost/unidrive-cli#782, on purpose: an expected row without a remote id (never uploaded; its stored `local:` synthetic
+     * never meets `remote_id IS NULL`) is never flipped, as a cloud tombstone at its path is not about a file the cloud never had.
      */
     fun markDeletedChunked(
         paths: Collection<String>,

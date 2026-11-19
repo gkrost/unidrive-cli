@@ -2057,6 +2057,32 @@ class RemoteEnumerationTest {
             assertEquals(0, result.reaped)
         }
 
+    // gkrost/unidrive-cli#782: a row without a remote id pairs with a tombstone at its path (nothing to compare), but the reap's
+    // expected-row guard never flips it (its stored id is the `local:` synthetic). A placeholder with no bytes passes the
+    // unsynced-edit guard, so only that guard keeps it: a file the cloud never had is not ended by a cloud tombstone.
+    @Test
+    fun `a never-uploaded placeholder row survives a tombstone at its path`() =
+        runTest {
+            provider.fullListing = false
+            provider.items = listOf(file("k", "/keep.txt"))
+            val enumeration = enumeration()
+            enumeration.enumerate(reset = false)
+            db.upsertEntry(
+                org.krost.unidrive.sync.model.SyncEntry(
+                    path = "/f.txt", remoteId = null, remoteHash = null, remoteSize = 0, remoteModified = null,
+                    localMtime = null, localSize = null, isFolder = false, isPinned = false, isHydrated = false,
+                    lastSynced = Instant.now(),
+                ),
+            )
+
+            provider.items = listOf(file("old", "/f.txt").copy(deleted = true))
+            val result = enumeration.enumerate(reset = false)
+
+            assertTrue(result.ok)
+            assertNotNull(db.getEntry("/f.txt"), "the placeholder stays alive")
+            assertEquals(0, result.reaped, "nothing is reaped")
+        }
+
     // One page per listing; every cursor names the listing that produced it.
     private class ListingProvider : CloudProvider {
         var items: List<CloudItem> = emptyList()
