@@ -81,19 +81,15 @@ class IpcServerConnectionLimitsTest {
             assertEquals(3, srv.clientCount, "the refused connection never counts")
         }
 
+    // gkrost/unidrive-cli#769: the cap a server takes when constructed as the daemon does, read without opening a socket. Filling
+    // 32 real connections against wall-clock deadlines timed out on a loaded runner; that a server refuses the connection over
+    // its cap is the cap-of-3 test above, which this cap reaches through the same field.
     @Test
-    fun `the default cap is 32`() =
-        runBlocking(Dispatchers.IO) {
-            assertEquals(32, IpcServer.DEFAULT_MAX_CLIENTS)
-            // Constructed without maxClients, as the daemon does (UNIDRIVE_IPC_MAX_CLIENTS unset in tests).
-            val srv = IpcServer(socketPath, idleTimeoutMs = 0).also { server = it }
-            srv.registerHandler("ping") { _, _ -> """{"ok":true}""" }
-            srv.start(serverScope)
-            fillToTheLimit(srv, 32)
-
-            assertEquals(listOf(TOO_MANY_CLIENTS), readUntilEof(connect()), "the 33rd connection is refused")
-            assertEquals(32, srv.clientCount)
-        }
+    fun `the default cap is 32`() {
+        assertEquals(32, IpcServer.DEFAULT_MAX_CLIENTS)
+        // Constructed without maxClients, as the daemon does (UNIDRIVE_IPC_MAX_CLIENTS unset in tests).
+        assertEquals(32, IpcServer(socketPath, idleTimeoutMs = 0).maxClients)
+    }
 
     @Test
     fun `a refused client that sends its request at once still reads the reason`() =

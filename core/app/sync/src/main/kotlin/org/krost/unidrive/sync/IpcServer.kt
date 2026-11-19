@@ -35,7 +35,7 @@ class IpcServer(
     // null (no handshake) is for the unit tests of the bare server only.
     private val auth: IpcAuth? = null,
     // How many connections are served at once; one more is refused with too_many_clients.
-    private val maxClients: Int = readMaxClientsFromEnv(),
+    internal val maxClients: Int = readMaxClientsFromEnv(),
     // A connection that sent no request for this long is closed (0 = never); see idleExpired.
     private val idleTimeoutMs: Long = readIdleTimeoutFromEnv(),
     // Monotonic milliseconds for the idle timeout; injectable so tests move time instead of waiting.
@@ -188,6 +188,17 @@ class IpcServer(
      */
     fun registerIdleExemptVerbs(verbs: Collection<String>) {
         idleExemptVerbs.addAll(verbs)
+    }
+
+    private val cancelOnPeerGoneVerbs = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * gkrost/unidrive-cli#760: a request for one of [verbs] is cancelled when its peer goes away while it runs, and its
+     * connection is closed without a reply, so an abandoned request no longer holds a connection slot. Only for verbs
+     * whose work may stop anywhere (reads); any other request runs to its end as before.
+     */
+    fun registerCancelOnPeerGoneVerbs(verbs: Collection<String>) {
+        cancelOnPeerGoneVerbs.addAll(verbs)
     }
 
     fun updateState(state: SyncState) {
@@ -722,7 +733,14 @@ class IpcServer(
                 """{"ok":false,"error":"unknown_verb"}"""
             }
             else -> try {
-                watchingPeer(client, connId, readAhead) { kotlinx.coroutines.withContext(handlerDispatcher) { handler(connId, line) } }
+                watchingPeer(client, connId, readAhead, verb in cancelOnPeerGoneVerbs) {
+                    kotlinx.coroutines.withContext(handlerDispatcher) { handler(connId, line) }
+                }
+            } catch (_: IpcPeerGoneException) {
+                // gkrost/unidrive-cli#760: nobody waits for this reply; the closed channel ends the reader, which frees the slot.
+                log.debug("IPC: request '{}' of id={} cancelled, its client went away", verb, connId)
+                closeChannel(client)
+                return
             } catch (e: Exception) {
                 handlerThrew = true
                 log.error("IPC: handler '$verb' threw", e)
@@ -765,17 +783,26 @@ class IpcServer(
         client: SocketChannel,
         connId: String,
         readAhead: java.io.ByteArrayOutputStream,
+        cancelOnPeerGone: Boolean,
         handler: suspend () -> T,
     ): T {
         val selector = readSelector ?: return handler()
+        val peerGone = java.util.concurrent.atomic.AtomicBoolean(false)
         return coroutineScope {
+            val work = async { handler() }
             val watch =
                 launch {
                     delay(PEER_WATCH_AFTER_MS)
-                    watchPeer(client, connId, readAhead, selector)
+                    if (watchPeer(client, connId, readAhead, selector) && cancelOnPeerGone) {
+                        peerGone.set(true)
+                        work.cancel()
+                    }
                 }
             try {
-                handler()
+                work.await()
+            } catch (e: CancellationException) {
+                if (peerGone.get()) throw IpcPeerGoneException(connId, e)
+                throw e
             } finally {
                 watch.cancelAndJoin()
             }
@@ -787,7 +814,7 @@ class IpcServer(
         connId: String,
         readAhead: java.io.ByteArrayOutputStream,
         selector: IpcReadSelector,
-    ) {
+    ): Boolean {
         val buf = ByteBuffer.allocate(PEER_WATCH_CHUNK)
         try {
             // A peer that sends more than one request's worth meanwhile is left in the socket for the reader.
@@ -800,12 +827,13 @@ class IpcServer(
                     else -> readAhead.write(buf.array(), 0, n)
                 }
             }
-            if (readAhead.size() >= MAX_REQUEST_BYTES) return
+            if (readAhead.size() >= MAX_REQUEST_BYTES) return false
         } catch (e: IOException) {
             log.debug("IPC: connection id={} failed while a request ran: {}", connId, e.message)
         }
         log.debug("IPC: client id={} went away while a request ran", connId)
         closeListeners.forEach { it(connId) }
+        return true
     }
 
     // Closed for being idle: no request line for idleTimeoutMs (0 = never), and neither a sync
@@ -1138,6 +1166,9 @@ class IpcServer(
         internal fun diskNameDirectory(): Path = IpcSocketPaths.diskNameDirectory()
     }
 }
+
+// gkrost/unidrive-cli#760: a request of a cancel-on-peer-gone verb was cancelled because its client went away.
+private class IpcPeerGoneException(connId: String, cause: Throwable) : IOException("client $connId went away", cause)
 
 // The index of the first '\n' byte at or after [from], or -1 (archive#1054 S2).
 private fun ByteArray.indexOfNewline(from: Int): Int {
