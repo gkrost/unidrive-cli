@@ -90,6 +90,7 @@ fun normaliseLicenseId(
         "lgpl-2.1" in n || ("lesser general public license" in n && "2.1" in n) || "lgpl-2.1" in u || "lgpl-2.1.html" in u -> "LGPL-2.1"
         "public domain" in n -> "Public-Domain"
         "isc" in n || "opensource.org/licenses/isc-license" in u -> "ISC"
+        "bsd-3-clause" in n || "new bsd license" in n || "opensource.org/licenses/bsd-3-clause" in u -> "BSD-3-Clause"
         // bc-java's own LICENSE.md is the MIT text (Legion of the Bouncy Castle Inc.); the POMs name it
         // "Bouncy Castle License".
         "bouncy castle" in n || "bouncycastle.org/licence" in u -> "MIT"

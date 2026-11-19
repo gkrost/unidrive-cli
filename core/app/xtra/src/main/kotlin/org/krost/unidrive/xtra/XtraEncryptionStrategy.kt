@@ -51,6 +51,7 @@ interface XtraEncryptionStrategy {
         output: OutputStream,
         fileKey: ByteArray,
         iv: ByteArray,
+        wrappedKey: ByteArray = ByteArray(0),
     )
 
     fun decrypt(
@@ -58,5 +59,6 @@ interface XtraEncryptionStrategy {
         output: OutputStream,
         fileKey: ByteArray,
         iv: ByteArray,
+        wrappedKey: ByteArray = ByteArray(0),
     )
 }

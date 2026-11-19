@@ -87,6 +87,7 @@ class AgeV1Strategy(
         output: OutputStream,
         fileKey: ByteArray,
         iv: ByteArray,
+        wrappedKey: ByteArray,
     ) {
         // The fileKey and iv are the AES-GCM strategy's per-file parameters; this algorithm's file key is drawn
         // and X25519-wrapped inside the age format itself.
@@ -101,6 +102,7 @@ class AgeV1Strategy(
         output: OutputStream,
         fileKey: ByteArray,
         iv: ByteArray,
+        wrappedKey: ByteArray,
     ) {
         try {
             Age.decryptStream(listOf<Identity>(identity.value), input, CloseShield(output))

@@ -65,6 +65,9 @@ kotlin {
 val jdepsModuleSet =
     listOf(
         "java.base",
+        // protobuf-java (the Tink content strategy) references the annotation-processing API in its
+        // generated-code support, which jdeps resolves to java.compiler.
+        "java.compiler",
         "java.instrument",
         "java.management",
         "java.naming",
