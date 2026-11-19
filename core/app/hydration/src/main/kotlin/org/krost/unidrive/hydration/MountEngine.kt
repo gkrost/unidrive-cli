@@ -2128,7 +2128,7 @@ class MountEngine private constructor(
     }
 
     // The listing of [path], or null when [root] itself is already gone in the cloud: nothing is left to compare.
-    private suspend fun snapshotListing(
+    internal suspend fun snapshotListing(
         path: String,
         root: String,
     ): List<CloudItem>? =

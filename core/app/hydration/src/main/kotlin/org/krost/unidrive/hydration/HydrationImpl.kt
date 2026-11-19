@@ -3271,7 +3271,7 @@ class HydrationImpl(
         var vetted: Set<String> = emptySet()
         var vettedClean: Set<String> = emptySet()
         if (!recursive) {
-            if (stateDb.hasEntriesBelow(below)) return refusedNotEmpty(log, normalised, recursive, "alive_descendants")
+            if (stateDb.hasEntriesBelow(below)) staleRows.strict(normalised, entry)?.let { return it }
         } else {
             val rows = stateDb.getEntriesByPrefix(below)
             val unsynced = rows.filter { holdsUnsyncedBytes(it) }
@@ -3327,7 +3327,7 @@ class HydrationImpl(
     private suspend fun rmdirRowless(folder: String, recursive: Boolean, permanent: Boolean, discardLocal: Boolean): RmdirResult {
         val rows = stateDb.getEntriesByPrefix(if (folder == "/") "/" else "$folder/")
         if (rows.isEmpty()) return RmdirResult.Failed(HydrationError.UnknownPath)
-        if (!recursive) return refusedNotEmpty(log, folder, recursive, "alive_descendants")
+        if (!recursive) return staleRows.rowless(folder)
         if (!discardLocal) rows.firstOrNull { holdsUnsyncedBytes(it) }?.let { return refusedNotEmpty(log, folder, recursive, "unsynced_bytes", it.path) }
         for (row in rows.filter { !it.isFolder }) {
             when (val unlinked = unlinkRow(row.path, permanent)) {
@@ -3406,6 +3406,10 @@ class HydrationImpl(
     // already succeeded). Deletes children before parents so the directory
     // empties before it is removed.
     private val rmdirWindow = RmdirWindow() // gkrost/unidrive-cli#746 finding 3, live drive E3
+    // gkrost/unidrive-cli#824: a strict rmdir settles rows below that only lag a folder the cloud already emptied or deleted.
+    private val staleRows = RmdirStaleRowSettle(stateDb, mount, log, ::evictCacheFile, { evictCacheTree(it) }) { row ->
+        holdsUnsyncedBytes(row) || hasUploadSlot(row.path) || openSets.values.any { it.containsValue(row.path) }
+    }
     private val conflictCopies = ConflictCopies(stateDb, mount, log) // test drive 2: a lost edit is kept as a conflict copy
 
     private suspend fun remakeFolderOfKeptRow(gone: String): Boolean =
