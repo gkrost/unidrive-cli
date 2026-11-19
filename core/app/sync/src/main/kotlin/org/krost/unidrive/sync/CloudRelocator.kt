@@ -313,6 +313,30 @@ class CloudRelocator(
             if (targetEntry(path) == TargetEntry.FOLDER) null else e
         }
 
+    /**
+     * gkrost/unidrive-cli#767: true when the target folder is there to walk into. A failed create is forgiven only when
+     * the folder is there afterwards. Otherwise (Internxt's 409 whose only twin is trashed, a refused name) the folder
+     * is one error under its own name, counted and handed to [report], and its subtree is not walked, instead of one
+     * "parent gone (trashed?)" error per file below it.
+     */
+    private suspend fun targetFolderReady(
+        sourceFolder: String,
+        targetFolder: String,
+        errorCount: AtomicInteger,
+        report: suspend (MigrateEvent.Error) -> Unit,
+    ): Boolean {
+        val failure = createTargetFolder(targetFolder) ?: return true
+        log.warn("Could not create target folder {}: {}: {}", targetFolder, failure.javaClass.simpleName, failure.message)
+        errorCount.incrementAndGet()
+        report(
+            MigrateEvent.Error(
+                "Could not create the target folder $targetFolder: ${failure.javaClass.simpleName}: " +
+                    "${failure.message}; nothing below $sourceFolder was transferred",
+            ),
+        )
+        return false
+    }
+
     fun migrate(
         sourcePath: String,
         targetPath: String,
@@ -413,19 +437,9 @@ class CloudRelocator(
 
                     if (item.isFolder) {
                         manifest?.recordVisitedFolder(item.path, item.id)
-                        try {
-                            target.createFolder(newTarget)
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            log.debug(
-                                "createFolder for '{}' failed (assuming exists): {}: {}",
-                                newTarget,
-                                e.javaClass.simpleName,
-                                e.message,
-                            )
+                        if (targetFolderReady(newSource, newTarget, errorCount) { emitMutex.withLock { send(it) } }) {
+                            walk(newSource, newTarget)
                         }
-                        walk(newSource, newTarget)
                     } else {
                         val existing = existingByName[itemName]
                         val equivalence = if (existing != null && !existing.isFolder) compare(item, existing) else null

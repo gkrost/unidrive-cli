@@ -257,6 +257,75 @@ class CloudRelocatorTest {
             assertEquals(2, completed.totalFiles)
         }
 
+    // -- gkrost/unidrive-cli#767: a subfolder create that fails and leaves no folder is one error at the folder -----
+
+    @Test
+    fun `767 - a subfolder whose create fails and is not there afterwards is one error naming the folder`() =
+        runTest {
+            target.existingFolders.add("/dst")
+            target.createFolderFailPaths.add("/dst/trashed")
+            source.children["/src"] = listOf(cloudItem("/src/trashed", isFolder = true))
+            source.children["/src/trashed"] = listOf(cloudItem("/src/trashed/a.txt", size = 10), cloudItem("/src/trashed/b.txt", size = 10))
+            source.fileContents["/src/trashed/a.txt"] = ByteArray(10)
+            source.fileContents["/src/trashed/b.txt"] = ByteArray(10)
+
+            val events = CloudRelocator(source, target).migrate("/src", "/dst").toList()
+
+            val error = events.filterIsInstance<MigrateEvent.Error>().single().message
+            assertTrue(error.startsWith("Could not create the target folder /dst/trashed: ProviderException: "), error)
+            assertTrue(error.contains("409"), error)
+            assertEquals(1, events.filterIsInstance<MigrateEvent.Completed>().single().errorCount)
+        }
+
+    @Test
+    fun `767 - nothing below a subfolder that could not be created is walked or transferred`() =
+        runTest {
+            target.existingFolders.add("/dst")
+            target.createFolderFailPaths.add("/dst/trashed")
+            source.children["/src"] = listOf(cloudItem("/src/trashed", isFolder = true))
+            source.children["/src/trashed"] = listOf(cloudItem("/src/trashed/a.txt", size = 10))
+            source.fileContents["/src/trashed/a.txt"] = ByteArray(10)
+            val manifest = MigrationManifest()
+
+            CloudRelocator(source, target).migrate("/src", "/dst", manifest = manifest).toList()
+
+            assertEquals(emptyList(), target.uploadedPaths)
+            assertTrue(manifest.entries.isEmpty(), "no file below the folder is recorded for a delete-source pass")
+        }
+
+    @Test
+    fun `767 - a sibling of a subfolder that could not be created is still transferred`() =
+        runTest {
+            target.existingFolders.add("/dst")
+            target.createFolderFailPaths.add("/dst/trashed")
+            source.children["/src"] =
+                listOf(cloudItem("/src/trashed", isFolder = true), cloudItem("/src/ok", isFolder = true), cloudItem("/src/f.txt", size = 10))
+            source.children["/src/trashed"] = listOf(cloudItem("/src/trashed/a.txt", size = 10))
+            source.children["/src/ok"] = listOf(cloudItem("/src/ok/b.txt", size = 10))
+            source.fileContents["/src/ok/b.txt"] = ByteArray(10)
+            source.fileContents["/src/f.txt"] = ByteArray(10)
+
+            CloudRelocator(source, target).migrate("/src", "/dst").toList()
+
+            assertEquals(setOf("/dst/ok/b.txt", "/dst/f.txt"), target.uploadedPaths.toSet())
+        }
+
+    @Test
+    fun `767 - a subfolder create answered 409 for a folder that is there is walked without an error`() =
+        runTest {
+            target.existingFolders.addAll(listOf("/dst", "/dst/sub"))
+            target.createFolderFailPaths.add("/dst/sub")
+            source.children["/src"] = listOf(cloudItem("/src/sub", isFolder = true))
+            source.children["/src/sub"] = listOf(cloudItem("/src/sub/a.txt", size = 10))
+            source.fileContents["/src/sub/a.txt"] = ByteArray(10)
+
+            val events = CloudRelocator(source, target).migrate("/src", "/dst").toList()
+
+            assertEquals(emptyList(), events.filterIsInstance<MigrateEvent.Error>())
+            assertEquals(listOf("/dst/sub/a.txt"), target.uploadedPaths)
+            assertEquals(0, events.filterIsInstance<MigrateEvent.Completed>().single().errorCount)
+        }
+
     // -- gkrost/unidrive-cli#63: the scratch file is per transfer, not per leaf name ---------------------------
 
     @Test
