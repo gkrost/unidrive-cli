@@ -3271,8 +3271,7 @@ class HydrationImpl(
         var vetted: Set<String> = emptySet()
         var vettedClean: Set<String> = emptySet()
         if (!recursive) {
-            // gkrost/unidrive-cli#824: the rows below may be a stale view of a folder the cloud already emptied or deleted.
-            if (stateDb.hasEntriesBelow(below)) strictRmdirOverRowsBelow(normalised, entry)?.let { return it }
+            if (stateDb.hasEntriesBelow(below)) staleRows.strict(normalised, entry)?.let { return it }
         } else {
             val rows = stateDb.getEntriesByPrefix(below)
             val unsynced = rows.filter { holdsUnsyncedBytes(it) }
@@ -3328,14 +3327,7 @@ class HydrationImpl(
     private suspend fun rmdirRowless(folder: String, recursive: Boolean, permanent: Boolean, discardLocal: Boolean): RmdirResult {
         val rows = stateDb.getEntriesByPrefix(if (folder == "/") "/" else "$folder/")
         if (rows.isEmpty()) return RmdirResult.Failed(HydrationError.UnknownPath)
-        if (!recursive) {
-            // gkrost/unidrive-cli#824: with no folder row there is nothing to delete in the cloud; only a folder gone there settles.
-            if (settleStaleRowsBelow(folder, entry = null, requireFolderGone = true) != StaleRows.FOLDER_GONE) {
-                return refusedNotEmpty(log, folder, recursive, "alive_descendants")
-            }
-            evictCacheTree(folder)
-            return RmdirResult.Ok
-        }
+        if (!recursive) return staleRows.rowless(folder)
         if (!discardLocal) rows.firstOrNull { holdsUnsyncedBytes(it) }?.let { return refusedNotEmpty(log, folder, recursive, "unsynced_bytes", it.path) }
         for (row in rows.filter { !it.isFolder }) {
             when (val unlinked = unlinkRow(row.path, permanent)) {
@@ -3350,61 +3342,6 @@ class HydrationImpl(
         }
         evictCacheTree(folder)
         return RmdirResult.Ok
-    }
-
-    private enum class StaleRows { LIVE, REAPED, FOLDER_GONE }
-
-    // gkrost/unidrive-cli#824: the answer of a strict rmdir of [folder] whose rows below were not all stale, or null when they
-    // were and the delete goes on.
-    private suspend fun strictRmdirOverRowsBelow(folder: String, entry: org.krost.unidrive.sync.model.SyncEntry): RmdirResult? =
-        when (settleStaleRowsBelow(folder, entry, requireFolderGone = false)) {
-            StaleRows.LIVE -> refusedNotEmpty(log, folder, recursive = false, "alive_descendants")
-            StaleRows.FOLDER_GONE -> {
-                stateDb.markDeleted(folder)
-                evictCacheTree(folder)
-                RmdirResult.Ok
-            }
-            StaleRows.REAPED -> null
-        }
-
-    /**
-     * gkrost/unidrive-cli#824: the strict rmdir found alive rows below [folder]. They may only be the view's lag behind the cloud
-     * (another client emptied or deleted the folder since the last poll), so one walk of the live subtree decides before the
-     * refusal. When the folder is gone in the cloud ([StaleRows.FOLDER_GONE]), or no row below holds a cloud id still listed
-     * there ([StaleRows.REAPED]; not with [requireFolderGone]), the rows go as an enumeration's reap drops them (tombstoned,
-     * cache copies evicted). A row without a cloud id, one holding bytes the cloud has not seen, one with an upload slot or an
-     * open handle is never reaped: the answer stays [StaleRows.LIVE], as is any walk that fails or a row changed meanwhile.
-     */
-    private suspend fun settleStaleRowsBelow(
-        folder: String,
-        entry: org.krost.unidrive.sync.model.SyncEntry?,
-        requireFolderGone: Boolean,
-    ): StaleRows {
-        val rows = stateDb.getEntriesByPrefix(if (folder == "/") "/" else "$folder/")
-        val reapable =
-            rows.all { row ->
-                row.remoteId?.startsWith("local:") == false && !holdsUnsyncedBytes(row) && !hasUploadSlot(row.path) &&
-                    openSets.values.none { it.containsValue(row.path) }
-            }
-        if (!reapable) return StaleRows.LIVE
-        val live =
-            try {
-                mount.liveRemoteIdsBelow(folder, entry)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                log.debug("#824: rmdir of {}: the live listing failed, the rows below stand: {}", folder, e.message)
-                return StaleRows.LIVE
-            }
-        if (live != null && (requireFolderGone || rows.any { it.remoteId in live })) return StaleRows.LIVE
-        val reaped = stateDb.markDeletedChunked(rows.map { it.path }, expectedRows = rows.associateBy { it.path }).toHashSet()
-        rows.filter { !it.isFolder && it.path in reaped }.forEach { evictCacheFile(it.path) }
-        log.info("#824: rmdir of {}: {} of {} row(s) below were gone in the cloud; reaped", folder, reaped.size, rows.size)
-        return when {
-            reaped.size != rows.size -> StaleRows.LIVE
-            live == null -> StaleRows.FOLDER_GONE
-            else -> StaleRows.REAPED
-        }
     }
 
     // The enumeration's reap and refresh.run's reset ask this same question before they drop a row or its cache copy;
@@ -3469,6 +3406,10 @@ class HydrationImpl(
     // already succeeded). Deletes children before parents so the directory
     // empties before it is removed.
     private val rmdirWindow = RmdirWindow() // gkrost/unidrive-cli#746 finding 3, live drive E3
+    // gkrost/unidrive-cli#824: a strict rmdir settles rows below that only lag a folder the cloud already emptied or deleted.
+    private val staleRows = RmdirStaleRowSettle(stateDb, mount, log, ::evictCacheFile, { evictCacheTree(it) }) { row ->
+        holdsUnsyncedBytes(row) || hasUploadSlot(row.path) || openSets.values.any { it.containsValue(row.path) }
+    }
     private val conflictCopies = ConflictCopies(stateDb, mount, log) // test drive 2: a lost edit is kept as a conflict copy
 
     private suspend fun remakeFolderOfKeptRow(gone: String): Boolean =

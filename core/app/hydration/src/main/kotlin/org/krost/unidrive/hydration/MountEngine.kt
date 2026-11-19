@@ -2127,33 +2127,8 @@ class MountEngine private constructor(
         }
     }
 
-    /**
-     * gkrost/unidrive-cli#824: the cloud ids of every live item below the folder at [path] ([folder]: its row, or null for a
-     * folder whose row is gone), from one walk of its live subtree; null when the folder itself is gone in the cloud. A
-     * listing that repeats a folder throws, as the snapshot guard's does: the walk cannot be compared with the rows.
-     */
-    suspend fun liveRemoteIdsBelow(
-        path: String,
-        folder: SyncEntry?,
-    ): Set<String>? {
-        val root = remotePathOf(path, folder)
-        val pending = ArrayDeque<String>().apply { add(root) }
-        val visited = mutableSetOf<String>()
-        val live = HashSet<String>()
-        while (pending.isNotEmpty()) {
-            val next = pending.removeFirst()
-            if (!visited.add(next)) throw UnobservedChildException(UnobservedChildException.REPEATED_LISTING, next)
-            val children = snapshotListing(next, root) ?: return null
-            for (child in children.filter { !it.deleted && !it.trashed }) {
-                live += child.id
-                if (child.isFolder) pending.add(child.path)
-            }
-        }
-        return live
-    }
-
     // The listing of [path], or null when [root] itself is already gone in the cloud: nothing is left to compare.
-    private suspend fun snapshotListing(
+    internal suspend fun snapshotListing(
         path: String,
         root: String,
     ): List<CloudItem>? =
