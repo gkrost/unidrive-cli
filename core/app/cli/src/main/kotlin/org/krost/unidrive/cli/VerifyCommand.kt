@@ -235,17 +235,16 @@ class VerifyCommand : Callable<Int> {
         }
         val remoteFiles = listRemoteOrReport(parent.createProvider(), excludes, scope) ?: return EXIT_UNAUDITABLE
         val cacheDir = SyncEngine.hydrationCacheRoot(cacheRoot(), profileName)
+        // One pass over the cache folder for every row: the folders the rows share are probed once, not once per
+        // row (#585 measured the real-path walk of a per-row resolve at ~8 ms a file; CachePaths.Pass exists for
+        // passes over rows). A row the pass cannot answer throws — a copy that is not there — and reads as null.
+        val cachePass = CachePaths.Pass(cacheDir)
         val report =
             VerifyAudit.auditMount(
                 dbEntries = dbEntries,
                 remoteFiles = remoteFiles,
                 isVirtual = isVirtual,
-                cacheCopySize = { row ->
-                    runCatching { CachePaths.resolveInside(cacheDir, row.path) }
-                        .getOrNull()
-                        ?.takeIf { Files.isRegularFile(it) }
-                        ?.let { runCatching { Files.size(it) }.getOrNull() }
-                },
+                cacheCopySize = { row -> runCatching { cachePass.sizeOf(row.path) }.getOrNull() },
             )
         println(VerifyAudit.formatMountReport(profileName, report))
         return if (report.converged) EXIT_CONVERGED else EXIT_DIVERGED
