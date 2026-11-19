@@ -53,7 +53,9 @@ import javax.crypto.AEADBadTagException
  * that answers what the caller believes encrypted, but is not, is the one outcome this layer must never produce.
  * A file whose header names another algorithm than [strategy]'s is refused the same way, before any key demand, with
  * [XtraAlgorithmMismatchException] — a retryable failure, not a quarantining content refusal, so the file comes back
- * on its own once the profile names its algorithm again (see that class for the engines' side).
+ * on its own once the profile names its algorithm again (see that class for the engines' side). The first refusal of
+ * an object downloads it (the header decides); [XtraAlgorithmMismatchMemory] then answers every later download of the
+ * same object version with the same exception and transfers nothing.
  *
  * Both directions stage through a temp file, so a transfer peaks at twice the file's size; streaming without the
  * temp file needs the encrypted size upfront and stays out (see the design note in the module docs).
@@ -62,6 +64,8 @@ class XtraEncryptedProvider(
     private val inner: CloudProvider,
     private val strategy: XtraEncryptionStrategy,
 ) : CloudProvider by inner {
+    // One daemon run's refusals of other-algorithm files: the first refusal downloads, the rest fail fast.
+    private val mismatchMemory = XtraAlgorithmMismatchMemory(strategy.algorithmId)
     // The provider's content hash is the ciphertext's (the strategy seals with a per-file key and an AEAD tag of
     // its own), so the engines' hash answers below say "cannot tell" for the plaintext side of this boundary.
     override fun hashAlgorithm() = null
@@ -98,6 +102,8 @@ class XtraEncryptedProvider(
         val iv = ByteArray(strategy.ivLength).also { SecureRandom().nextBytes(it) }
         val wrappedKey = strategy.wrapFileKey(fileKey)
         val header = XtraHeader.serialize(strategy.algorithmId, wrappedKey, iv)
+        // What this upload replaces may carry a remembered mismatch refusal of this run: the new bytes answer it.
+        mismatchMemory.forget(existingRemoteId, remotePath)
 
         val tmp = Files.createTempFile("xtra-", ".tmp")
         try {
@@ -116,12 +122,12 @@ class XtraEncryptedProvider(
     override suspend fun download(
         remotePath: String,
         destination: Path,
-    ): Long {
+    ): Long = mismatchMemory.rememberingRefusal(remoteId = null, remotePath = remotePath, targetMtimeMillis = null) {
         val tmp = Files.createTempFile("xtra-", ".tmp")
         try {
             inner.download(remotePath, tmp)
             decrypt(strategy, tmp, destination)
-            return Files.size(destination)
+            Files.size(destination)
         } finally {
             Files.deleteIfExists(tmp)
         }
@@ -131,12 +137,12 @@ class XtraEncryptedProvider(
         remoteId: String,
         remotePath: String,
         destination: Path,
-    ): Long {
+    ): Long = mismatchMemory.rememberingRefusal(remoteId, remotePath, null) {
         val tmp = Files.createTempFile("xtra-", ".tmp")
         try {
             inner.downloadById(remoteId, remotePath, tmp)
             decrypt(strategy, tmp, destination)
-            return Files.size(destination)
+            Files.size(destination)
         } finally {
             Files.deleteIfExists(tmp)
         }
@@ -152,11 +158,11 @@ class XtraEncryptedProvider(
         remotePath: String,
         destination: Path,
         targetMtimeMillis: Long?,
-    ): DownloadReceipt {
+    ): DownloadReceipt = mismatchMemory.rememberingRefusal(null, remotePath, targetMtimeMillis) {
         val tmp = Files.createTempFile("xtra-", ".tmp")
         try {
             val receipt = inner.downloadWithHash(remotePath, tmp, targetMtimeMillis)
-            return decryptToDestination(strategy, tmp, destination, receipt, targetMtimeMillis)
+            decryptToDestination(strategy, tmp, destination, receipt, targetMtimeMillis)
         } finally {
             Files.deleteIfExists(tmp)
         }
@@ -167,11 +173,11 @@ class XtraEncryptedProvider(
         remotePath: String,
         destination: Path,
         targetMtimeMillis: Long?,
-    ): DownloadReceipt {
+    ): DownloadReceipt = mismatchMemory.rememberingRefusal(remoteId, remotePath, targetMtimeMillis) {
         val tmp = Files.createTempFile("xtra-", ".tmp")
         try {
             val receipt = inner.downloadByIdWithHash(remoteId, remotePath, tmp, targetMtimeMillis)
-            return decryptToDestination(strategy, tmp, destination, receipt, targetMtimeMillis)
+            decryptToDestination(strategy, tmp, destination, receipt, targetMtimeMillis)
         } finally {
             Files.deleteIfExists(tmp)
         }
@@ -274,12 +280,7 @@ private fun refuseOtherAlgorithm(
     name: String,
 ) {
     if (header.algorithmId == strategy.algorithmId) return
-    throw XtraAlgorithmMismatchException(
-        header.algorithmId,
-        strategy.algorithmId,
-        "X-tra file written with algorithm ${header.algorithmId}, the profile's xtra_algorithm decrypts " +
-            "algorithm ${strategy.algorithmId}: $name is left alone until the profile names its algorithm again",
-    )
+    throw mismatchRefusal(header.algorithmId, strategy.algorithmId, name)
 }
 
 // The decryption never writes the destination itself: a segment is written once its tag passes, so a stream that fails

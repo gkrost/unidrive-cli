@@ -28,8 +28,9 @@ import kotlin.test.assertNotNull
  * own once the profile's `xtra_algorithm` names that algorithm again — no manual unquarantine. The provider raises
  * [XtraAlgorithmMismatchException], a retryable failure; these tests pin the engines' side: the mirror does not
  * quarantine the row (its `download_quarantined` flag survives an unchanged re-delivery, so a quarantine would be for
- * good), the mount remembers nothing, and after the restart a switch takes (a new engine over the same state database
- * and the same stored object, now wired with the file's algorithm) the file arrives.
+ * good), the mount remembers nothing of its own (a repeat read in the same run still asks and still fails, now without
+ * the transfer — the provider's per-run record answers), and after the restart a switch takes (a new engine over the
+ * same state database and the same stored object, now wired with the file's algorithm) the file arrives.
  *
  * If [XtraAlgorithmMismatchException] became a [org.krost.unidrive.PermanentDownloadFailureException] (or a content
  * refusal), the mirror test's second pass would find the row quarantined and skip it, and the file would never arrive.
@@ -143,10 +144,16 @@ class XtraAlgorithmSwitchEngineTest {
             assertEquals("false", refused.getValue("ok").jsonPrimitive.content, refused.toString())
             val error = refused.getValue("error").jsonPrimitive.content
             assertFalse(error.startsWith("content_refused"), "a configuration block is not a refused content: $error")
-            // The same daemon asks again rather than answering from a refusal memory.
+            // The same daemon asks again and fails the same way, but the provider answers from its per-run record of
+            // the refusal: the repeat read transfers nothing.
             val downloadsBefore = inner.downloadByPathCalls.size + inner.downloadByIdCalls.size
-            openRead(switched, "/a.txt")
-            assertEquals(downloadsBefore + 1, inner.downloadByPathCalls.size + inner.downloadByIdCalls.size)
+            val askedAgain = openRead(switched, "/a.txt")
+            assertEquals("false", askedAgain.getValue("ok").jsonPrimitive.content, askedAgain.toString())
+            assertFalse(
+                askedAgain.getValue("error").jsonPrimitive.content.startsWith("content_refused"),
+                "the remembered refusal is still a configuration block, not refused content",
+            )
+            assertEquals(downloadsBefore, inner.downloadByPathCalls.size + inner.downloadByIdCalls.size)
 
             val restored = mount(ageV1)
             MountEngine.over(restored).enumerateRemoteIntoState(false)
