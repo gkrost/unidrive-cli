@@ -594,9 +594,9 @@ class DaemonRuntime(
                     server.registerConnectionCloseListener { connId ->
                         hydration?.onConnectionClosed(connId)
                     }
-                    // A mount client's connections are never closed for being idle: its open handles and
-                    // its event subscription live on them, and refresh.run routing counts them.
+                    // A mount client's connections are never closed for being idle (its handles, subscription and refresh routing live on them).
                     server.registerIdleExemptVerbs(HydrationIpcHandler.VERBS)
+                    server.registerCancelOnPeerGoneVerbs(HydrationIpcHandler.CANCEL_ON_PEER_GONE_VERBS) // gkrost/unidrive-cli#760
                     hydrationIpc?.start(serveScope, server::writeToConnection)
                     server.registerConnectionCloseListener { connId ->
                         hydrationIpc?.onSubscriberDisconnect(connId)

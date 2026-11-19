@@ -586,6 +586,9 @@ class HydrationIpcHandler(
         /** Where the items with the given remote ids are now (gkrost/unidrive-cli#632); also the daemon.status capability. */
         const val LOCATE = "hydration.locate"
 
+        /** gkrost/unidrive-cli#760: the read-only provider verbs the IPC server cancels when their client goes away mid-request. */
+        val CANCEL_ON_PEER_GONE_VERBS: List<String> = listOf(LOCATE)
+
         // The most ids one locate request names; a client's reconciler checks tens to hundreds at a time.
         const val LOCATE_MAX_IDS = 5000
 
