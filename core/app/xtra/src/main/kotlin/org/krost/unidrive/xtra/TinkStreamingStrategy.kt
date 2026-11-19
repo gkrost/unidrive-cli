@@ -11,8 +11,8 @@ import com.google.crypto.tink.StreamingAead
 import com.google.crypto.tink.streamingaead.StreamingAeadConfig
 
 /**
- * The Tink content algorithm of the X-tra layer (prototype, no wiring yet — `xtra_algorithm` grows only with the
- * adoption decision): Tink's AES-GCM-HKDF streaming ([XtraTinkKeyStore.PARAMETERS] — 256-bit content keys, SHA-256
+ * The Tink content algorithm of the X-tra layer (algorithm 3, config key `xtra_algorithm = "tink-aes-gcm"`):
+ * Tink's AES-GCM-HKDF streaming ([XtraTinkKeyStore.PARAMETERS] — 256-bit content keys, SHA-256
  * HKDF, 64 KiB ciphertext segments) under the associated data [AAD_PREFIX] ‖ the serialized XTRA header (magic through
  * IV, the wrapped-key slot with its "TKID" key id included), so a header byte changed after the write fails the seal
  * like a changed body byte. A stored file's body is a Tink
@@ -45,7 +45,7 @@ class TinkStreamingStrategy(
 
     private val streamingAead: StreamingAead by lazy { handle.value.getPrimitive(StreamingAead::class.java) }
 
-    override val algorithmId: Byte = PROTOTYPE_ALGORITHM_ID
+    override val algorithmId: Byte = 3
 
     // Tink draws its own salt and nonce prefixes per file; nothing external is mixed in.
     override val ivLength: Int = 0
@@ -251,8 +251,6 @@ class TinkStreamingStrategy(
 
         private val FINGERPRINT_MAGIC = "TKID".toByteArray()
 
-        // The prototype's id; a permanent id is part of the adoption decision, not of this spike.
-        const val PROTOTYPE_ALGORITHM_ID: Byte = 3
         private const val VESTIGIAL_KEY_LENGTH = 256
         private const val HEADER_FIXED_BYTES = 10L
         private const val TAG_BYTES = 16L
