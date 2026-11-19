@@ -17,6 +17,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import org.krost.unidrive.testing.TestScratch
 
@@ -496,6 +497,160 @@ class XtraEncryptedProviderTest {
         )
         val listed = kotlinx.coroutines.runBlocking { xtra.getMetadata("/sized.txt") }
         assertEquals(original.length.toLong(), listed.size)
+    }
+
+    // ── A file of the other algorithm (#710 review): refused off the header, before any key demand ──
+
+    private fun ageStrategy(dir: Path): AgeV1Strategy {
+        val store = XtraAgeKeyStore(dir.resolve("xtra-age.key"))
+        store.generate("testpass1234".toCharArray())
+        return AgeV1Strategy(lazy { store }, { "testpass1234".toCharArray() })
+    }
+
+    // The strategies a profile switched away from its files' algorithm wires: any key demand fails the test.
+    private fun aesGcmDemandingNoKey() = AesGcmStrategy(lazy { error("the RSA key manager was demanded for a file of another algorithm") })
+
+    private fun ageV1DemandingNoKey() =
+        AgeV1Strategy(lazy { error("the age identity was demanded for a file of another algorithm") }, { error("a passphrase was demanded") })
+
+    private fun seedThrough(
+        strategy: XtraEncryptionStrategy,
+        storage: MutableMap<String, ByteArray>,
+        dir: Path,
+        content: String,
+    ): ByteArray {
+        val localFile = dir.resolve("seed-${strategy.algorithmId}.txt")
+        Files.writeString(localFile, content)
+        kotlinx.coroutines.runBlocking { provider(InMemoryProvider(storage), strategy).upload(localFile, "/f.txt") }
+        return storage.getValue("/f.txt")
+    }
+
+    private fun assertRefusedAsOtherAlgorithm(
+        xtra: CloudProvider,
+        dir: Path,
+        stored: Byte,
+        configured: Byte,
+    ) {
+        val destDir = Files.createDirectories(dir.resolve("dest"))
+        val dest = destDir.resolve("f.txt")
+        Files.writeString(dest, "the previous content")
+        val downloads =
+            listOf<suspend () -> Unit>(
+                { xtra.download("/f.txt", dest) },
+                { xtra.downloadById("id", "/f.txt", dest) },
+                { xtra.downloadWithHash("/f.txt", dest) },
+                { xtra.downloadByIdWithHash("id", "/f.txt", dest) },
+            )
+        for (download in downloads) {
+            val failure = assertFailsWith<XtraAlgorithmMismatchException> { kotlinx.coroutines.runBlocking { download() } }
+            assertEquals(stored, failure.storedAlgorithmId)
+            assertEquals(configured, failure.configuredAlgorithmId)
+            // Not a permanent failure: the mirror quarantines those until the item changes, and this one must come back.
+            assertTrue(!org.krost.unidrive.PermanentDownloadFailureException::class.java.isInstance(failure))
+            assertEquals("the previous content", Files.readString(dest))
+            assertEquals(listOf("f.txt"), Files.list(destDir).use { l -> l.map { it.fileName.toString() }.toList() })
+        }
+    }
+
+    @Test
+    fun `an age-v1 file under aes-gcm is refused and no RSA key or passphrase is demanded`() {
+        val tmpDir = TestScratch.directory("xtra-mismatch-test")
+        val storage = mutableMapOf<String, ByteArray>()
+        seedThrough(ageStrategy(tmpDir), storage, tmpDir, "aged")
+
+        assertRefusedAsOtherAlgorithm(provider(InMemoryProvider(storage), aesGcmDemandingNoKey()), tmpDir, stored = 2, configured = 1)
+    }
+
+    @Test
+    fun `an aes-gcm file under age-v1 is refused and no age identity is demanded`() {
+        val tmpDir = TestScratch.directory("xtra-mismatch-test")
+        val storage = mutableMapOf<String, ByteArray>()
+        seedThrough(AesGcmStrategy(keys(tmpDir)), storage, tmpDir, "sealed")
+
+        assertRefusedAsOtherAlgorithm(provider(InMemoryProvider(storage), ageV1DemandingNoKey()), tmpDir, stored = 1, configured = 2)
+    }
+
+    @Test
+    fun `the same stored file downloads again once the profile names its algorithm again`() {
+        val tmpDir = TestScratch.directory("xtra-mismatch-test")
+        val storage = mutableMapOf<String, ByteArray>()
+        val age = ageStrategy(tmpDir)
+        val aes = AesGcmStrategy(keys(tmpDir))
+        val ageFile = seedThrough(age, storage, tmpDir, "written under age-v1")
+        val aesFile = seedThrough(aes, storage, tmpDir, "written under aes-gcm")
+        val dest = tmpDir.resolve("dl.txt")
+
+        // Switched to aes-gcm, the age file is refused; switched back, the same bytes download.
+        storage["/f.txt"] = ageFile
+        assertFailsWith<XtraAlgorithmMismatchException> {
+            kotlinx.coroutines.runBlocking { provider(InMemoryProvider(storage), aes).download("/f.txt", dest) }
+        }
+        kotlinx.coroutines.runBlocking { provider(InMemoryProvider(storage), age).download("/f.txt", dest) }
+        assertEquals("written under age-v1", Files.readString(dest))
+
+        // And the other way round.
+        storage["/f.txt"] = aesFile
+        assertFailsWith<XtraAlgorithmMismatchException> {
+            kotlinx.coroutines.runBlocking { provider(InMemoryProvider(storage), age).download("/f.txt", dest) }
+        }
+        kotlinx.coroutines.runBlocking { provider(InMemoryProvider(storage), aes).download("/f.txt", dest) }
+        assertEquals("written under aes-gcm", Files.readString(dest))
+    }
+
+    // ── The header bound to the aes-gcm seal (#710 review): a changed header byte never yields plaintext ──
+
+    // The stored aes-gcm layout: magic(4) ‖ version(1) ‖ algorithmId(1) ‖ wrappedKeyLen(2) ‖ wrappedKey(256) ‖
+    // ivLen(2) ‖ iv(12) ‖ segments.
+    private val ivStart = 4 + 1 + 1 + 2 + 256 + 2
+    private val headerEnd = ivStart + 12
+
+    private fun flippedDownload(
+        index: Int,
+        stored: ByteArray,
+        xtra: CloudProvider,
+        storage: MutableMap<String, ByteArray>,
+        dest: Path,
+    ): Throwable {
+        storage["/f.txt"] = stored.copyOf().also { it[index] = (it[index].toInt() xor 0x01).toByte() }
+        Files.writeString(dest, "the previous content")
+        val failure = runCatching { kotlinx.coroutines.runBlocking { xtra.download("/f.txt", dest) } }.exceptionOrNull()
+        assertEquals("the previous content", Files.readString(dest), "header byte $index: no plaintext may land")
+        return checkNotNull(failure) { "header byte $index changed, yet the download succeeded" }
+    }
+
+    private fun storedAesGcmFile(
+        tmpDir: Path,
+        storage: MutableMap<String, ByteArray>,
+    ): Pair<CloudProvider, ByteArray> {
+        val xtra = provider(InMemoryProvider(storage), keys(tmpDir))
+        val localFile = tmpDir.resolve("src.txt")
+        Files.writeString(localFile, "header-bound content")
+        kotlinx.coroutines.runBlocking { xtra.upload(localFile, "/f.txt") }
+        return xtra to storage.getValue("/f.txt")
+    }
+
+    @Test
+    fun `a changed byte anywhere in an aes-gcm header fails the download and keeps the previous file`() {
+        val tmpDir = TestScratch.directory("xtra-header-binding-test")
+        val storage = mutableMapOf<String, ByteArray>()
+        val (xtra, stored) = storedAesGcmFile(tmpDir, storage)
+
+        for (index in 0 until headerEnd) flippedDownload(index, stored, xtra, storage, tmpDir.resolve("dl.txt"))
+    }
+
+    @Test
+    fun `a changed IV byte of an aes-gcm file is a content refusal, the bytes the nonce overwrites included`() {
+        val tmpDir = TestScratch.directory("xtra-header-binding-test")
+        val storage = mutableMapOf<String, ByteArray>()
+        val (xtra, stored) = storedAesGcmFile(tmpDir, storage)
+
+        // Bytes 4..11 of the IV are replaced by the segment counter and the last-segment flag in every nonce, so
+        // only the header binding notices a change there.
+        for (index in ivStart until headerEnd) {
+            val failure = flippedDownload(index, stored, xtra, storage, tmpDir.resolve("dl.txt"))
+            val refused = assertIs<org.krost.unidrive.RemoteContentRefusedDownloadException>(failure, "IV byte ${index - ivStart}")
+            assertEquals("authentication failed", refused.reason)
+        }
     }
 }
 

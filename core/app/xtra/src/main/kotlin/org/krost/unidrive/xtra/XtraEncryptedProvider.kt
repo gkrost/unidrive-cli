@@ -51,6 +51,9 @@ import javax.crypto.AEADBadTagException
  * carries no key through the header (age-v1) never touches the RSA pair. A file without the XTRA header fails
  * its download instead of passing plaintext through silently, and refuses before any key demand: a download
  * that answers what the caller believes encrypted, but is not, is the one outcome this layer must never produce.
+ * A file whose header names another algorithm than [strategy]'s is refused the same way, before any key demand, with
+ * [XtraAlgorithmMismatchException] — a retryable failure, not a quarantining content refusal, so the file comes back
+ * on its own once the profile names its algorithm again (see that class for the engines' side).
  *
  * Both directions stage through a temp file, so a transfer peaks at twice the file's size; streaming without the
  * temp file needs the encrypted size upfront and stays out (see the design note in the module docs).
@@ -94,13 +97,14 @@ class XtraEncryptedProvider(
         val fileKey = ByteArray(32).also { SecureRandom().nextBytes(it) }
         val iv = ByteArray(strategy.ivLength).also { SecureRandom().nextBytes(it) }
         val wrappedKey = strategy.wrapFileKey(fileKey)
+        val header = XtraHeader.serialize(strategy.algorithmId, wrappedKey, iv)
 
         val tmp = Files.createTempFile("xtra-", ".tmp")
         try {
             FileOutputStream(tmp.toFile()).use { out ->
-                XtraHeader.write(out, strategy.algorithmId, wrappedKey, iv)
+                out.write(header)
                 FileInputStream(localPath.toFile()).use { input ->
-                    strategy.encrypt(input, out, fileKey, iv)
+                    strategy.encrypt(input, out, fileKey, iv, header)
                 }
             }
             return inner.upload(tmp, remotePath, existingRemoteId, ifMatchETag, onProgress).plaintextSized(strategy)
@@ -212,10 +216,30 @@ private suspend fun decrypt(
                 throw ProviderException("File is not XTRA-encrypted: $encryptedFile")
             is XtraHeader.ReadResult.Corrupted ->
                 throw ProviderException("XTRA header corrupted: ${result.reason}")
-            is XtraHeader.ReadResult.Valid ->
-                decryptStaged(strategy, input, strategy.unwrapFileKey(result.wrappedKey), result.iv, destination, encryptedFile)
+            is XtraHeader.ReadResult.Valid -> {
+                // Before the configured strategy demands a key (its unwrap is what asks for the passphrase) or reads
+                // a body it did not write.
+                refuseOtherAlgorithm(strategy, result, encryptedFile)
+                decryptStaged(strategy, input, strategy.unwrapFileKey(result.wrappedKey), result, destination, encryptedFile)
+            }
         }
     }
+}
+
+// The header names the algorithm that must decrypt the file; any other is refused. Not a content refusal: see
+// XtraAlgorithmMismatchException for why the engines must retry it rather than quarantine it.
+private fun refuseOtherAlgorithm(
+    strategy: XtraEncryptionStrategy,
+    header: XtraHeader.ReadResult.Valid,
+    encryptedFile: Path,
+) {
+    if (header.algorithmId == strategy.algorithmId) return
+    throw XtraAlgorithmMismatchException(
+        header.algorithmId,
+        strategy.algorithmId,
+        "X-tra file written with algorithm ${header.algorithmId}, the profile's xtra_algorithm decrypts " +
+            "algorithm ${strategy.algorithmId}: $encryptedFile is left alone until the profile names its algorithm again",
+    )
 }
 
 // The decryption never writes the destination itself: a segment is written once its tag passes, so a stream that fails
@@ -233,7 +257,7 @@ private suspend fun decryptStaged(
     strategy: XtraEncryptionStrategy,
     input: InputStream,
     fileKey: ByteArray,
-    iv: ByteArray,
+    header: XtraHeader.ReadResult.Valid,
     destination: Path,
     encryptedFile: Path,
 ) {
@@ -243,13 +267,14 @@ private suspend fun decryptStaged(
     try {
         createOwnerOnlyStagingFile(staging)
         FileOutputStream(staging.toFile()).use { out ->
-            strategy.decrypt(input, out, fileKey, iv)
+            strategy.decrypt(input, out, fileKey, header.iv, header.bytes)
             out.fd.sync()
         }
         takePreviousPermissions(absolute, staging)
         withLocalIoRetry { Files.move(staging, absolute, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING) }
     } catch (e: AEADBadTagException) {
-        // The seal does not authenticate: truncated, spliced or tampered ciphertext. Another attempt reads the same
+        // The seal does not authenticate: truncated, spliced or tampered ciphertext, or a header changed after the
+        // write (the strategies that can bind it as associated data do). Another attempt reads the same
         // bytes, so it is a permanent refusal (quarantined by the engines, `content_refused` in hydration), neither a
         // retryable failure nor a local edit.
         dropStaging(staging, e)

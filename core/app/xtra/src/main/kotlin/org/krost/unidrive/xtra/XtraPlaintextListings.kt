@@ -16,6 +16,11 @@ import org.krost.unidrive.TrashItem
  * are the plaintext. [XtraEncryptionStrategy.plaintextSizeOf] inverts the strategy's fixed overhead; an item whose
  * size no well-formed file could have goes through unchanged, and its download fails closed on the header anyway.
  *
+ * A listing carries no header, so a file written under another algorithm than [strategy]'s is sized with
+ * [strategy]'s overhead: a wrong plaintext size, or the ciphertext's. Its download is refused anyway
+ * ([XtraAlgorithmMismatchException]); once the profile names its algorithm again the next listing sizes it right, and
+ * the mount's #80 confirmation takes a download shorter than a stale row's size off this decorator's [getMetadata].
+ *
  * The content half (the cipher, the receipts, the hash answers) lives in [XtraEncryptedProvider]; the CLI wires
  * the listings decorator below the cipher, so both halves see the same provider.
  */
