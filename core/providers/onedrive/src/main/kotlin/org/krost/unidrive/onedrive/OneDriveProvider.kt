@@ -50,8 +50,8 @@ class OneDriveProvider(
     // The folders delta pages and id lookups showed, by id, kept across the pages of a walk and across walks: a drive
     // that sends no parentReference.path (Business, SharePoint) placed every page's items through one GET per parent
     // folder not in that page, again on every page (#453). A folder is kept as its item (name and parent id), never as a
-    // path: a later page that renames or moves it replaces the item, and its descendants' paths follow at once. A
-    // folder tombstone removes it.
+    // path: a later page that renames or moves it replaces the item, and its descendants' paths follow at once, also those of a folder
+    // kept with a parentReference.path (its parent's kept item wins over that path, #835). A folder tombstone removes it.
     private val knownFolders = java.util.concurrent.ConcurrentHashMap<String, DriveItem>()
 
     private val graphApi =
@@ -1098,8 +1098,8 @@ class OneDriveProvider(
         val reference = folder.parentReference
         val parentPath =
             when {
+                reference?.id != null && (reference.id in folders || reference.decodedPath == null) -> folderPath(reference.id, folders, resolved, depth + 1) ?: return null
                 reference?.decodedPath != null -> reference.decodedPath!!.removePrefix("/drive/root:").ifEmpty { "/" }
-                reference?.id != null -> folderPath(reference.id, folders, resolved, depth + 1) ?: return null
                 else -> return "/" // no parent at all: the root, as isRootItem reads it
             }
         val leaf = folder.name ?: throw ProviderException("The OneDrive folder '${folder.id}' has no name")
