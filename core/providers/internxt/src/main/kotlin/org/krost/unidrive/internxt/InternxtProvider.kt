@@ -194,6 +194,8 @@ class InternxtProvider(
     private val outsideDriveFolders: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val insideDriveFolders: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
+    private val listedParents = InternxtListedParents() // every listing's parent+kind answers, for the delete fast path
+
     // The account's backup devices that the last full gather confirmed as tops of a tree of their own (see [BackupTrees]).
     // A write addressed to one of them, or to an item directly below one, is refused from this set alone; a poll tells
     // backup items apart by it and asks for no device list. [backupFolders]: the folders a climb found below a device,
@@ -2674,24 +2676,26 @@ class InternxtProvider(
         return outside
     }
 
-    // A write by id to an item of a tree of its own never reaches the server. [item] is the item as its meta answered: a
-    // backup device or an item directly below one is told by the device set alone, a folder with no parent is the top of
-    // a tree of its own, anything else is judged by its parent. A file whose meta names no folder says nothing, and passes.
+    // A write by id to an item of a tree of its own never reaches the server, judged by its id, parent and kind —
+    // its meta answer or what a listing remembered ([deleteByIdWithHint]): backup devices by the device set, a
+    // parentless folder is a tree of its own, the rest by their parent. A file naming no folder passes.
     private suspend fun refuseOutsideDrive(
-        item: CloudItem,
+        id: String,
+        parentId: String?,
+        isFolder: Boolean,
         remotePath: String,
     ) {
         val rootUuid = authService.getValidCredentials().rootFolderId
-        if (item.id == rootUuid) return
+        if (id == rootUuid) return
         val devices = backupDevices
-        if (item.id in devices || (item.parentId != null && item.parentId in devices)) throw ProviderException(backupRefusal(remotePath))
+        if (id in devices || (parentId != null && parentId in devices)) throw ProviderException(backupRefusal(remotePath))
         val outside =
             when {
-                item.isFolder && item.parentId == null -> true.also { outsideDriveFolders.add(item.id) }
-                else -> isOutsideDrive(item.parentId)
+                isFolder && parentId == null -> true.also { outsideDriveFolders.add(id) }
+                else -> isOutsideDrive(parentId)
             }
         if (!outside) return
-        throw ProviderException(if (inBackupFolder(item.parentId)) backupRefusal(remotePath) else outsideDriveRefusal(remotePath))
+        throw ProviderException(if (inBackupFolder(parentId)) backupRefusal(remotePath) else outsideDriveRefusal(remotePath))
     }
 
     // gkrost/unidrive-cli#634: the parent chains of [items] as far as [folderMap] carries them toward [rootUuid]: every
@@ -2727,8 +2731,20 @@ class InternxtProvider(
 
     private suspend fun deleteByIdWithHint(remoteId: String, remotePath: String, isFolder: Boolean) {
         refuseBackupDevice(remoteId, remotePath)
+        // The delete-burst fast path (#634, #831): a listing named the item's parent and kind.
+        val listed = listedParents[remoteId]
+        if (listed != null) {
+            refuseOutsideDrive(remoteId, listed.parentUuid, listed.isFolder, remotePath)
+            try {
+                api.trashItems(listOf(remoteId to if (listed.isFolder) "folder" else "file"))
+                return
+            } catch (e: InternxtApiException) {
+                if (e.statusCode != 400) throw e
+                // A first-attempt 400 the trash cannot explain: the meta path below decides it.
+            }
+        }
         val metadata = metadataById(remoteId, parentPathOf(remotePath), remotePath, isFolder)
-        refuseOutsideDrive(metadata, remotePath)
+        refuseOutsideDrive(metadata.id, metadata.parentId, metadata.isFolder, remotePath)
         val type = if (metadata.isFolder) "folder" else "file"
         api.trashItems(listOf(metadata.id to type))
     }
@@ -2758,7 +2774,7 @@ class InternxtProvider(
         metadata: CloudItem,
         remotePath: String,
     ) {
-        refuseOutsideDrive(metadata, remotePath)
+        refuseOutsideDrive(metadata.id, metadata.parentId, metadata.isFolder, remotePath)
         if (metadata.isFolder) {
             api.deleteFolder(metadata.id)
         } else {
@@ -2953,7 +2969,7 @@ class InternxtProvider(
         refuseIncompatibleName(toPath)
         refuseBackupDevice(remoteId, fromPath)
         val metadata = metadataById(remoteId, parentPathOf(fromPath), fromPath)
-        refuseOutsideDrive(metadata, fromPath)
+        refuseOutsideDrive(metadata.id, metadata.parentId, metadata.isFolder, fromPath)
         return moveResolved(metadata, fromPath, toPath)
     }
 
@@ -5033,9 +5049,11 @@ class InternxtProvider(
     // UD-317: instance wrappers; actual CloudItem construction (with name
     // sanitisation) lives as pure companion functions below so tests can
     // exercise the conversion directly without a real InternxtProvider.
-    private suspend fun InternxtFile.toCloudItem(parentPath: String): CloudItem = fileToCloudItem(this, parentPath, mnemonicOrNull())
+    private suspend fun InternxtFile.toCloudItem(parentPath: String): CloudItem =
+        fileToCloudItem(this, parentPath, mnemonicOrNull()).also { listedParents.remember(uuid, folderUuid, false) }
 
-    private suspend fun InternxtFolder.toCloudItem(parentPath: String): CloudItem = folderToCloudItem(this, parentPath, mnemonicOrNull())
+    private suspend fun InternxtFolder.toCloudItem(parentPath: String): CloudItem =
+        folderToCloudItem(this, parentPath, mnemonicOrNull()).also { listedParents.remember(uuid, parentUuid, true) }
 
     /**
      * archive#314: the mnemonic for the legacy-name decryption fallback (`decryptName` needs
@@ -5060,6 +5078,7 @@ class InternxtProvider(
         ancestors: Map<String, InternxtFolder> = emptyMap(),
         mnemonic: String? = null,
     ): CloudItem? {
+        listedParents.remember(uuid, folderUuid, false)
         val parentPath =
             when (val fUuid = folderUuid) {
                 null -> ""
@@ -5078,6 +5097,7 @@ class InternxtProvider(
         ancestors: Map<String, InternxtFolder> = emptyMap(),
         mnemonic: String? = null,
     ): CloudItem? {
+        listedParents.remember(uuid, parentUuid, true)
         val parentPath =
             when (val pUuid = parentUuid) {
                 null -> ""
