@@ -38,7 +38,7 @@ class RuntimeModulesTest {
         assertEquals(0, proc.waitFor(), "jdeps failed:\n$out")
 
         assertEquals(
-            "java.base,java.instrument,java.management,java.naming,java.sql,jdk.jfr,jdk.unsupported",
+            "java.base,java.compiler,java.instrument,java.management,java.naming,java.sql,jdk.jfr,jdk.unsupported",
             out.lineSequence().last().trim(),
             "the jar's JDK module set changed — update jdepsModuleSet in app/cli/build.gradle.kts " +
                 "(and the extra runtime modules if the new code needs them), then re-verify the image boots the jar",

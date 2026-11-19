@@ -29,7 +29,7 @@ internal fun Main.wrapWithXtra(
     if (rp?.xtra_encryption != true) return provider
     val keyPath = tokenPath.parent.resolve("xtra.key")
     val strategy =
-        when (val algorithm = rp?.xtra_algorithm?.trim()?.takeIf { it.isNotEmpty() } ?: "aes-gcm") {
+        when (val algorithm = rp?.xtra_algorithm?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: "aes-gcm") {
             "aes-gcm" -> {
                 // The key never self-generates on the first content operation (a root secret must not appear
                 // silently); it must exist, or the profile refuses to run.
