@@ -211,35 +211,44 @@ private suspend fun decrypt(
     destination: Path,
 ) {
     FileInputStream(encryptedFile.toFile()).use { input ->
-        when (val result = XtraHeader.read(input)) {
-            is XtraHeader.ReadResult.NotEncrypted ->
-                throw ProviderException("File is not XTRA-encrypted: $encryptedFile")
-            // Damaged header bytes are refused like a failed seal: another attempt reads the same bytes. Two bytes
-            // cannot be: the magic (a file without it is not this layer's) and the algorithm id (a changed one is
-            // indistinguishable from a file of the other algorithm, which must come back after a switch back).
-            is XtraHeader.ReadResult.Corrupted ->
-                throw RemoteContentRefusedDownloadException("XTRA header corrupted: ${result.reason}: $encryptedFile", "header corrupted")
-            is XtraHeader.ReadResult.Valid -> {
-                // Before the configured strategy demands a key (its unwrap is what asks for the passphrase) or reads
-                // a body it did not write.
-                refuseOtherAlgorithm(strategy, result, encryptedFile)
-                refuseMalformed(strategy, result, encryptedFile)
-                decryptStaged(strategy, input, unwrapOrRefuse(strategy, result, encryptedFile), result, destination, encryptedFile)
-            }
-        }
+        val header = validHeaderFor(strategy, XtraHeader.read(input), encryptedFile.toString())
+        decryptStaged(strategy, input, unwrapOrRefuse(strategy, header, encryptedFile), header, destination, encryptedFile)
     }
 }
+
+/**
+ * The header checks every read path shares — the whole-file download here, [AgeV1Strategy.rangedReader] for
+ * ranged reads — so the same stored file is answered the same way whichever path reads it. Run before the
+ * configured strategy demands a key (its unwrap or identity load is what asks for the passphrase) or reads a body
+ * it did not write. Damaged header bytes are refused like a failed seal: another attempt reads the same bytes. Two
+ * bytes cannot be: the magic (a file without it is not this layer's) and the algorithm id (a changed one is
+ * indistinguishable from a file of the other algorithm, which must come back after a switch back).
+ */
+internal fun validHeaderFor(
+    strategy: XtraEncryptionStrategy,
+    result: XtraHeader.ReadResult,
+    name: String,
+): XtraHeader.ReadResult.Valid =
+    when (result) {
+        is XtraHeader.ReadResult.NotEncrypted -> throw ProviderException("File is not XTRA-encrypted: $name")
+        is XtraHeader.ReadResult.Corrupted ->
+            throw RemoteContentRefusedDownloadException("XTRA header corrupted: ${result.reason}: $name", "header corrupted")
+        is XtraHeader.ReadResult.Valid -> result.also {
+            refuseOtherAlgorithm(strategy, it, name)
+            refuseMalformed(strategy, it, name)
+        }
+    }
 
 // Length prefixes the strategy's layout does not have are a damaged header, refused like a failed seal.
 private fun refuseMalformed(
     strategy: XtraEncryptionStrategy,
     header: XtraHeader.ReadResult.Valid,
-    encryptedFile: Path,
+    name: String,
 ) {
     if (header.wrappedKey.size == strategy.wrappedKeyLength && header.iv.size == strategy.ivLength) return
     throw RemoteContentRefusedDownloadException(
         "XTRA header corrupted: wrapped key ${header.wrappedKey.size} / IV ${header.iv.size} bytes, the algorithm " +
-            "writes ${strategy.wrappedKeyLength} / ${strategy.ivLength}: $encryptedFile",
+            "writes ${strategy.wrappedKeyLength} / ${strategy.ivLength}: $name",
         "header corrupted",
     )
 }
@@ -262,14 +271,14 @@ private fun unwrapOrRefuse(
 private fun refuseOtherAlgorithm(
     strategy: XtraEncryptionStrategy,
     header: XtraHeader.ReadResult.Valid,
-    encryptedFile: Path,
+    name: String,
 ) {
     if (header.algorithmId == strategy.algorithmId) return
     throw XtraAlgorithmMismatchException(
         header.algorithmId,
         strategy.algorithmId,
         "X-tra file written with algorithm ${header.algorithmId}, the profile's xtra_algorithm decrypts " +
-            "algorithm ${strategy.algorithmId}: $encryptedFile is left alone until the profile names its algorithm again",
+            "algorithm ${strategy.algorithmId}: $name is left alone until the profile names its algorithm again",
     )
 }
 
