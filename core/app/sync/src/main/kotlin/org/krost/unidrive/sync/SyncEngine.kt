@@ -4734,16 +4734,16 @@ open class SyncEngine(
     ): SyncEntry =
         if (receipt.plaintextSha256 != null) {
             if ((provider.hashAlgorithm() == null || entry.remoteHash.isNullOrEmpty()) && !entry.isFolder) {
-                entry.copy(
+                entry.sizedByDownload(receipt).copy(
                     localHash = streamedHash,
                     localMtime = receipt.stagedMtimeMillis,
                     localSize = receipt.stagedSize,
                 )
             } else {
-                entry
+                entry.sizedByDownload(receipt)
             }
         } else {
-            withLocalHash(entry)
+            withLocalHash(entry.sizedByDownload(receipt))
         }
 
     // Same guard for a copy of the bytes that is not the sync-root file — the cache copy a
@@ -5032,13 +5032,15 @@ open class SyncEngine(
     // The mirror's second line on the download count, the way the mount re-checks it (#80): the provider contract
     // says download throws on a short body, and a provider that breaks it must not have its short file recorded as
     // synced. A mismatch fails the action as the transient fault it is (a chunked response that closed early), so
-    // the next pass re-downloads instead of the row keeping a truncated copy as its baseline (#282).
-    private fun requireCompleteDownload(
+    // the next pass re-downloads instead of the row keeping a truncated copy as its baseline (#282) — unless the provider
+    // confirms the count as the file's size now (a stale row, see confirmsDownloadedSize).
+    private suspend fun requireCompleteDownload(
         path: String,
         item: CloudItem,
         receipt: DownloadReceipt,
     ) {
         if (item.isFolder || item.size <= 0L || receipt.bytesWritten == item.size) return
+        if (confirmsDownloadedSize(provider, path, receipt.bytesWritten)) return
         throw java.io.IOException(
             "Download of $path wrote ${receipt.bytesWritten} of ${item.size} bytes — placing it as synced would keep a truncated copy; failing the download to retry it",
         )

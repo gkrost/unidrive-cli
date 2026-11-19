@@ -94,6 +94,26 @@ class XtraAlgorithmSwitchEngineTest {
             assertEquals("hello from age".length.toLong(), arrived.remoteSize, "the listing sizes it with the right overhead again")
         }
 
+    @Test
+    fun `a mirror row sized under another algorithm downloads after the switch back with no listing re-delivering it`() =
+        runBlocking {
+            // The usual restart: the delta cursor resumes and the unchanged file is not delivered again, so the row keeps
+            // the size the other algorithm's overhead gave it, and only the recovery loop (from the row) retries it.
+            seedAgeFile("/a.txt", "hello from age")
+            val stored = inner.deltaItems.single()
+            mirror(aesGcm).syncOnce()
+            val stale = assertNotNull(db.getEntry("/a.txt")).remoteSize
+            assertNotEquals("hello from age".length.toLong(), stale, "precondition: the row's size went stale under aes-gcm")
+            inner.deltaItems = emptyList()
+            inner.metadataOverride["/a.txt"] = stored
+
+            mirror(ageV1).syncOnce()
+            assertEquals("hello from age", Files.readString(root.resolve("a.txt")))
+            val arrived = assertNotNull(db.getEntry("/a.txt"))
+            assertFalse(arrived.downloadQuarantined)
+            assertEquals("hello from age".length.toLong(), arrived.remoteSize, "the row records the confirmed size, not the stale one")
+        }
+
     private suspend fun openRead(
         engine: SyncEngine,
         path: String,
