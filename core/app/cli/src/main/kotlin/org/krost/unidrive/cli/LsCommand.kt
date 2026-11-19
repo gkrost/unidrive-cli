@@ -13,6 +13,7 @@ import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.authenticateAndLog
+import org.krost.unidrive.engine.RemoteErrors
 import org.krost.unidrive.engine.RemoteOperationGuard
 import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcAuthException
@@ -76,22 +77,10 @@ class LsCommand : Callable<Int> {
             val endpoint = IpcEndpoint(socketPath, parent.providerConfigDir(), profile.name)
             val entries = queryDaemonView(endpoint, normalized)
             if (entries != null) {
-                when (val view = resolveDaemonView(normalized, entries) { queryDaemonView(endpoint, it) }) {
-                    is DaemonLsView.Listing -> {
-                        printDaemonEntries(view.entries)
-                        return 0
-                    }
-                    is DaemonLsView.SelfFile -> {
-                        printDaemonEntries(listOf(view.entry))
-                        return 0
-                    }
-                    DaemonLsView.NoSuchPath -> return noSuchPath(normalized)
-                    DaemonLsView.Undecidable -> {
-                        // Parent lookup failed mid-way (daemon shut down between
-                        // the two IPC round-trips) — presence is undecidable from
-                        // the view; the live query below answers authoritatively.
-                    }
-                }
+                val view = resolveDaemonView(normalized, entries) { queryDaemonView(endpoint, it) }
+                // Undecidable: the parent lookup failed mid-way (daemon shut down between the two IPC
+                // round-trips) — presence is undecidable from the view; the live query below answers.
+                serveDaemonView(normalized, view)?.let { return it }
             }
             // Daemon socket exists but the query failed (mid-shutdown / stale
             // socket). Fall through to the live query rather than failing.
@@ -134,6 +123,24 @@ class LsCommand : Callable<Int> {
             db?.close()
         }
         return 0
+    }
+
+    /**
+     * Prints [view] and returns the exit code, or returns null for [DaemonLsView.Undecidable] (the caller lists live).
+     * #825: the daemon view looks like a live listing, so a one-line note on stderr says where it comes from; stdout
+     * stays the listing alone for scripts.
+     */
+    internal fun serveDaemonView(
+        normalized: String,
+        view: DaemonLsView,
+    ): Int? {
+        if (view == DaemonLsView.Undecidable) return null
+        System.err.println(DAEMON_VIEW_NOTE)
+        return when (view) {
+            is DaemonLsView.Listing -> 0.also { printDaemonEntries(view.entries) }
+            is DaemonLsView.SelfFile -> 0.also { printDaemonEntries(listOf(view.entry)) }
+            else -> noSuchPath(normalized)
+        }
     }
 
     private fun noSuchPath(normalized: String): Int {
@@ -216,6 +223,9 @@ class LsCommand : Callable<Int> {
     }
 
     companion object {
+        /** The stderr note of a listing served from the daemon's state.db view (#825). */
+        internal const val DAEMON_VIEW_NOTE = "ls: (daemon view; --live asks the cloud)"
+
         /**
          * Root-absolute, trailing-slash-free form of the user-supplied [path].
          * `hydration.list` and state.db paths carry no trailing slash — without
@@ -285,19 +295,32 @@ class LsCommand : Callable<Int> {
          * throwing, which made `ls /typo` indistinguishable from an empty folder, so
          * an empty non-root listing is confirmed with [CloudProvider.getMetadata].
          * A file path lists as that single file, like `ls <file>`.
+         *
+         * #825: a provider that answers a missing folder with a not-found error (Internxt: `Folder not found: X in X`)
+         * gets the same metadata probe, so `ls --live` says `no such remote path` instead of the provider's raw error,
+         * and a file path that the folder walk refuses still lists. Any other failure propagates.
          */
+        @Suppress("TooGenericExceptionCaught") // classified by RemoteErrors.isNotFound, anything else is rethrown unchanged
         internal suspend fun listLive(
             provider: CloudProvider,
             normalized: String,
         ): List<CloudItem>? {
-            val children = provider.listChildren(normalized)
-            if (children.isNotEmpty() || normalized == "/") return children
+            val children =
+                try {
+                    provider.listChildren(normalized)
+                } catch (e: Exception) {
+                    if (normalized == "/" || !RemoteErrors.isNotFound(e)) throw e
+                    null
+                }
+            if (normalized == "/" || !children.isNullOrEmpty()) return children
             val self =
                 try {
                     provider.getMetadata(normalized)
-                } catch (_: java.io.FileNotFoundException) {
-                    return null
+                } catch (e: Exception) {
+                    if (RemoteErrors.isNotFound(e)) return null
+                    throw e
                 }
+            if (children == null) return if (self.isFolder) emptyList() else listOf(self)
             return if (self.isFolder) children else listOf(self)
         }
 
