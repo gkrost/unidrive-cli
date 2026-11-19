@@ -848,7 +848,7 @@ class XtraEncryptedProviderTest {
         }
     }
 
-    // ── The Tink algorithm (prototype, TinkStreamingStrategy) through the same decorator ──
+    // ── The Tink algorithm (TinkStreamingStrategy) through the same decorator ──
 
     // A Tink profile owns exactly one key material: the keyset store. The recovery test below restores it alone
     // into a fresh state directory — the backup requirement this prototype documents.

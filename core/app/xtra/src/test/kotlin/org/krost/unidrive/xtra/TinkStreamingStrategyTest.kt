@@ -16,7 +16,7 @@ import kotlin.test.assertTrue
 import org.krost.unidrive.testing.TestScratch
 
 // The XTRA header the strategy is handed in these tests (the provider's own are in XtraEncryptedProviderTest).
-private val TEST_HEADER = XtraHeader.serialize(TinkStreamingStrategy.PROTOTYPE_ALGORITHM_ID, ByteArray(256), ByteArray(0))
+private val TEST_HEADER = XtraHeader.serialize(3, ByteArray(256), ByteArray(0))
 
 class TinkStreamingStrategyTest {
 

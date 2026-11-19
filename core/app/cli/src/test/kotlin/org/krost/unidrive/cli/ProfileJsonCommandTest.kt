@@ -647,6 +647,10 @@ class ProfileJsonCommandTest {
         assertEquals(0, run("profile", "set", "work", "xtra_algorithm", "aes-gcm", "--json"), stderr())
         assertEquals("age-v1", json().getValue("previous").jsonPrimitive.content)
 
+        assertEquals(0, run("profile", "set", "work", "xtra_algorithm", "tink-aes-gcm", "--json"), stderr())
+        assertEquals("tink-aes-gcm", json().getValue("value").jsonPrimitive.content)
+        assertEquals(twoProfiles.replace(withPoll, withPoll + "xtra_algorithm = \"tink-aes-gcm\"\n"), config())
+
         assertEquals(0, run("profile", "set", "work", "xtra_algorithm", "--unset", "--json"), stderr())
         assertEquals(twoProfiles, config())
     }
@@ -749,6 +753,11 @@ class ProfileJsonCommandTest {
         assertTrue(json().getValue("message").jsonPrimitive.content.contains("xtra init-age"))
         Files.writeString(dir.resolve("xtra-age.key"), "k")
         assertEquals(0, run("profile", "set", "work", "xtra_algorithm", "age-v1", "--json"), stderr())
+
+        assertEquals("key_missing", errorOf("profile", "set", "work", "xtra_algorithm", "tink-aes-gcm"))
+        assertTrue(json().getValue("message").jsonPrimitive.content.contains("xtra init-tink"))
+        Files.writeString(dir.resolve("xtra-tink.key"), "k")
+        assertEquals(0, run("profile", "set", "work", "xtra_algorithm", "tink-aes-gcm", "--json"), stderr())
 
         // back to aes-gcm: its key is still there
         assertEquals(0, run("profile", "set", "work", "xtra_algorithm", "aes-gcm", "--json"), stderr())

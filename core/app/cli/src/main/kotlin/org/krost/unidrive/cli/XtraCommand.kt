@@ -29,6 +29,7 @@ import java.nio.file.Paths
         XtraExportAgeCommand::class,
         XtraImportAgeCommand::class,
         XtraChangePassphraseAgeCommand::class,
+        XtraInitTinkCommand::class,
     ],
 )
 class XtraCommand : Runnable {
@@ -36,7 +37,7 @@ class XtraCommand : Runnable {
     lateinit var parent: Main
 
     override fun run() {
-        println("Usage: unidrive xtra <init|export-key|import-key|change-passphrase|init-age|export-age|import-age|change-passphrase-age>")
+        println("Usage: unidrive xtra <init|export-key|import-key|change-passphrase|init-age|export-age|import-age|change-passphrase-age|init-tink>")
     }
 }
 
@@ -275,5 +276,29 @@ class XtraChangePassphraseAgeCommand : Runnable {
         // encrypted to the old one.
         XtraAgeKeyStore(keyPath).changePassphrase(current, newPass)
         println("Passphrase changed successfully.")
+    }
+}
+
+// ── xtra init-tink ────────────────────────────────────────────────────────────
+
+@Command(name = "init-tink", description = ["Generate the tink-aes-gcm encryption keyset (xtra_algorithm = \"tink-aes-gcm\") up front"], mixinStandardHelpOptions = true)
+class XtraInitTinkCommand : Runnable {
+    @ParentCommand
+    lateinit var xtraCmd: XtraCommand
+
+    override fun run() {
+        val keyPath = xtraCmd.parent.configBaseDir().resolve("xtra-tink.key")
+        if (Files.exists(keyPath)) {
+            System.err.println("A keyset already exists at $keyPath.")
+            return
+        }
+        // The keyset's passphrase comes from the same chain the daemon loads it with, so what is generated here
+        // decrypts there by construction — the same up-front generate the other algorithms' init verbs make.
+        org.krost.unidrive.xtra.XtraTinkKeyStore(keyPath).generate(xtraCmd.parent.xtraPassphrase())
+        println("Tink keyset generated at $keyPath")
+        println()
+        println("WARNING: If you lose this keyset, tink-encrypted files CANNOT be recovered.")
+        println("Unlike age-v1 there is no external recovery tool: only this engine's keyset decrypts the stored files.")
+        println("Back up xtra-tink.key itself (it decrypts only under its passphrase).")
     }
 }

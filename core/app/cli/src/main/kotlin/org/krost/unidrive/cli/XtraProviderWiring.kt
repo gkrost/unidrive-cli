@@ -5,10 +5,12 @@ import org.krost.unidrive.io.XTRA_PASSPHRASE_ENV
 import org.krost.unidrive.sync.RawProvider
 import org.krost.unidrive.xtra.AgeV1Strategy
 import org.krost.unidrive.xtra.AesGcmStrategy
+import org.krost.unidrive.xtra.TinkStreamingStrategy
 import org.krost.unidrive.xtra.XtraAgeKeyStore
 import org.krost.unidrive.xtra.XtraEncryptedProvider
 import org.krost.unidrive.xtra.XtraPlaintextListings
 import org.krost.unidrive.xtra.XtraKeyManager
+import org.krost.unidrive.xtra.XtraTinkKeyStore
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.system.exitProcess
@@ -19,7 +21,7 @@ import kotlin.system.exitProcess
  * sees plaintext while the provider stores ciphertext. The strategy owns its key material and loads it lazily on
  * the first content operation ([XtraEncryptedProvider]); commands that only list, authenticate or report never
  * need the passphrase. The algorithm's key file lives beside config.toml (the token path's parent), one per
- * installation — and an age-v1 profile has only the identity store, never an RSA pair.
+ * installation — and an age-v1 or tink-aes-gcm profile has only its own key store, never an RSA pair.
  */
 internal fun Main.wrapWithXtra(
     rp: RawProvider?,
@@ -54,8 +56,22 @@ internal fun Main.wrapWithXtra(
                     this::xtraPassphrase,
                 )
             }
+            "tink-aes-gcm" -> {
+                // The keyset never self-generates either (same rule as every X-tra key: no silent root secret);
+                // it must exist, or the profile refuses to run.
+                val tinkKeyPath = keyPath.parent.resolve("xtra-tink.key")
+                if (!Files.exists(tinkKeyPath)) {
+                    System.err.println("Error: a profile sets xtra_algorithm = \"tink-aes-gcm\" but $tinkKeyPath does not exist.")
+                    System.err.println("Create it first: unidrive xtra init-tink")
+                    exitProcess(1)
+                }
+                TinkStreamingStrategy(
+                    lazy { XtraTinkKeyStore(tinkKeyPath) },
+                    this::xtraPassphrase,
+                )
+            }
             else -> {
-                System.err.println("Error: unknown xtra_algorithm \"$algorithm\" (known: aes-gcm, age-v1).")
+                System.err.println("Error: unknown xtra_algorithm \"$algorithm\" (known: aes-gcm, age-v1, tink-aes-gcm).")
                 exitProcess(1)
             }
         }

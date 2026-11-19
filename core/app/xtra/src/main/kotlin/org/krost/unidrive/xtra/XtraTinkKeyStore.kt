@@ -17,7 +17,7 @@ import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * The Tink keyset of the Tink content strategy (prototype), one per installation, beside the other X-tra key
+ * The Tink keyset of the tink-aes-gcm content strategy, one per installation, beside the other X-tra key
  * stores. Same envelope as every X-tra key file: salt (16 bytes) ‖ iv (12 bytes) ‖ AES-256-GCM(keyset), PBKDF2-
  * HMAC-SHA256 with 600,000 iterations → 256-bit key, atomic owner-only write with verify-before-replace. The
  * stored bytes are Tink's serialized keyset (raw protobuf, ~131 bytes for the strategy's parameters) — Tink code
