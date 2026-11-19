@@ -30,7 +30,7 @@ data class LocalFileInfo(
 // of a first sync touch the remote folder after its row was recorded). resolveAction plans nothing for it; against a local delete it is
 // a conflict, settled as a delete when nothing live is below it (#713, settleTouchedFolderConflicts). A file turning into a folder, or the reverse, is a change either way.
 // Compare a version when an item has no content hash; the first such delivery after a hash-only row is uncertain.
-private fun remoteMetadataChanged(remoteItem: CloudItem, entry: SyncEntry): Boolean =
+internal fun remoteMetadataChanged(remoteItem: CloudItem, entry: SyncEntry): Boolean =
     remoteItem.isFolder != entry.isFolder ||
         remoteHashChanged(remoteItem.hash, entry.remoteHash) ||
         ((!remoteItem.isFolder && (remoteItem.hash == null || entry.remoteHash == null)) &&
@@ -44,7 +44,7 @@ private fun remoteHashChanged(remote: String?, recorded: String?): Boolean = rem
 // #264: the delivered item names the same bytes the row records — equal content hashes when both
 // sides carry one, else equal content ids. A remote "modified" that changes no content is a
 // metadata-only touch: the bytes a download would fetch are the ones already on disk.
-private fun remoteContentUnchanged(
+internal fun remoteContentUnchanged(
     remoteItem: CloudItem,
     entry: SyncEntry?,
 ): Boolean =

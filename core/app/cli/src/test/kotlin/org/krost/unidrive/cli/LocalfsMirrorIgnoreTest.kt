@@ -4,6 +4,8 @@ import kotlinx.coroutines.runBlocking
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.DeltaPage
+import org.krost.unidrive.DownloadReceipt
+import org.krost.unidrive.ProviderException
 import org.krost.unidrive.ScanContext
 import org.krost.unidrive.engine.TransferPause
 import org.krost.unidrive.localfs.LocalFsProvider
@@ -316,7 +318,54 @@ class LocalfsMirrorIgnoreTest {
         assertQuiet()
     }
 
+    // gkrost/unidrive-cli#642: this computer holds the rule file unchanged; another one wrote a newer copy to the cloud.
+    private fun olderLocalRuleFile() {
+        start()
+        put(remote, "notes/.unidrive.ignore", "*.tmp\n")
+        sync()
+        assertEquals("*.tmp\n", Files.readString(local.resolve("notes/.unidrive.ignore")), "precondition: the rule file is here")
+        put(remote, "notes/.unidrive.ignore", "*.tmp\n*.log\n")
+        put(remote, "notes/debug.log", "a cloud log")
+        put(local, "notes/local.log", "a local log")
+    }
+
+    @Test
+    fun `a local rule file older than the cloud copy is replaced before the plan, so the newer rules apply in the pass`() {
+        olderLocalRuleFile()
+
+        sync()
+
+        assertEquals("*.tmp\n*.log\n", Files.readString(local.resolve("notes/.unidrive.ignore")), "the cloud copy is downloaded")
+        assertFalse(Files.exists(local.resolve("notes/debug.log")), "the newer rule keeps the cloud's log in the cloud")
+        assertFalse(Files.exists(remote.resolve("notes/local.log")), "and the local log here")
+        assertQuiet()
+    }
+
+    @Test
+    fun `a newer cloud rule file whose download fails holds its folder back for the pass`() {
+        olderLocalRuleFile()
+        failDownloadsOf = setOf("/notes/.unidrive.ignore")
+
+        reporter.reset()
+        runBlocking { engine.syncOnce() }
+
+        assertEquals("*.tmp\n", Files.readString(local.resolve("notes/.unidrive.ignore")), "the local copy stays as it was")
+        assertFalse(Files.exists(local.resolve("notes/debug.log")), "the older rules are not applied: nothing comes down")
+        assertFalse(Files.exists(remote.resolve("notes/local.log")), "nothing goes up")
+
+        failDownloadsOf = emptySet()
+        sync()
+
+        assertEquals("*.tmp\n*.log\n", Files.readString(local.resolve("notes/.unidrive.ignore")))
+        assertFalse(Files.exists(local.resolve("notes/debug.log")))
+        assertFalse(Files.exists(remote.resolve("notes/local.log")))
+        assertQuiet()
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
+
+    // Remote paths whose download fails (gkrost/unidrive-cli#642).
+    private var failDownloadsOf: Set<String> = emptySet()
 
     /** Builds the engine with the ignore rules on and converges on the START tree. */
     private fun start(
@@ -384,6 +433,25 @@ class LocalfsMirrorIgnoreTest {
     private inner class TombstoneListing(
         private val inner: LocalFsProvider,
     ) : CloudProvider by inner {
+        override suspend fun downloadByIdWithHash(
+            remoteId: String,
+            remotePath: String,
+            destination: Path,
+            targetMtimeMillis: Long?,
+        ): DownloadReceipt {
+            if (remotePath in failDownloadsOf) throw ProviderException("download refused by the test: $remotePath")
+            return inner.downloadByIdWithHash(remoteId, remotePath, destination, targetMtimeMillis)
+        }
+
+        override suspend fun downloadWithHash(
+            remotePath: String,
+            destination: Path,
+            targetMtimeMillis: Long?,
+        ): DownloadReceipt {
+            if (remotePath in failDownloadsOf) throw ProviderException("download refused by the test: $remotePath")
+            return inner.downloadWithHash(remotePath, destination, targetMtimeMillis)
+        }
+
         override suspend fun delta(
             cursor: String?,
             onPageProgress: ((itemsSoFar: Int) -> Unit)?,
