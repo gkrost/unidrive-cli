@@ -18,8 +18,10 @@ import org.krost.unidrive.ProviderException
  * reads `xtra_algorithm` only at start, so the outcome is re-evaluated at the restart a switch requires: once the
  * profile names the file's algorithm again, the same stored file downloads with no manual step.
  *
- * The price: while the mismatch lasts, each pass downloads the file's ciphertext again to read its header (the
- * provider SPI has no ranged read), and each attempt logs a warning naming both algorithms.
+ * The price is paid once per object version per run: the first attempt has to download the file to read its
+ * header (the provider SPI has no partial read), and the provider's [XtraAlgorithmMismatchMemory] answers every
+ * later download of the same version with this same exception, transferring nothing (one metadata read tells
+ * the version), until the restart a switch requires. Each attempt still logs a warning naming both algorithms.
  *
  * A changed algorithm byte of a file is indistinguishable from a file of the other algorithm, so it lands here and
  * not as a content refusal; the AEAD seal of the configured strategy is only consulted for a file of its own byte.
@@ -29,3 +31,15 @@ class XtraAlgorithmMismatchException(
     val configuredAlgorithmId: Byte,
     message: String,
 ) : ProviderException(message)
+
+// The one refusal sentence, shared by the header check that raises it and the run's memory that replays it.
+internal fun mismatchRefusal(
+    storedAlgorithmId: Byte,
+    configuredAlgorithmId: Byte,
+    name: String,
+): XtraAlgorithmMismatchException = XtraAlgorithmMismatchException(
+    storedAlgorithmId,
+    configuredAlgorithmId,
+    "X-tra file written with algorithm $storedAlgorithmId, the profile's xtra_algorithm decrypts " +
+        "algorithm $configuredAlgorithmId: $name is left alone until the profile names its algorithm again",
+)
