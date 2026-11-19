@@ -20,8 +20,8 @@ import org.krost.unidrive.ProviderException
  *
  * The price is paid once per object version per run: the first attempt has to download the file to read its
  * header (the provider SPI has no partial read), and the provider's [XtraAlgorithmMismatchMemory] answers every
- * later download of the same version with this same exception, transferring nothing, until the restart a switch
- * requires. Each attempt still logs a warning naming both algorithms.
+ * later download of the same version with this same exception, transferring nothing (one metadata read tells
+ * the version), until the restart a switch requires. Each attempt still logs a warning naming both algorithms.
  *
  * A changed algorithm byte of a file is indistinguishable from a file of the other algorithm, so it lands here and
  * not as a content refusal; the AEAD seal of the configured strategy is only consulted for a file of its own byte.

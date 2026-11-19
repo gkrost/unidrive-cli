@@ -597,7 +597,7 @@ class XtraEncryptedProviderTest {
         assertEquals("written under aes-gcm", Files.readString(dest))
     }
 
-    // ── The refusal memory (#822): one download per refused object version and call shape, then fail fast ──
+    // ── The refusal memory (#822): one download per refused object version, then fail fast while its metadata holds ──
 
     @Test
     fun `a second sync pass and a second mount read of a refused file download nothing`() {
@@ -608,14 +608,15 @@ class XtraEncryptedProviderTest {
         val xtra = provider(inner, aesGcmDemandingNoKey())
         val dest = tmpDir.resolve("dl.txt")
 
-        // One download per call shape: the sync pass addresses by id with the listing's mtime, the mount read by id alone.
+        // One download for the object, whichever call shape asks first: the sync pass addresses by id with the
+        // listing's mtime, the mount read by id alone, and both name the same object.
         assertFailsWith<XtraAlgorithmMismatchException> {
             kotlinx.coroutines.runBlocking { xtra.downloadByIdWithHash("id", "/f.txt", dest, 1_000L) }
         }
         assertFailsWith<XtraAlgorithmMismatchException> {
             kotlinx.coroutines.runBlocking { xtra.downloadById("id", "/f.txt", dest) }
         }
-        assertEquals(2, inner.downloads)
+        assertEquals(1, inner.downloads)
 
         // Every later attempt of the same run fails fast with the same exception and transfers nothing.
         repeat(3) {
@@ -626,11 +627,11 @@ class XtraEncryptedProviderTest {
                 kotlinx.coroutines.runBlocking { xtra.downloadById("id", "/f.txt", dest) }
             }
         }
-        assertEquals(2, inner.downloads)
+        assertEquals(1, inner.downloads)
     }
 
     @Test
-    fun `a changed remote version of a refused file is downloaded again`() {
+    fun `a replacement under the same id that keeps its mtime is downloaded again`() {
         val tmpDir = TestScratch.directory("xtra-mismatch-memory-test")
         val storage = mutableMapOf<String, ByteArray>()
         val aes = AesGcmStrategy(keys(tmpDir))
@@ -643,11 +644,67 @@ class XtraEncryptedProviderTest {
             kotlinx.coroutines.runBlocking { xtra.downloadByIdWithHash("id", "/f.txt", dest, 1_000L) }
         }
 
-        // The object is replaced under the same id: the listing answers a new mtime, and the call names that version.
+        // The object is replaced under the same id with its mtime kept (a restore, a copy that preserves times, a
+        // client-set OneDrive fileSystemInfo): the call names the very same version, only the bytes changed.
         seedThrough(aes, storage, tmpDir, "replaced under aes-gcm")
-        kotlinx.coroutines.runBlocking { xtra.downloadByIdWithHash("id", "/f.txt", dest, 2_000L) }
+        kotlinx.coroutines.runBlocking { xtra.downloadByIdWithHash("id", "/f.txt", dest, 1_000L) }
         assertEquals("replaced under aes-gcm", Files.readString(dest))
         assertEquals(2, inner.downloads)
+    }
+
+    @Test
+    fun `an id-only mount read answers a same-id replacement in the same run`() {
+        val tmpDir = TestScratch.directory("xtra-mismatch-memory-test")
+        val storage = mutableMapOf<String, ByteArray>()
+        val aes = AesGcmStrategy(keys(tmpDir))
+        seedThrough(ageStrategy(tmpDir), storage, tmpDir, "written under age-v1")
+        val inner = InMemoryProvider(storage)
+        val xtra = provider(inner, aes)
+        val dest = tmpDir.resolve("dl.txt")
+
+        // The mount read names no version; the refusal is remembered and replayed while the object is unchanged.
+        repeat(2) {
+            assertFailsWith<XtraAlgorithmMismatchException> {
+                kotlinx.coroutines.runBlocking { xtra.downloadById("id", "/f.txt", dest) }
+            }
+        }
+        assertEquals(1, inner.downloads)
+
+        // Another device re-saves the file under the profile's algorithm, keeping its id: the next read answers it.
+        seedThrough(aes, storage, tmpDir, "re-saved under aes-gcm elsewhere")
+        kotlinx.coroutines.runBlocking { xtra.downloadById("id", "/f.txt", dest) }
+        assertEquals("re-saved under aes-gcm elsewhere", Files.readString(dest))
+        assertEquals(2, inner.downloads)
+    }
+
+    @Test
+    fun `the refusal memory is bounded and forgets the least recently asked object first`() {
+        val memory = XtraAlgorithmMismatchMemory(configuredAlgorithmId = 1, capacity = 2)
+        var downloads = 0
+        fun refuse(id: String) =
+            assertFailsWith<XtraAlgorithmMismatchException> {
+                kotlinx.coroutines.runBlocking {
+                    memory.rememberingRefusal(
+                        id,
+                        "/$id",
+                        { CloudItem(id, id, "/$id", 1, false, null, null, "h-$id", null) },
+                    ) {
+                        downloads++
+                        throw mismatchRefusal(2, 1, "/$id")
+                    }
+                }
+            }
+
+        refuse("a")
+        refuse("b")
+        refuse("a") // replayed, and now the most recently asked
+        refuse("c") // evicts b, the least recently asked
+        assertEquals(2, memory.size())
+        assertEquals(3, downloads)
+        refuse("a") // still remembered
+        assertEquals(3, downloads)
+        refuse("b") // evicted: downloaded again
+        assertEquals(4, downloads)
     }
 
     @Test
@@ -864,14 +921,13 @@ class XtraEncryptedProviderTest {
         val stored = storage.getValue("/f.txt")
         val tinkHeaderEnd = 4 + 1 + 1 + 2 + 256 + 2
 
-        // Each flip is a different stored object under the same path: a fresh provider per flip keeps the run's
-        // refusal memory (which keys the unversioned path call) from answering one flip from another's refusal.
-        fun flippedProvider() = tinkProvider(InMemoryProvider(storage), dir)
-        for (index in 0 until tinkHeaderEnd) flippedDownload(index, stored, flippedProvider(), storage, dir.resolve("dl.txt"))
+        // One provider for every flip, as in a run: each flip is another version of the object under the path, which
+        // the refusal memory's version token tells apart, so no flip is answered from another flip's refusal.
+        for (index in 0 until tinkHeaderEnd) flippedDownload(index, stored, xtra, storage, dir.resolve("dl.txt"))
         // Past the key id, the slot's filler bytes reach no key check: only the header binding refuses them.
         for (index in 4 + 1 + 1 + 2 + 8 until 4 + 1 + 1 + 2 + 256) {
             val refused = assertIs<org.krost.unidrive.RemoteContentRefusedDownloadException>(
-                flippedDownload(index, stored, flippedProvider(), storage, dir.resolve("dl.txt")),
+                flippedDownload(index, stored, xtra, storage, dir.resolve("dl.txt")),
                 "slot byte $index",
             )
             assertEquals("authentication failed", refused.reason)
@@ -897,13 +953,14 @@ class XtraEncryptedProviderTest {
     fun `an aes-gcm or age-v1 file under tink is refused and no keyset or passphrase is demanded`() {
         val tmpDir = TestScratch.directory("xtra-tink-mismatch-test")
         val storage = mutableMapOf<String, ByteArray>()
+        // One reader for both objects: the second seeding replaces the object under the path, and the refusal memory
+        // must answer the new object's own algorithm, not replay the first object's refusal.
+        val reader = provider(InMemoryProvider(storage), tinkDemandingNoKey())
 
-        // A fresh reader per stored object: each seeding replaces the object under the path, and the reader's
-        // per-run refusal memory answers the unversioned path call from the first object's refusal.
         seedThrough(AesGcmStrategy(keys(tmpDir)), storage, tmpDir, "sealed")
-        assertRefusedAsOtherAlgorithm(provider(InMemoryProvider(storage), tinkDemandingNoKey()), tmpDir, stored = 1, configured = 3)
+        assertRefusedAsOtherAlgorithm(reader, tmpDir, stored = 1, configured = 3)
         seedThrough(ageStrategy(tmpDir), storage, tmpDir, "aged")
-        assertRefusedAsOtherAlgorithm(provider(InMemoryProvider(storage), tinkDemandingNoKey()), tmpDir, stored = 2, configured = 3)
+        assertRefusedAsOtherAlgorithm(reader, tmpDir, stored = 2, configured = 3)
     }
 
     @Test
@@ -988,7 +1045,12 @@ private class InMemoryProvider(private val storage: MutableMap<String, ByteArray
     override fun capabilities() = emptySet<Capability>()
     override suspend fun authenticate() {}
     override suspend fun listChildren(path: String) = emptyList<CloudItem>()
-    override suspend fun getMetadata(path: String) = item(path, 0)
+    // Like a real listing, the metadata names the stored version: its size and a hash of its bytes.
+    override suspend fun getMetadata(path: String): CloudItem {
+        val data = storage[path] ?: throw ProviderException("Not found: $path")
+        return CloudItem("id-$path", path, path, data.size.toLong(), false, null, null, data.contentHashCode().toString(), null)
+    }
+
     override suspend fun download(
         remotePath: String,
         destination: Path,

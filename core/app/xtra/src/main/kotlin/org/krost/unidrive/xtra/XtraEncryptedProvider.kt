@@ -55,7 +55,7 @@ import javax.crypto.AEADBadTagException
  * [XtraAlgorithmMismatchException] — a retryable failure, not a quarantining content refusal, so the file comes back
  * on its own once the profile names its algorithm again (see that class for the engines' side). The first refusal of
  * an object downloads it (the header decides); [XtraAlgorithmMismatchMemory] then answers every later download of the
- * same object version with the same exception and transfers nothing.
+ * same object version with the same exception and transfers nothing (one metadata read tells the version).
  *
  * Both directions stage through a temp file, so a transfer peaks at twice the file's size; streaming without the
  * temp file needs the encrypted size upfront and stays out (see the design note in the module docs).
@@ -122,7 +122,7 @@ class XtraEncryptedProvider(
     override suspend fun download(
         remotePath: String,
         destination: Path,
-    ): Long = mismatchMemory.rememberingRefusal(remoteId = null, remotePath = remotePath, targetMtimeMillis = null) {
+    ): Long = mismatchMemory.rememberingRefusal(null, remotePath, { inner.getMetadata(remotePath) }) {
         val tmp = Files.createTempFile("xtra-", ".tmp")
         try {
             inner.download(remotePath, tmp)
@@ -137,7 +137,7 @@ class XtraEncryptedProvider(
         remoteId: String,
         remotePath: String,
         destination: Path,
-    ): Long = mismatchMemory.rememberingRefusal(remoteId, remotePath, null) {
+    ): Long = mismatchMemory.rememberingRefusal(remoteId, remotePath, { inner.getMetadata(remotePath) }) {
         val tmp = Files.createTempFile("xtra-", ".tmp")
         try {
             inner.downloadById(remoteId, remotePath, tmp)
@@ -158,7 +158,7 @@ class XtraEncryptedProvider(
         remotePath: String,
         destination: Path,
         targetMtimeMillis: Long?,
-    ): DownloadReceipt = mismatchMemory.rememberingRefusal(null, remotePath, targetMtimeMillis) {
+    ): DownloadReceipt = mismatchMemory.rememberingRefusal(null, remotePath, { inner.getMetadata(remotePath) }) {
         val tmp = Files.createTempFile("xtra-", ".tmp")
         try {
             val receipt = inner.downloadWithHash(remotePath, tmp, targetMtimeMillis)
@@ -173,7 +173,7 @@ class XtraEncryptedProvider(
         remotePath: String,
         destination: Path,
         targetMtimeMillis: Long?,
-    ): DownloadReceipt = mismatchMemory.rememberingRefusal(remoteId, remotePath, targetMtimeMillis) {
+    ): DownloadReceipt = mismatchMemory.rememberingRefusal(remoteId, remotePath, { inner.getMetadata(remotePath) }) {
         val tmp = Files.createTempFile("xtra-", ".tmp")
         try {
             val receipt = inner.downloadByIdWithHash(remoteId, remotePath, tmp, targetMtimeMillis)
