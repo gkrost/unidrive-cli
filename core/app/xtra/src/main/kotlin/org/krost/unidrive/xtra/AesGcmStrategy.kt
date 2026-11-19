@@ -2,7 +2,9 @@ package org.krost.unidrive.xtra
 
 import java.io.InputStream
 import java.io.OutputStream
+import javax.crypto.BadPaddingException
 import javax.crypto.Cipher
+import javax.crypto.IllegalBlockSizeException
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
@@ -21,7 +23,7 @@ import javax.crypto.spec.SecretKeySpec
  * Every segment binds the serialized [XtraHeader] (magic through IV) as its associated data, so a header byte changed
  * after the write fails the first segment's tag like a changed body byte — the IV's counter bytes, which the nonce
  * overwrites, and the wrapped-key slot included. (A wrapped-key slot changed in place mostly fails earlier, in the
- * RSA-OAEP unwrap, which cannot tell a changed slot from another installation's key and so stays a key error.)
+ * RSA-OAEP unwrap, which cannot tell a changed slot from another installation's key; both are refused as content.)
  *
  * The nonce is the header's IV with the low bytes meaning counter and flag: bytes 4..10 hold the segment index
  * big-endian (7 bytes, 2^56 segments), byte 11 is 0 for a normal segment and 1 for the last one. The header's
@@ -39,7 +41,20 @@ class AesGcmStrategy(
     // what demands the passphrase, and it fires on the first content operation only.
     override fun wrapFileKey(fileKey: ByteArray): ByteArray = keys.value.wrapKey(fileKey)
 
-    override fun unwrapFileKey(wrapped: ByteArray): ByteArray = keys.value.unwrapKey(wrapped)
+    // A slot that does not unwrap is refused like a failed seal (owner decision, #821): RSA-OAEP cannot tell a
+    // changed slot from another installation's key, and both are answered as damaged content. The load stays
+    // outside the translation — a wrong passphrase or a missing key file is this installation's error, never the
+    // file's.
+    override fun unwrapFileKey(wrapped: ByteArray): ByteArray {
+        val manager = keys.value
+        try {
+            return manager.unwrapKey(wrapped)
+        } catch (e: BadPaddingException) {
+            throw XtraFileKeyRefusedException("X-tra file key does not unwrap: ${e.message}", e)
+        } catch (e: IllegalBlockSizeException) {
+            throw XtraFileKeyRefusedException("X-tra file key does not unwrap: ${e.message}", e)
+        }
+    }
 
     override fun plaintextSizeOf(ciphertextSize: Long): Long? {
         val fixed = headerFixedBytes() + wrappedKeyLength + ivLength

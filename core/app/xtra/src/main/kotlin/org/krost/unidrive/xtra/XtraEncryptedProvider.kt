@@ -214,17 +214,48 @@ private suspend fun decrypt(
         when (val result = XtraHeader.read(input)) {
             is XtraHeader.ReadResult.NotEncrypted ->
                 throw ProviderException("File is not XTRA-encrypted: $encryptedFile")
+            // Damaged header bytes are refused like a failed seal: another attempt reads the same bytes. Two bytes
+            // cannot be: the magic (a file without it is not this layer's) and the algorithm id (a changed one is
+            // indistinguishable from a file of the other algorithm, which must come back after a switch back).
             is XtraHeader.ReadResult.Corrupted ->
-                throw ProviderException("XTRA header corrupted: ${result.reason}")
+                throw RemoteContentRefusedDownloadException("XTRA header corrupted: ${result.reason}: $encryptedFile", "header corrupted")
             is XtraHeader.ReadResult.Valid -> {
                 // Before the configured strategy demands a key (its unwrap is what asks for the passphrase) or reads
                 // a body it did not write.
                 refuseOtherAlgorithm(strategy, result, encryptedFile)
-                decryptStaged(strategy, input, strategy.unwrapFileKey(result.wrappedKey), result, destination, encryptedFile)
+                refuseMalformed(strategy, result, encryptedFile)
+                decryptStaged(strategy, input, unwrapOrRefuse(strategy, result, encryptedFile), result, destination, encryptedFile)
             }
         }
     }
 }
+
+// Length prefixes the strategy's layout does not have are a damaged header, refused like a failed seal.
+private fun refuseMalformed(
+    strategy: XtraEncryptionStrategy,
+    header: XtraHeader.ReadResult.Valid,
+    encryptedFile: Path,
+) {
+    if (header.wrappedKey.size == strategy.wrappedKeyLength && header.iv.size == strategy.ivLength) return
+    throw RemoteContentRefusedDownloadException(
+        "XTRA header corrupted: wrapped key ${header.wrappedKey.size} / IV ${header.iv.size} bytes, the algorithm " +
+            "writes ${strategy.wrappedKeyLength} / ${strategy.ivLength}: $encryptedFile",
+        "header corrupted",
+    )
+}
+
+// A slot the strategy cannot unwrap (XtraFileKeyRefusedException) is refused like a failed seal; a key store that
+// does not load (wrong passphrase, missing file) throws something else and stays this installation's error.
+private fun unwrapOrRefuse(
+    strategy: XtraEncryptionStrategy,
+    header: XtraHeader.ReadResult.Valid,
+    encryptedFile: Path,
+): ByteArray =
+    try {
+        strategy.unwrapFileKey(header.wrappedKey)
+    } catch (e: XtraFileKeyRefusedException) {
+        throw RemoteContentRefusedDownloadException("X-tra file key does not unwrap: $encryptedFile", "authentication failed", e)
+    }
 
 // The header names the algorithm that must decrypt the file; any other is refused. Not a content refusal: see
 // XtraAlgorithmMismatchException for why the engines must retry it rather than quarantine it.

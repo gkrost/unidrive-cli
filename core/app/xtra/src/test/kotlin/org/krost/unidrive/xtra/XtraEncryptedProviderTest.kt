@@ -638,6 +638,44 @@ class XtraEncryptedProviderTest {
         for (index in 0 until headerEnd) flippedDownload(index, stored, xtra, storage, tmpDir.resolve("dl.txt"))
     }
 
+    // Owner decision on #821: every header byte that can be told apart from a legitimately different file is a
+    // permanent content refusal — the wrapped-key slot and the length prefixes included. The two exceptions are
+    // the magic (a file without it is not this layer's) and the algorithm id (a changed one IS a file of another
+    // algorithm as far as anyone can tell, and must come back after the switch back). If this test is loosened,
+    // a damaged header silently becomes a retry-forever failure.
+    @Test
+    fun `a changed aes-gcm header byte is a content refusal, except the magic and the algorithm id`() {
+        val tmpDir = TestScratch.directory("xtra-header-binding-test")
+        val storage = mutableMapOf<String, ByteArray>()
+        val (xtra, stored) = storedAesGcmFile(tmpDir, storage)
+        val algorithmByte = 5
+
+        for (index in 4 until headerEnd) {
+            if (index == algorithmByte) continue
+            val failure = flippedDownload(index, stored, xtra, storage, tmpDir.resolve("dl.txt"))
+            assertIs<org.krost.unidrive.RemoteContentRefusedDownloadException>(failure, "header byte $index: $failure")
+        }
+        assertIs<XtraAlgorithmMismatchException>(flippedDownload(algorithmByte, stored, xtra, storage, tmpDir.resolve("dl.txt")))
+    }
+
+    @Test
+    fun `a wrong passphrase stays a key error, never a content refusal`() {
+        val tmpDir = TestScratch.directory("xtra-header-binding-test")
+        val storage = mutableMapOf<String, ByteArray>()
+        storedAesGcmFile(tmpDir, storage)
+        val wrong = provider(
+            InMemoryProvider(storage),
+            AesGcmStrategy(lazy { XtraKeyManager(tmpDir.resolve("xtra.key")).also { it.load("not-the-passphrase".toCharArray()) } }),
+        )
+        val dest = tmpDir.resolve("dl.txt")
+        Files.writeString(dest, "the previous content")
+
+        val failure = runCatching { kotlinx.coroutines.runBlocking { wrong.download("/f.txt", dest) } }.exceptionOrNull()
+        checkNotNull(failure) { "a wrong passphrase decrypted the file" }
+        assertTrue(failure !is org.krost.unidrive.RemoteContentRefusedDownloadException, "wrong passphrase quarantines content: $failure")
+        assertEquals("the previous content", Files.readString(dest))
+    }
+
     @Test
     fun `a changed IV byte of an aes-gcm file is a content refusal, the bytes the nonce overwrites included`() {
         val tmpDir = TestScratch.directory("xtra-header-binding-test")
