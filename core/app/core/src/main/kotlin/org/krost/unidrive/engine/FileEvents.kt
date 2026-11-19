@@ -73,6 +73,12 @@ object FileEvents {
         CACHE_STORE("cache_store"),
         HYDRATE_SERVED("hydrate_served"),
         CACHE_EVICT("cache_evict"),
+
+        /**
+         * gkrost/unidrive-cli#630: a rename applied through the mount. `path` is the new path, `from` the old one, `kind` file or
+         * folder; `stage=cache_pending` when the cloud and state.db moved but the cache copy follows later.
+         */
+        RENAME("rename"),
     }
 
     /** One `file_event` at DEBUG. [tally] is updated whatever the log level, so the cycle summary is right at INFO. */

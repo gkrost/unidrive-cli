@@ -3704,9 +3704,9 @@ class HydrationImpl(
             if (uploadSlots.containsKey(oldNorm) || uploadSlots.containsKey(newNorm)) {
                 return RenameResult.Failed(HydrationError.Generic(BUSY_TOKEN))
             }
-            return replaceOver(oldNorm, newNorm, sourceEntry, destEntry)
+            return reportedRename(log, renames, oldNorm, newNorm, sourceEntry, replace = true) { replaceOver(oldNorm, newNorm, sourceEntry, destEntry) }
         }
-        return moveEntry(oldNorm, newNorm, sourceEntry)
+        return reportedRename(log, renames, oldNorm, newNorm, sourceEntry, replace = false) { moveEntry(oldNorm, newNorm, sourceEntry) } // #630
     }
 
     /**
