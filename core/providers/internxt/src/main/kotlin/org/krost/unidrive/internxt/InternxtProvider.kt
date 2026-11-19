@@ -2731,22 +2731,22 @@ class InternxtProvider(
 
     private suspend fun deleteByIdWithHint(remoteId: String, remotePath: String, isFolder: Boolean) {
         refuseBackupDevice(remoteId, remotePath)
-        // The delete-burst fast path (#634, #831): a listing named the item's parent and kind.
+        // Fast path (#634, #831): a listing named parent and kind. A first 400 asks the meta: gone is not found, a live item of the listed kind rethrows it.
         val listed = listedParents[remoteId]
-        if (listed != null) {
-            refuseOutsideDrive(remoteId, listed.parentUuid, listed.isFolder, remotePath)
+        val first400 = listed?.let {
+            refuseOutsideDrive(remoteId, it.parentUuid, it.isFolder, remotePath)
             try {
-                api.trashItems(listOf(remoteId to if (listed.isFolder) "folder" else "file"))
-                return
+                api.trashItems(listOf(remoteId to if (it.isFolder) "folder" else "file"))
+                return listedParents.forget(remoteId)
             } catch (e: InternxtApiException) {
-                if (e.statusCode != 400) throw e
-                // A first-attempt 400 the trash cannot explain: the meta path below decides it.
+                if (e.statusCode == 400) e else throw e
             }
         }
         val metadata = metadataById(remoteId, parentPathOf(remotePath), remotePath, isFolder)
+        if (first400 != null && metadata.isFolder == listed?.isFolder) throw first400
         refuseOutsideDrive(metadata.id, metadata.parentId, metadata.isFolder, remotePath)
-        val type = if (metadata.isFolder) "folder" else "file"
-        api.trashItems(listOf(metadata.id to type))
+        api.trashItems(listOf(metadata.id to if (metadata.isFolder) "folder" else "file"))
+        listedParents.forget(remoteId)
     }
 
     // archive#1178: the permanent primitives behind rm --permanent (DELETE /files/{uuid} / DELETE /folders/{uuid}), the

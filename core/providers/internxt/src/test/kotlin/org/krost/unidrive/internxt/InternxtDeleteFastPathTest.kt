@@ -191,6 +191,40 @@ class InternxtDeleteFastPathTest {
         } finally {
             provider.close()
         }
+        // The first 400 is the answer: the meta finds the item live and of the listed kind, so it is not trashed again.
+        assertEquals(1, scripted.trashRequests.get(), "no second trash for a live item of the listed kind")
+        assertEquals(1, scripted.fileMetaRequests.get())
+    }
+
+    @Test
+    fun `a trashed item's remembered parent is forgotten, so a later delete of its id asks the meta`() = runTest {
+        val scripted = Scripted(fileMetaStatuses = listOf(200), trashStatuses = listOf(200))
+        val provider = scriptedProvider(scripted)
+        try {
+            provider.getMetadata("/x/report.txt")
+            provider.deleteById(fileUuid, "/x/report.txt")
+            assertEquals(0, scripted.fileMetaRequests.get(), "the listed item's delete is the fast path")
+            provider.deleteById(fileUuid, "/x/report.txt")
+        } finally {
+            provider.close()
+        }
+        assertEquals(1, scripted.fileMetaRequests.get(), "the trash left no entry behind: the second delete asks the meta")
+        assertEquals(2, scripted.trashRequests.get())
+    }
+
+    @Test
+    fun `the listed parents are bounded and forget the least recently used item first`() {
+        val parents = InternxtListedParents(capacity = 2)
+        parents.remember("a", "p", false)
+        parents.remember("b", "p", false)
+        parents["a"] // asked: now the most recently used
+        parents.remember("c", "p", true) // past the bound: evicts b, not the new item
+        assertEquals(2, parents.size())
+        assertEquals(ListedParent("p", false), parents["a"])
+        assertEquals(null, parents["b"])
+        assertEquals(ListedParent("p", true), parents["c"])
+        parents.forget("a")
+        assertEquals(null, parents["a"])
     }
 
     @Test
