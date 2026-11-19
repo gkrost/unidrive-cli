@@ -149,7 +149,8 @@ class InternxtNotificationsCloseDuringStartTest {
     }
 
     // A sign-out or a credential reload overlapping close() (#532: close() does not take the start lock): both end with no
-    // client, and the client is taken out once, by one of them.
+    // client, and the client is taken out once, by one of them. #830: a reload that wins the race opens a second socket
+    // with the new credentials before close() runs (by design), so the closes are counted per socket, not in total.
     @Test
     fun `logout and reload overlapping close leave no client and close its socket once`() {
         repeat(20) { round ->
@@ -157,21 +158,13 @@ class InternxtNotificationsCloseDuringStartTest {
             try {
                 writeValidCredentials(tmp)
                 val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = tmp, notificationsUrl = "http://127.0.0.1:9", notificationsEnabled = true))
-                val connects = AtomicInteger()
-                val closes = AtomicInteger()
-                provider.notificationsClientFactory = { tokenSupplier, onRemoteChange ->
-                    NotificationsClient(
-                        notificationsUrl = "http://127.0.0.1:9",
-                        tokenSupplier = tokenSupplier,
-                        onRemoteChange = onRemoteChange,
-                        socketFactory = { _, _ -> ClosingSocket(connects, closes) },
-                    )
-                }
+                val sockets = SocketLog()
+                provider.notificationsClientFactory = closingClientFactory(sockets)
                 runBlocking {
                     provider.authenticate()
                     provider.onRemoteChangeHint { }
                 }
-                assertEquals(1, connects.get(), "round $round: the client is up")
+                assertEquals(1, sockets.connected(), "round $round: the client is up")
                 val go = CountDownLatch(1)
                 val other =
                     Thread {
@@ -184,11 +177,68 @@ class InternxtNotificationsCloseDuringStartTest {
                 other.join(30_000)
 
                 assertNull(provider.notificationsClient, "round $round: no client after both")
-                assertEquals(1, closes.get(), "round $round: the socket is closed once")
+                assertEquals(1, sockets.closesOf(0), "round $round: the socket is closed once")
+                assertEquals(
+                    List(sockets.connected()) { 1 },
+                    sockets.closeCounts(),
+                    "round $round: every socket that connected is closed exactly once",
+                )
             } finally {
                 Files.walk(tmp).sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) }
             }
         }
+    }
+
+    // #830: the interleaving the overlap test above can hit only by timing, made deterministic. The reload finishes first
+    // and reopens the socket with the new credentials; close() then closes that second socket. Two sockets, each closed
+    // once, and no client left: not a double close.
+    @Test
+    fun `a reload that reopens the socket before close leaves each socket closed once`() {
+        val tmp = TestScratch.directory("internxt-notif-reload-then-close-")
+        try {
+            writeValidCredentials(tmp)
+            val provider = InternxtProvider(InternxtConfig(credentialProtector = null, tokenPath = tmp, notificationsUrl = "http://127.0.0.1:9", notificationsEnabled = true))
+            val sockets = SocketLog()
+            provider.notificationsClientFactory = closingClientFactory(sockets)
+            runBlocking {
+                provider.authenticate()
+                provider.onRemoteChangeHint { }
+                provider.reloadCredentials()
+            }
+            assertEquals(2, sockets.connected(), "the reload reopened the socket with the new credentials")
+            assertEquals(listOf(1, 0), sockets.closeCounts(), "the reload closed the first socket only")
+
+            provider.close()
+
+            assertNull(provider.notificationsClient, "no client after close()")
+            assertEquals(listOf(1, 1), sockets.closeCounts(), "every socket is closed exactly once")
+        } finally {
+            Files.walk(tmp).sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) }
+        }
+    }
+
+    private fun closingClientFactory(sockets: SocketLog): (suspend (Boolean) -> String, () -> Unit) -> NotificationsClient =
+        { tokenSupplier, onRemoteChange ->
+            NotificationsClient(
+                notificationsUrl = "http://127.0.0.1:9",
+                tokenSupplier = tokenSupplier,
+                onRemoteChange = onRemoteChange,
+                socketFactory = { _, _ -> sockets.newSocket() },
+            )
+        }
+
+    // One close counter per socket built, in build order, and how many of them connected.
+    private class SocketLog {
+        private val connects = AtomicInteger()
+        private val closes = java.util.concurrent.CopyOnWriteArrayList<AtomicInteger>()
+
+        fun newSocket(): NotificationsSocket = ClosingSocket(connects, AtomicInteger().also { closes.add(it) })
+
+        fun connected(): Int = connects.get()
+
+        fun closesOf(index: Int): Int = closes[index].get()
+
+        fun closeCounts(): List<Int> = closes.map { it.get() }
     }
 
     private class ClosingSocket(
