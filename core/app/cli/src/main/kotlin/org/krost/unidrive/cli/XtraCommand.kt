@@ -2,6 +2,7 @@ package org.krost.unidrive.cli
 
 import org.krost.unidrive.xtra.XtraAgeKeyStore
 import org.krost.unidrive.xtra.XtraKeyManager
+import org.krost.unidrive.xtra.XtraTinkKeyStore
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
 import picocli.CommandLine.ParentCommand
@@ -30,6 +31,7 @@ import java.nio.file.Paths
         XtraImportAgeCommand::class,
         XtraChangePassphraseAgeCommand::class,
         XtraInitTinkCommand::class,
+        XtraChangePassphraseTinkCommand::class,
     ],
 )
 class XtraCommand : Runnable {
@@ -37,7 +39,7 @@ class XtraCommand : Runnable {
     lateinit var parent: Main
 
     override fun run() {
-        println("Usage: unidrive xtra <init|export-key|import-key|change-passphrase|init-age|export-age|import-age|change-passphrase-age|init-tink>")
+        println("Usage: unidrive xtra <init|export-key|import-key|change-passphrase|init-age|export-age|import-age|change-passphrase-age|init-tink|change-passphrase-tink>")
     }
 }
 
@@ -158,6 +160,7 @@ class XtraChangePassphraseCommand : Runnable {
         // encrypted with the old key.
         km.changePassphrase(newPass)
         println("Passphrase changed successfully.")
+        XtraAlgorithm.sharedPassphraseReminders(keyPath.parent, XtraAlgorithm.AES_GCM).forEach(::println)
     }
 }
 
@@ -276,6 +279,7 @@ class XtraChangePassphraseAgeCommand : Runnable {
         // encrypted to the old one.
         XtraAgeKeyStore(keyPath).changePassphrase(current, newPass)
         println("Passphrase changed successfully.")
+        XtraAlgorithm.sharedPassphraseReminders(keyPath.parent, XtraAlgorithm.AGE_V1).forEach(::println)
     }
 }
 
@@ -287,18 +291,41 @@ class XtraInitTinkCommand : Runnable {
     lateinit var xtraCmd: XtraCommand
 
     override fun run() {
-        val keyPath = xtraCmd.parent.configBaseDir().resolve("xtra-tink.key")
+        val keyPath = xtraCmd.parent.configBaseDir().resolve(XtraAlgorithm.TINK_AES_GCM.keyFileName)
         if (Files.exists(keyPath)) {
-            System.err.println("A keyset already exists at $keyPath.")
+            System.err.println("A keyset already exists at $keyPath. Use 'xtra change-passphrase-tink' to update it.")
             return
         }
         // The keyset's passphrase comes from the same chain the daemon loads it with, so what is generated here
         // decrypts there by construction — the same up-front generate the other algorithms' init verbs make.
-        org.krost.unidrive.xtra.XtraTinkKeyStore(keyPath).generate(xtraCmd.parent.xtraPassphrase())
+        XtraTinkKeyStore(keyPath).generate(xtraCmd.parent.xtraPassphrase())
         println("Tink keyset generated at $keyPath")
         println()
         println("WARNING: If you lose this keyset, tink-encrypted files CANNOT be recovered.")
         println("Unlike age-v1 there is no external recovery tool: only this engine's keyset decrypts the stored files.")
         println("Back up xtra-tink.key itself (it decrypts only under its passphrase).")
+    }
+}
+
+// ── xtra change-passphrase-tink ───────────────────────────────────────────────
+
+@Command(name = "change-passphrase-tink", description = ["Change the tink keyset's passphrase (the keyset itself is unchanged)"], mixinStandardHelpOptions = true)
+class XtraChangePassphraseTinkCommand : Runnable {
+    @ParentCommand
+    lateinit var xtraCmd: XtraCommand
+
+    override fun run() {
+        val keyPath = xtraCmd.parent.configBaseDir().resolve(XtraAlgorithm.TINK_AES_GCM.keyFileName)
+        if (!Files.exists(keyPath)) { System.err.println("No tink keyset found. Run 'unidrive xtra init-tink' first."); return }
+        val console = System.console() ?: run { System.err.println("No console available"); return }
+        val current = console.readPassword("Current passphrase: ") ?: return
+        val newPass = console.readPassword("New passphrase (min ${XtraKeyManager.MIN_PASSPHRASE_LENGTH} chars): ")
+            ?: return
+        val confirm = console.readPassword("Confirm passphrase: ")
+        if (!newPass.contentEquals(confirm)) { System.err.println("Passphrases don't match"); return }
+        // Re-wraps the same keyset under the new passphrase; a fresh generate would orphan every file it sealed.
+        XtraTinkKeyStore(keyPath).changePassphrase(current, newPass)
+        println("Passphrase changed successfully.")
+        XtraAlgorithm.sharedPassphraseReminders(keyPath.parent, XtraAlgorithm.TINK_AES_GCM).forEach(::println)
     }
 }

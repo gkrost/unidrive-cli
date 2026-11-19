@@ -305,13 +305,7 @@ internal object ProfileSettings {
     fun xtraKeyFile(
         configDir: Path,
         algorithm: String,
-    ): Path = configDir.resolve(
-        when (algorithm) {
-            "age-v1" -> "xtra-age.key"
-            "tink-aes-gcm" -> "xtra-tink.key"
-            else -> "xtra.key"
-        },
-    )
+    ): Path = configDir.resolve((XtraAlgorithm.named(algorithm) ?: XtraAlgorithm.AES_GCM).keyFileName)
 
     /** Whether the profile has sync state: a non-empty state.db (or its WAL) in the profile's folder. */
     fun hasSyncState(profileDir: Path): Boolean =
@@ -347,11 +341,7 @@ internal object ProfileSettings {
         val algorithm = effectiveXtraAlgorithm(edited)
         val keyFile = xtraKeyFile(configDir, algorithm)
         if (!Files.exists(keyFile)) {
-            val init = when (algorithm) {
-                "age-v1" -> "unidrive xtra init-age"
-                "tink-aes-gcm" -> "unidrive xtra init-tink"
-                else -> "unidrive xtra init"
-            }
+            val init = (XtraAlgorithm.named(algorithm) ?: XtraAlgorithm.AES_GCM).initCommand
             throw ProfileCommandError(
                 "key_missing",
                 "xtra_encryption would be on with $algorithm but ${keyFile.fileName} does not exist beside config.toml; " +

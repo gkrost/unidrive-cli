@@ -29,51 +29,25 @@ internal fun Main.wrapWithXtra(
     tokenPath: Path,
 ): CloudProvider {
     if (rp?.xtra_encryption != true) return provider
-    val keyPath = tokenPath.parent.resolve("xtra.key")
+    val name = rp?.xtra_algorithm?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: XtraAlgorithm.AES_GCM.configName
+    val algorithm = XtraAlgorithm.named(name) ?: run {
+        val known = XtraAlgorithm.entries.joinToString(", ") { it.configName }
+        System.err.println("Error: unknown xtra_algorithm \"$name\" (known: $known).")
+        exitProcess(1)
+    }
+    // The key file comes from the same table `profile set` guards with. It never self-generates on the first
+    // content operation (a root secret must not appear silently); it must exist, or the profile refuses to run.
+    val keyPath = tokenPath.parent.resolve(algorithm.keyFileName)
+    if (!Files.exists(keyPath)) {
+        System.err.println("Error: a profile sets xtra_encryption with xtra_algorithm = \"$name\" but $keyPath does not exist.")
+        System.err.println("Create it first: ${algorithm.initCommand}")
+        exitProcess(1)
+    }
     val strategy =
-        when (val algorithm = rp?.xtra_algorithm?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: "aes-gcm") {
-            "aes-gcm" -> {
-                // The key never self-generates on the first content operation (a root secret must not appear
-                // silently); it must exist, or the profile refuses to run.
-                if (!Files.exists(keyPath)) {
-                    System.err.println("Error: a profile sets xtra_encryption but $keyPath does not exist.")
-                    System.err.println("Create it first: unidrive xtra init")
-                    exitProcess(1)
-                }
-                AesGcmStrategy(lazy { XtraKeyManager(keyPath).also { it.load(xtraPassphrase()) } })
-            }
-            "age-v1" -> {
-                // The identity never self-generates on the first content operation (a root secret must not appear
-                // silently); like the RSA key, it must exist, or the profile refuses to run.
-                val ageKeyPath = keyPath.parent.resolve("xtra-age.key")
-                if (!Files.exists(ageKeyPath)) {
-                    System.err.println("Error: a profile sets xtra_algorithm = \"age-v1\" but $ageKeyPath does not exist.")
-                    System.err.println("Create it first: unidrive xtra init-age")
-                    exitProcess(1)
-                }
-                AgeV1Strategy(
-                    lazy { XtraAgeKeyStore(ageKeyPath) },
-                    this::xtraPassphrase,
-                )
-            }
-            "tink-aes-gcm" -> {
-                // The keyset never self-generates either (same rule as every X-tra key: no silent root secret);
-                // it must exist, or the profile refuses to run.
-                val tinkKeyPath = keyPath.parent.resolve("xtra-tink.key")
-                if (!Files.exists(tinkKeyPath)) {
-                    System.err.println("Error: a profile sets xtra_algorithm = \"tink-aes-gcm\" but $tinkKeyPath does not exist.")
-                    System.err.println("Create it first: unidrive xtra init-tink")
-                    exitProcess(1)
-                }
-                TinkStreamingStrategy(
-                    lazy { XtraTinkKeyStore(tinkKeyPath) },
-                    this::xtraPassphrase,
-                )
-            }
-            else -> {
-                System.err.println("Error: unknown xtra_algorithm \"$algorithm\" (known: aes-gcm, age-v1, tink-aes-gcm).")
-                exitProcess(1)
-            }
+        when (algorithm) {
+            XtraAlgorithm.AES_GCM -> AesGcmStrategy(lazy { XtraKeyManager(keyPath).also { it.load(xtraPassphrase()) } })
+            XtraAlgorithm.AGE_V1 -> AgeV1Strategy(lazy { XtraAgeKeyStore(keyPath) }, this::xtraPassphrase)
+            XtraAlgorithm.TINK_AES_GCM -> TinkStreamingStrategy(lazy { XtraTinkKeyStore(keyPath) }, this::xtraPassphrase)
         }
     // The listings decorator sits below the cipher, so both halves see the same provider: the listings answer
     // the plaintext size the engines' size contracts hold downloads against, and the cipher seals the content

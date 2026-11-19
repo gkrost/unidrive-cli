@@ -65,6 +65,25 @@ class XtraTinkKeyStore(
         }
     }
 
+    /**
+     * Re-wraps the same keyset under [newPassphrase]; the keyset itself (what decrypts the content) is unchanged. All
+     * X-tra key files share one passphrase, so a rotation re-wraps each of them — this is the Tink file's share.
+     */
+    fun changePassphrase(
+        currentPassphrase: CharArray,
+        newPassphrase: CharArray,
+    ) {
+        require(newPassphrase.size >= XtraKeyManager.MIN_PASSPHRASE_LENGTH) {
+            "Passphrase must be at least ${XtraKeyManager.MIN_PASSPHRASE_LENGTH} characters"
+        }
+        val serialized = TinkProtoKeysetFormat.serializeKeyset(load(currentPassphrase), InsecureSecretKeyAccess.get())
+        try {
+            writeKeyFile(newPassphrase, serialized)
+        } finally {
+            serialized.fill(0)
+        }
+    }
+
     private fun writeKeyFile(
         passphrase: CharArray,
         serializedKeyset: ByteArray,
