@@ -53,7 +53,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import java.time.temporal.ChronoUnit
-import java.util.Collections
 
 /**
  * Dropbox through its HTTP API v2 (no SDK).
@@ -108,7 +107,7 @@ class DropboxProvider(
 
     // Cursors handed out in the middle of a full listing (one that began without a cursor). Their pages list what
     // exists; a deleted entry there is history from before the walk, never a deletion to act on.
-    private val fullListingCursors = Collections.synchronizedSet(HashSet<String>())
+    private val fullListingCursors = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     private val hintScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var hintJob: Job? = null

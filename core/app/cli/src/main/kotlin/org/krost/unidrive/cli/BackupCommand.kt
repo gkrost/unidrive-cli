@@ -194,7 +194,7 @@ internal fun parseSectionFields(toml: String): Map<String, Map<String, String>> 
         if (currentSection != null) {
             val kvMatch = kvRegex.find(line)
             if (kvMatch != null) {
-                result[currentSection]!![kvMatch.groupValues[1]] = kvMatch.groupValues[2]
+                result.getOrPut(currentSection) { mutableMapOf() }[kvMatch.groupValues[1]] = kvMatch.groupValues[2]
             }
         }
     }
