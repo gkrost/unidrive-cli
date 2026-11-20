@@ -57,7 +57,7 @@ class StateDatabaseHotReadsTest {
         db.markUploadFailed("/provider-id.txt", stamp)
 
         assertEquals(1, db.countWriteUploadFailed(), "an id that merely resembles the synthetic in another case is a cloud id")
-        assertEquals(listOf("/pending.txt"), db.writeUploadFailedPaths(10))
+        assertEquals(listOf("/pending.txt"), db.writeUploadFailedPaths(10).map { it.path })
     }
 
     @Test

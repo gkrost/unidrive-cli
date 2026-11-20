@@ -2713,21 +2713,47 @@ class StateDatabase(
         }
 
     /**
-     * Paths of alive rows written locally but not uploaded (see
-     * [countWriteUploadFailed]), capped at [limit] for the doctor detail block.
+     * One row written locally but not uploaded, as [writeUploadFailedPaths] reports it: the marks that say why the
+     * upload did not happen ([nameBlock] from [markNameBlocked], [uploadRefused] from [markUploadRefused], plain
+     * [lastErrorAt] when neither holds), plus the local baseline [UploadRefusals.reason] matches a refusal's
+     * watermark against (gkrost/unidrive-cli#852).
      */
-    fun writeUploadFailedPaths(limit: Int): List<String> =
+    data class WriteUploadFailedRow(
+        val path: String,
+        val nameBlock: String?,
+        val uploadRefused: String?,
+        val lastErrorAt: String?,
+        val localMtime: Long?,
+        val localSize: Long?,
+    )
+
+    /**
+     * Alive rows written locally but not uploaded (see [countWriteUploadFailed]), capped at [limit] for the
+     * doctor detail block, with the cause marks per row.
+     */
+    fun writeUploadFailedPaths(limit: Int): List<WriteUploadFailedRow> =
         read("writeUploadFailedPaths") { c ->
-            val out = mutableListOf<String>()
+            val out = mutableListOf<WriteUploadFailedRow>()
             c
                 .prepareStatement(
-                    "SELECT path FROM sync_entries WHERE status='EXISTS' " +
+                    "SELECT path, name_block, upload_refused, last_error_at, local_mtime, local_size " +
+                        "FROM sync_entries WHERE status='EXISTS' " +
                         "AND remote_id GLOB 'local:*' AND last_error_at IS NOT NULL " +
                         "ORDER BY path LIMIT ?",
                 ).use { stmt ->
                     stmt.setInt(1, limit)
                     val rs = stmt.executeQuery()
-                    while (rs.next()) out += rs.getString(1)
+                    while (rs.next()) {
+                        out +=
+                            WriteUploadFailedRow(
+                                path = rs.getString(1),
+                                nameBlock = rs.getString(2),
+                                uploadRefused = rs.getString(3),
+                                lastErrorAt = rs.getString(4),
+                                localMtime = rs.getObject(5)?.let { (it as Number).toLong() },
+                                localSize = rs.getObject(6)?.let { (it as Number).toLong() },
+                            )
+                    }
                 }
             return out
         }
