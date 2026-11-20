@@ -151,4 +151,31 @@ class FolderMovePairingTest {
         assertTrue(actions.none { it.path == "/b/docs/readme.txt" || it.path.startsWith("/a/docs") }, "$actions")
         assertTrue(actions.any { it is SyncAction.Upload && it.path == "/b/docs/brand-new.txt" }, "a genuinely new file uploads: $actions")
     }
+
+    @Test
+    fun `subfolder_carried_by_a_parent_move_is_not_paired_with_another_deleted_folder_of_its_name`() {
+        // /a/X moves to /b/X and carries /b/X/S along. /b/X/S also holds a new file g, and an unrelated deleted /c/S held a g:
+        // looking for /b/X/S's source after the parent move would pair it with /c/S, a second move into a moved subtree.
+        db.upsertEntry(row("/a/X", isFolder = true))
+        db.upsertEntry(row("/a/X/S", isFolder = true))
+        db.upsertEntry(row("/a/X/S/f", isFolder = false))
+        db.upsertEntry(row("/c/S", isFolder = true))
+        db.upsertEntry(row("/c/S/g", isFolder = false))
+        newLocalFile("/b/X/S/f")
+        newLocalFile("/b/X/S/g")
+        val local =
+            mapOf(
+                "/a/X" to ChangeState.DELETED,
+                "/a/X/S" to ChangeState.DELETED,
+                "/a/X/S/f" to ChangeState.DELETED,
+                "/c/S" to ChangeState.DELETED,
+                "/c/S/g" to ChangeState.DELETED,
+                "/b/X" to ChangeState.NEW,
+                "/b/X/S" to ChangeState.NEW,
+                "/b/X/S/f" to ChangeState.NEW,
+                "/b/X/S/g" to ChangeState.NEW,
+            )
+        val moves = reconciler.reconcile(emptyMap(), local).filterIsInstance<SyncAction.MoveRemote>()
+        assertEquals(listOf("/a/X" to "/b/X"), moves.map { it.fromPath to it.path }, "only the parent move: $moves")
+    }
 }
