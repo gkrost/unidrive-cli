@@ -37,6 +37,15 @@ internal class MultipartStore(
         return Files.list(dir).use { files -> files.filter { it.fileName.toString().endsWith(SUFFIX) }.toList() }.mapNotNull(::read)
     }
 
+    /** The records not written since [cutoff] (a record's file time is its last save, which a resumed upload renews). */
+    @Synchronized
+    fun olderThan(cutoff: java.time.Instant): List<Pending> {
+        if (!Files.isDirectory(dir)) return emptyList()
+        return Files.list(dir).use { files ->
+            files.filter { it.fileName.toString().endsWith(SUFFIX) && Files.getLastModifiedTime(it).toInstant().isBefore(cutoff) }.toList()
+        }.mapNotNull(::read)
+    }
+
     @Synchronized
     fun save(pending: Pending) {
         Files.createDirectories(dir)
