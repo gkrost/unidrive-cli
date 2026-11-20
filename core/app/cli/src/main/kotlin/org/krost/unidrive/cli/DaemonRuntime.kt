@@ -99,6 +99,7 @@ class DaemonRuntime(
     // below 0 = no content cache (#404). `daemon run` passes the config's resolution; a profile without the key
     // gets the config default (disabled). Tests that build a runtime without it get [HydrationImpl.DEFAULT_CACHE_MAX_BYTES].
     private val hydrationCacheMaxBytes: Long = HydrationImpl.DEFAULT_CACHE_MAX_BYTES,
+    private val deleteGuards: DeleteGuards = DeleteGuards(),
     // archive#603 (U4): the profile's hosting mode, resolved and gated by `daemon run` before this runtime is
     // constructed. A mount daemon serves the hydration verbs, sync.enumerate and the poller, and routes
     // refresh.run to the always-enumerate path; a mirror daemon refuses the mount verbs (wrong_mode) and
@@ -357,7 +358,7 @@ class DaemonRuntime(
                 // subscribers without going through the HydrationImpl flow, which is intentional: the
                 // invalidation event originates outside the per-path hydration lifecycle.
                 val engine = SyncEngine(
-                    provider, db!!, syncRoot = syncRoot, cacheKey = profileName, syncPaths = syncPaths,
+                    provider, db!!, syncRoot = syncRoot, cacheKey = profileName, syncPaths = syncPaths, maxDeletePercentage = deleteGuards.maxDeletePercentage, maxDeleteAbsolute = deleteGuards.maxDeleteAbsolute, maxDeletePerSubtreePercent = deleteGuards.maxDeletePerSubtreePercent, ignoreTopLevelGuard = deleteGuards.ignoreTopLevelGuard, bulkReapGuard = deleteGuards.bulkReapGuard,
                     // gkrost/unidrive-cli#392: the provider TYPE the engine looks its audited limits up by (transfer cap,
                     // download budget). Left blank before, every daemon ran at the fallback of 4 whatever the provider.
                     providerId = cloud.id,
