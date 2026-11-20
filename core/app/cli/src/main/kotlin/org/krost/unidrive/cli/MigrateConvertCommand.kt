@@ -238,19 +238,24 @@ internal object LegacyConversion {
 
             fun file(profileDir: Path): Path = profileDir.resolve(JOURNAL_FILE)
 
+            /** The journal with the moves its [ConversionJournalLog] holds folded in. */
             fun load(profileDir: Path): Journal? {
                 val f = file(profileDir)
                 if (!Files.exists(f)) return null
-                return json.decodeFromString(serializer(), Files.readString(f))
+                return ConversionJournalLog.fold(profileDir, json.decodeFromString(serializer(), Files.readString(f)))
             }
 
+            /** Replaces the journal whole, then drops the log: [journal] must already hold it (see [ConversionJournalLog]). */
             fun save(
                 profileDir: Path,
                 journal: Journal,
             ) {
                 val f = file(profileDir)
                 Files.createDirectories(profileDir)
-                org.krost.unidrive.io.OwnerOnlyAtomicWrite.replace(f, json.encodeToString(serializer(), journal).toByteArray())
+                val bytes = json.encodeToString(serializer(), journal).toByteArray()
+                org.krost.unidrive.io.OwnerOnlyAtomicWrite.replace(f, bytes)
+                ConversionJournalLog.observeWrite?.invoke("journal", bytes.size)
+                ConversionJournalLog.removeAfterSave(profileDir)
             }
         }
 
@@ -546,36 +551,20 @@ internal object LegacyConversion {
                     Journal.save(setup.profileDir, journal)
                 }
                 reconcilePendingMoves(journal)
+                val moveLog = ConversionJournalLog.open(setup.profileDir, journal)
                 for (record in rootRecords) {
                     val source = setup.syncRoot.resolve(record.path.removePrefix("/"))
                     if (!Files.exists(source)) continue // already moved by an interrupted run, and journaled before it went
                     val bucket = if (record.cls == PathClass.BOTH_IDENTICAL) "retired" else "quarantine"
                     val destination = dir.resolve(bucket).resolve(record.path.removePrefix("/"))
                     // The move is journaled before the source is given up: a kill after the removal leaves the copy named
-                    // for upload, and the resume finds it at the recorded destination.
+                    // for upload, and the resume finds it at the recorded destination. One synced log line, not a rewrite.
                     fun journalMove() {
-                        if (journal.moves.any { it.from == source.toString() }) return
-                        journal =
-                            journal.copy(
-                                moves =
-                                    journal.moves + MovedFile(
-                                        from = source.toString(),
-                                        to = destination.toString(),
-                                        bytes = record.syncRootBytes ?: 0L,
-                                        bucket = bucket,
-                                    ),
-                                quarantined =
-                                    if (bucket == "quarantine") {
-                                        journal.quarantined + QuarantinedFile(
-                                            remotePath = record.path,
-                                            quarantinePath = destination.toString(),
-                                            bytes = record.syncRootBytes ?: 0L,
-                                        )
-                                    } else {
-                                        journal.quarantined
-                                    },
-                            )
-                        Journal.save(setup.profileDir, journal)
+                        val bytes = record.syncRootBytes ?: 0L
+                        moveLog.recordMove(
+                            MovedFile(from = source.toString(), to = destination.toString(), bytes = bytes, bucket = bucket),
+                            if (bucket == "quarantine") QuarantinedFile(record.path, destination.toString(), bytes) else null,
+                        )
                     }
                     if (Files.exists(destination)) {
                         // A copy a previous run finished but whose source delete never ran: finishing the delete is
@@ -601,6 +590,7 @@ internal object LegacyConversion {
                     if (verbose) println("  moved ${record.path} -> $bucket")
                 }
                 deleteEmptyDirs(setup.syncRoot, keepRoot = true)
+                journal = moveLog.journal() // folded; the PRESERVE save below writes it and drops the log
                 val manifest = dir.resolve("manifest.json")
                 Files.writeString(
                     manifest,
