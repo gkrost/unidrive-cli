@@ -1266,7 +1266,7 @@ class StateDatabase(
         conn
             .prepareStatement(
                 "SELECT remote_id FROM sync_entries WHERE path=? AND status='EXISTS' " +
-                    "AND remote_id LIKE 'local:%' LIMIT 1",
+                    "AND remote_id GLOB 'local:*' LIMIT 1",
             ).use { stmt ->
                 stmt.setString(1, path)
                 val rs = stmt.executeQuery()
@@ -1294,25 +1294,21 @@ class StateDatabase(
      * path, so a caller that classifies a whole batch holds the instance monitor once, not once per
      * row. Paths are matched NFC like [getEntry]; the returned map is keyed by the caller's spelling,
      * and a path without an alive row is simply absent. The caller keeps the batch bounded (the
-     * eviction pass asks about one LRU slice at a time): every path becomes a bound statement
-     * parameter, with SQLITE_MAX_VARIABLE_NUMBER the hard ceiling.
+     * eviction pass asks about one LRU slice at a time); it is asked in chunks of one cached statement ([queryInChunks]).
      */
     fun getEntriesByPaths(paths: Collection<String>): Map<String, SyncEntry> =
         read("getEntriesByPaths") { c ->
             if (paths.isEmpty()) return emptyMap()
             val storedToCaller = HashMap<String, String>(paths.size * 2)
             for (path in paths) storedToCaller[PathNormalizer.nfc(path)] = path
-            val placeholders = storedToCaller.keys.joinToString(",") { "?" }
-            c.prepareStatement("SELECT * FROM alive_entries WHERE path IN ($placeholders)").use { stmt ->
-                storedToCaller.keys.forEachIndexed { index, stored -> stmt.setString(index + 1, stored) }
-                val rs = stmt.executeQuery()
-                val found = HashMap<String, SyncEntry>(storedToCaller.size * 2)
-                while (rs.next()) {
+            val found = HashMap<String, SyncEntry>(storedToCaller.size * 2)
+            c.cached(ENTRIES_BY_PATHS_SQL) { stmt ->
+                stmt.queryInChunks(storedToCaller.keys) { rs ->
                     val entry = rs.toSyncEntry()
                     storedToCaller[entry.path]?.let { callerPath -> found[callerPath] = entry }
                 }
-                return found
             }
+            found
         }
 
     fun getEntryByRemoteId(remoteId: String): SyncEntry? =
@@ -1751,12 +1747,13 @@ class StateDatabase(
     fun getEntriesByPrefix(prefixRaw: String): List<SyncEntry> =
         read("getEntriesByPrefix") { c ->
             val prefix = PathNormalizer.nfc(prefixRaw)
-            c.prepareStatement("SELECT * FROM alive_entries WHERE ${underPrefix(prefix)}").use { stmt ->
+            c.cached("SELECT * FROM alive_entries WHERE ${underPrefix(prefix)}") { stmt ->
                 stmt.bindPrefix(1, prefix)
-                val rs = stmt.executeQuery()
-                val entries = mutableListOf<SyncEntry>()
-                while (rs.next()) entries.add(rs.toSyncEntry())
-                return entries
+                stmt.executeQuery().use { rs ->
+                    val entries = mutableListOf<SyncEntry>()
+                    while (rs.next()) entries.add(rs.toSyncEntry())
+                    entries
+                }
             }
         }
 
@@ -2179,7 +2176,7 @@ class StateDatabase(
         locked("markUploadRefused") {
             beginWrite()
             val path = PathNormalizer.nfc(pathRaw)
-            val takesStamp = if (keepCloudBaseline) "remote_id LIKE 'local:%'" else "1"
+            val takesStamp = if (keepCloudBaseline) "remote_id GLOB 'local:*'" else "1"
             conn
                 .prepareStatement(
                     "UPDATE sync_entries SET upload_refused=?, " +
@@ -2229,7 +2226,7 @@ class StateDatabase(
             conn
                 .prepareStatement(
                     "UPDATE sync_entries SET edit_base=? WHERE path=? AND status='EXISTS' AND is_folder=0 " +
-                        "AND remote_id NOT LIKE 'local:%' AND edit_base IS NULL",
+                        "AND remote_id NOT GLOB 'local:*' AND edit_base IS NULL",
                 ).use { stmt ->
                     stmt.setString(1, base)
                     stmt.setString(2, path)
@@ -3805,6 +3802,7 @@ class StateDatabase(
         // The SQL of the calls that go through [cached]; the text is the cache key.
         private const val GET_ENTRY_SQL = "SELECT * FROM alive_entries WHERE path = ?"
         private const val GET_ENTRY_BY_REMOTE_ID_SQL = "SELECT * FROM alive_entries WHERE remote_id = ?"
+        private val ENTRIES_BY_PATHS_SQL = inLookupSql("SELECT * FROM alive_entries WHERE path")
         private const val NAME_BLOCK_SQL = "SELECT name_block FROM alive_entries WHERE path=?"
         private const val COUNT_NAME_BLOCKED_SQL = "SELECT COUNT(*) FROM alive_entries WHERE name_block IS NOT NULL AND substr(name_block, 1, length(?)) = ?"
         private const val BLOCKED_ANCESTOR_SQL =
