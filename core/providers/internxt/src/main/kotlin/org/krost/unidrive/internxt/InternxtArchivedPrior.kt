@@ -2,6 +2,7 @@ package org.krost.unidrive.internxt
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.krost.unidrive.internxt.model.InternxtFile
 import java.nio.file.Path
 
 // #747 finding 4: a keep_overwritten replace is a rename (the archive) followed by a create. The rename is recorded in the
@@ -25,3 +26,62 @@ internal suspend fun UploadTombstoneStore.recordArchive(
     withContext(Dispatchers.IO) { write(pathHash, marked) }
     return marked
 }
+
+/**
+ * The keep_overwritten archive of an empty file's replace (#747 finding 4): the write-token check and the rename are skipped
+ * when an earlier attempt's marker says the rename landed; otherwise the token is checked, the rename tried and, when it
+ * archived the file, a marker-only tombstone written (an empty file has no ciphertext to resume). True when the file is archived.
+ */
+@Suppress("LongParameterList")
+internal suspend fun UploadTombstoneStore.archiveForEmptyReplace(
+    localPath: Path,
+    bucket: String,
+    folderUuid: String,
+    plainName: String,
+    ext: String?,
+    localMtime: java.time.Instant,
+    existingRemoteId: String,
+    keepOverwritten: Boolean,
+    checkToken: suspend () -> Unit,
+    rename: suspend () -> Boolean,
+): Boolean {
+    if (archivedPriorBefore(localPath, existingRemoteId)) return true
+    checkToken()
+    if (!keepOverwritten || !rename()) return false
+    val absolute = localPath.toAbsolutePath().toString()
+    val now = System.currentTimeMillis()
+    val marker =
+        UploadTombstone(
+            localPath = absolute,
+            localMtimeMillis = localMtime.toEpochMilli(),
+            localSize = 0L,
+            bucket = bucket,
+            folderUuid = folderUuid,
+            plainName = plainName,
+            ext = ext,
+            indexBytesHex = "",
+            existingRemoteId = existingRemoteId,
+            stage = UploadTombstone.Stage.ENCRYPTING,
+            startedAtMillis = now,
+            tombstoneWrittenAtMillis = now,
+            archivedPriorId = existingRemoteId,
+        )
+    withContext(Dispatchers.IO) { write(UploadTombstoneStore.pathHash(absolute), marker) }
+    return true
+}
+
+/**
+ * The create of an empty file once its prior is archived. A create that landed on an earlier attempt (its answer lost) holds
+ * the name, so the retry's create answers 409: an empty live file of the name ([find]) is that create, and is adopted;
+ * anything else is a real clash and the 409 stands.
+ */
+internal suspend fun createOrAdoptLandedEmpty(
+    create: suspend () -> InternxtFile,
+    find: suspend () -> InternxtFile?,
+): InternxtFile =
+    try {
+        create()
+    } catch (e: InternxtApiException) {
+        if (e.statusCode != 409) throw e
+        find()?.takeIf { (it.size?.toLongOrNull() ?: -1L) == 0L } ?: throw e
+    }

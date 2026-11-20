@@ -25,6 +25,8 @@ import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.SyncScope
 import org.krost.unidrive.sync.UploadRefusals
+import org.krost.unidrive.sync.fileTotals
+import org.krost.unidrive.sync.scanAliveRowsOncePerPath
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
 import picocli.CommandLine.ParentCommand
@@ -241,20 +243,21 @@ class StatusCommand : Callable<Int> {
         val refusedUploads = mutableListOf<Pair<String, String>>()
         try {
             db.initialize()
-            for (entry in db.getAllEntries()) {
-                if (entry.isFolder) continue
+            // #841 (#749-8): one pass in steps of rows, not every row as an object at once.
+            db.scanAliveRowsOncePerPath { row ->
+                val entry = row.entry().takeUnless { it.isFolder } ?: return@scanAliveRowsOncePerPath
                 if (!entry.isHydrated) {
                     downloadsPending++
                     downloadBytes += entry.remoteSize
-                    continue
+                    return@scanAliveRowsOncePerPath
                 }
-                if (!entry.isPendingUpload) continue
+                if (!entry.isPendingUpload) return@scanAliveRowsOncePerPath
                 // archive#136: hydrated rows use the whole UD-901 predicate; the !isHydrated
                 // branch above already routed sparse partial-downloads to downloads.
                 val refusal = db.uploadRefusal(entry.path)
                 if (UploadRefusals.holds(refusal, entry.localMtime, entry.localSize)) {
                     refusedUploads += entry.path to UploadRefusals.reason(refusal, entry.localMtime, entry.localSize).orEmpty()
-                    continue
+                    return@scanAliveRowsOncePerPath
                 }
                 uploadsPending++
                 uploadBytes += entry.localSize ?: 0L
@@ -316,11 +319,10 @@ class StatusCommand : Callable<Int> {
             val db = StateDatabase(stateDbPath, readOnly = true)
             try {
                 db.initialize()
-                val entries = db.getAllEntries()
-                val files = entries.filter { !it.isFolder }
-                trackedFiles = files.size
-                trackedBytes = files.sumOf { it.remoteSize }
-                nonHydrated = files.count { !it.isHydrated }
+                val totals = db.fileTotals() // #841 (#749-8): one aggregate query, not every row as an object
+                trackedFiles = totals.files
+                trackedBytes = totals.remoteBytes
+                nonHydrated = totals.notHydrated
                 val cursor: CursorStateView = CursorState(db)
                 lastFullScan = cursor.lastFullScan
                 pendingCursor = cursor.pendingCursor

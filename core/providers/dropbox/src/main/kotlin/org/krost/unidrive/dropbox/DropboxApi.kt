@@ -3,7 +3,9 @@ package org.krost.unidrive.dropbox
 import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
 import io.ktor.client.engine.HttpClientEngine
+import io.ktor.client.plugins.HttpRequestTimeoutException
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.HttpTimeoutConfig
 import io.ktor.client.plugins.UserAgent
 import io.ktor.client.plugins.timeout
 import io.ktor.client.request.HttpRequestBuilder
@@ -23,6 +25,9 @@ import io.ktor.http.contentLength
 import io.ktor.http.content.OutgoingContent
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -30,6 +35,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.HttpDefaults
 import org.krost.unidrive.ProviderException
@@ -185,7 +191,6 @@ class DropboxApi(
     suspend fun download(
         path: String,
         destination: Path,
-        requestTimeoutMs: Long? = null,
     ): Pair<JsonObject, Long> {
         var rejectedToken: String? = null
         return budget.retrying { refreshed, retries ->
@@ -201,12 +206,11 @@ class DropboxApi(
                     bearerAuth(token)
                     pathRoot?.let { header(PATH_ROOT, it) }
                     header(API_ARG, headerSafeJson(obj("path" to path)))
-                    // Ktor counts the request timeout up to the end of the `execute` block, so the client's flat 10 minute
-                    // cap cut every download that needs longer, steady transfer or not. The socket timeout stays at its
-                    // default: during a download the read-idle timer is the stall detector.
-                    if (requestTimeoutMs != null) {
-                        timeout { requestTimeoutMillis = requestTimeoutMs }
-                    }
+                    // Ktor counts the request timeout up to the end of the `execute` block, and a size-based cap cannot be set
+                    // before the size is known: the call is unbounded and the cap is applied to the body once the headers are
+                    // in, sized from the response's own Content-Length (what a get_metadata first used to supply). The socket
+                    // timeout stays at its default: until the headers and during the body the read-idle timer is the stall detector.
+                    timeout { requestTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS }
                 }
             statement.execute { response ->
                 when {
@@ -222,8 +226,7 @@ class DropboxApi(
                         val meta =
                             response.headers[API_RESULT]?.let { json.parseToJsonElement(it).jsonObject }
                                 ?: throw ProviderException("Dropbox download of '$path' came without its metadata")
-                        val written = writeStagedDownload(response.bodyAsChannel(), destination, response.contentLength(), "Dropbox download of '$path'")
-                        RetryOutcome.Done(meta to written)
+                        RetryOutcome.Done(meta to writeCapped(response, destination, path, meta["size"]?.jsonPrimitive?.longOrNull))
                     }
                 }
             }
@@ -438,3 +441,24 @@ internal fun dropboxHttpClient(
     }
     return if (engine != null) HttpClient(engine, configure) else unidriveHttpClient(configure = configure)
 }
+
+// The body's time cap is sized from the response's own Content-Length, or, for a chunked answer without one, from the
+// `size` of the Dropbox-API-Result metadata. On IO it runs on the wall clock (under runTest the dispatcher's timer would be
+// virtual time).
+private suspend fun writeCapped(
+    response: HttpResponse,
+    destination: Path,
+    path: String,
+    metadataSize: Long?,
+): Long {
+    val declared = response.contentLength()
+    val limitMs = downloadBodyCapMs(declared, metadataSize)
+    return withContext(Dispatchers.IO) {
+        withTimeoutOrNull(limitMs) { writeStagedDownload(response.bodyAsChannel(), destination, declared, "Dropbox download of '$path'") }
+    } ?: throw HttpRequestTimeoutException(response.call.request.url.toString(), limitMs)
+}
+
+internal fun downloadBodyCapMs(
+    contentLength: Long?,
+    metadataSize: Long?,
+): Long = UploadTimeoutPolicy.computeRequestTimeoutMs(contentLength ?: metadataSize ?: 0L)

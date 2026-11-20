@@ -20,6 +20,7 @@ import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.StateDbCorruptException
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.SyncEngine
+import org.krost.unidrive.sync.hydratedFiles
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
 import picocli.CommandLine.ParentCommand
@@ -326,10 +327,8 @@ class DoctorCommand : Runnable {
         where: String = "missing on disk",
     ): CheckResult {
         val name = "hydration-drift"
-        val all = db.getAllEntries()
-        val hydratedFiles = all.asSequence()
-            .filter { !it.isFolder && it.isHydrated }
-            .let { if (full) it.toList() else it.take(HYDRATION_SAMPLE).toList() }
+        // #841 (#749-8): the sample alone, not every row as an object.
+        val hydratedFiles = db.hydratedFiles(if (full) null else HYDRATION_SAMPLE)
         var missing = 0
         var invalid = 0
         val sampleMissing = mutableListOf<String>()

@@ -75,6 +75,8 @@ data class TrackingRecord(
     val remoteEtag: String?,
     val remoteSize: Long?,
     val lastSynced: Instant,
+    /** The mtime of the bytes [localHash] was taken of (#745 finding 9: a scan reuses the hash while size and mtime hold). */
+    val localMtime: Instant? = null,
 )
 
 /**

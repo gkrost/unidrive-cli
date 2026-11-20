@@ -1399,8 +1399,8 @@ class InternxtProvider(
         // create and on replace alike (drive-server's ValidateFileIdWithSize), so the bridge flow below must not run for it:
         // its createFile answered 400 and every retry's second finish a 409 MissingUploadsError.
         if (fileSize == 0L) {
-            withContext(Dispatchers.IO) { tombstoneStore.discard(pathHashStr) } // nothing to resume for an empty file
-            val empty = uploadEmpty(segments, plainName, ext, parentPath, existingRemoteId, ifMatchETag, remotePath, localMtime)
+            if (!tombstoneStore.archivedPriorBefore(localPath, existingRemoteId)) withContext(Dispatchers.IO) { tombstoneStore.discard(pathHashStr) } // an archive's marker (#747) is all an empty file resumes
+            val empty = uploadEmpty(segments, parentPath, existingRemoteId, ifMatchETag, remotePath, localMtime, localPath)
             onProgress?.invoke(0L, 0L)
             return empty
         }
@@ -2370,14 +2370,14 @@ class InternxtProvider(
 
     private suspend fun uploadEmpty(
         segments: List<String>,
-        plainName: String,
-        ext: String?,
         parentPath: String,
         existingRemoteId: String?,
         ifMatchETag: String?,
         remotePath: String,
         localMtime: Instant,
+        localPath: Path,
     ): CloudItem {
+        val (plainName, ext) = splitLeaf(segments.last())
         val creds = authService.getValidCredentials()
         val parentUuid = resolveUploadParent(parentPath, remotePath)
         val bucket =
@@ -2398,11 +2398,10 @@ class InternxtProvider(
             )
 
         if (existingRemoteId != null) {
-            checkWriteToken(existingRemoteId, ifMatchETag, remotePath)
-            val archived = if (config.keepOverwritten) tryKeepOverwrittenRename(existingRemoteId, plainName) else false
+            val archived = tombstoneStore.archiveForEmptyReplace(localPath, bucket, parentUuid, plainName, ext, localMtime, existingRemoteId, config.keepOverwritten, { checkWriteToken(existingRemoteId, ifMatchETag, remotePath) }) { tryKeepOverwrittenRename(existingRemoteId, plainName) }
             val item =
                 if (archived) {
-                    create(plainName)
+                    createOrAdoptLandedEmpty({ create(plainName) }) { findFileByName(parentUuid, segments.last()) }.also { withContext(Dispatchers.IO) { tombstoneStore.discard(UploadTombstoneStore.pathHash(localPath.toAbsolutePath().toString())) } }
                 } else {
                     api.replaceFile(uuid = existingRemoteId, size = 0L, fileId = null, modificationTime = localMtime).afterReplace(localMtime)
                 }

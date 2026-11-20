@@ -4,6 +4,7 @@ import io.ktor.client.engine.HttpClientEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.krost.unidrive.AuthenticationException
@@ -264,7 +265,10 @@ class S3Provider(
                 }
             }
         }
-        if (localStats(localPath) != sourceStats || sha256Of(localPath) != digest) {
+        // A single-part body is verified by S3 itself: it carries the Content-MD5 of the bytes the digest pass read and S3 stores
+        // nothing for others (BadDigest), so a second read to hash it again proves nothing more (#748 finding 7). The parts of a
+        // multipart upload are each checked against an MD5 taken in a read of their own, not the digest pass: those get the re-hash.
+        if (localStats(localPath) != sourceStats || (!singlePart && sha256Of(localPath) != digest)) {
             throw ProviderException("'$remotePath' changed while it was uploaded")
         }
         onProgress?.invoke(size, size)
@@ -273,6 +277,9 @@ class S3Provider(
         // not the object's); the HEAD also tells the encryption kind that decides whether the ETag is an MD5 (`fileItem`).
         return fileItem(api.head(key) ?: throw ProviderException("S3 does not show '$key' right after its upload"))
     }
+
+    // A test seam: told of every read of a source file this provider makes itself (hash passes), not the transport's body read.
+    internal var sourceReadObserver: ((Path) -> Unit)? = null
 
     private fun localStats(file: Path): Pair<Long, Long>? =
         try {
@@ -289,6 +296,7 @@ class S3Provider(
         md5: Boolean,
     ): Pair<String, ByteArray?> =
         withContext(Dispatchers.IO) {
+            sourceReadObserver?.invoke(file)
             val sha = MessageDigest.getInstance("SHA-256")
             val md = if (md5) MessageDigest.getInstance("MD5") else null
             Files.newInputStream(file).use { input ->
@@ -436,12 +444,14 @@ class S3Provider(
         meta: Map<String, String>,
     ): Pair<String, Map<Int, S3Part>> {
         val proofSha256 = meta.getValue("unidrive-sha256-v1")
+        abortStaleUploads(key)
         val pending = uploads.find(key)
         if (pending != null) {
             val same = pending.localPath == localPath.toString() && pending.size == size && pending.mtimeMillis == mtimeMillis &&
                 pending.partSize == partSize && pending.proofSha256 == proofSha256
             val held = if (same) api.listParts(key, pending.uploadId) else null
             if (held != null) {
+                uploads.save(pending) // a resumed upload is not stale: renew its record's age
                 log.info("Resuming the multipart upload of '{}' with {} part(s) already on S3", key, held.size)
                 return pending.uploadId to held.associateBy { it.number }
             }
@@ -462,6 +472,28 @@ class S3Provider(
         return partSize
     }
 
+    // #748 finding 5: an upload whose file is never uploaded again (deleted, renamed, the profile moved on) keeps its parts billed
+    // until a lifecycle rule ends it, and nothing else ever reads its record. A record not written (or resumed) for
+    // [STALE_UPLOAD_DAYS] days is aborted, once per provider instance, when a multipart upload opens; [except] is the key about to open.
+    // Every other upload that opens meanwhile waits for the sweep, so it never resumes (or re-records) an upload the sweep then
+    // aborts or forgets. A record is dropped only when its abort went through: it is the one handle to the parts S3 still bills.
+    private val staleSweep = kotlinx.coroutines.sync.Mutex()
+
+    @Volatile
+    private var staleSwept = false
+
+    private suspend fun abortStaleUploads(except: String) {
+        if (staleSwept) return
+        staleSweep.withLock {
+            if (staleSwept) return
+            uploads.olderThan(java.time.Instant.now().minus(java.time.Duration.ofDays(STALE_UPLOAD_DAYS))).filter { it.key != except }.forEach {
+                log.info("Aborting the multipart upload of '{}' left open for more than {} days", it.key, STALE_UPLOAD_DAYS)
+                if (abortQuietly(it.key, it.uploadId)) uploads.remove(it.key)
+            }
+            staleSwept = true
+        }
+    }
+
     /** A delete of a file that was never uploaded also drops the multipart upload it may have left open. */
     override suspend fun discardStagedUpload(localPath: String) {
         uploads.all().filter { it.localPath == localPath }.forEach {
@@ -474,13 +506,16 @@ class S3Provider(
     private suspend fun abortQuietly(
         key: String,
         uploadId: String,
-    ) {
+    ): Boolean =
         try {
-            api.abortMultipart(key, uploadId)
+            api.abortMultipart(key, uploadId) // an upload already gone (404) counts as aborted
+            true
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             log.warn("Could not abort the multipart upload of '{}' ({}); its parts stay until a lifecycle rule removes them", key, e.javaClass.simpleName)
+            false
         }
-    }
 
     override suspend fun delete(
         remotePath: String,
@@ -775,6 +810,7 @@ class S3Provider(
         length: Long,
     ): ByteArray =
         withContext(Dispatchers.IO) {
+            sourceReadObserver?.invoke(file)
             val md = MessageDigest.getInstance("MD5")
             java.io.RandomAccessFile(file.toFile(), "r").use { raf ->
                 raf.seek(offset)
@@ -792,6 +828,7 @@ class S3Provider(
 
     companion object {
         private const val FULL_LISTING = "full-listing"
+        private const val STALE_UPLOAD_DAYS = 14L
 
         // Parts of one upload in flight at once unless the daemon says otherwise; each streams from disk, none is buffered.
         const val DEFAULT_PART_CONCURRENCY = 4

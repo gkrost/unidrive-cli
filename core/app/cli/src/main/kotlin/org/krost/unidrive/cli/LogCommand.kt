@@ -2,6 +2,7 @@ package org.krost.unidrive.cli
 
 import org.krost.unidrive.ProviderRegistry
 import org.krost.unidrive.sync.StateDatabase
+import org.krost.unidrive.sync.mostRecentlySynced
 import picocli.CommandLine.Command
 import picocli.CommandLine.ParentCommand
 
@@ -15,14 +16,17 @@ class LogCommand : Runnable {
         // A read-only report: no mkdir, no schema stamp, no migration — like `status` and `pending`.
         // A missing state.db is refused instead of created (#100).
         val db = StateDatabase(dbPath, readOnly = true)
-        db.initialize()
-
-        val entries = db.getAllEntries().sortedByDescending { it.lastSynced }
-        val recent = entries.take(20)
+        val recent =
+            try {
+                db.initialize()
+                // #841 (#749-8): the 20 rows shown, from one pass that keeps 20 — not the whole table, sorted.
+                db.mostRecentlySynced(20)
+            } finally {
+                db.close()
+            }
 
         if (recent.isEmpty()) {
             println("No sync history.")
-            db.close()
             return
         }
 
@@ -53,7 +57,5 @@ class LogCommand : Runnable {
             val size = if (!entry.isFolder) " ${CliProgressReporter.formatSize(entry.remoteSize)}" else ""
             println("  $commitPrefix [$status] ${entry.path}$size  (synced: ${entry.lastSynced})")
         }
-
-        db.close()
     }
 }

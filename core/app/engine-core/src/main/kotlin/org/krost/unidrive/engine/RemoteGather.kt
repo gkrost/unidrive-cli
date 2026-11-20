@@ -635,15 +635,18 @@ class RemoteGather(
         val storedCursor = if (retryIncompleteEnumeration) null else cursorState.deltaCursor
         val cursor = storedCursor?.ifEmpty { null }
         var isFullSync = cursor == null || provider.deltaIsFullListing
-        var changes = mutableMapOf<String, CloudItem>()
+        val changes = mutableMapOf<String, CloudItem>()
         // archive#401: every `changes[path] = item` site goes through admit() so same-named
         // remote items cannot silently drop a twin (see the admit doc).
         val keyToPath = HashMap<String, String>()
         // archive#403: the twin rows of state.db, for the winner rule and placeTwins.
         loadTwins()
         val collisions = HashMap<String, CollisionRecord>()
+        // #745 finding 6: of an id delivered more than once, the gather keeps the last occurrence (GatherIdIndex).
+        val ids = GatherIdIndex(changes, keyToPath, collisions, ::gatherKey) { admit(changes, keyToPath, collisions, it) }
         fun admitChange(item: CloudItem) {
-            admit(changes, keyToPath, collisions, item)
+            val resolved = resolveItemPath(item)
+            if (resolved != null) ids.admitLatest(resolved) else ids.unplacedTombstone(item)
         }
         // After every page the gather holds: the reporter's heartbeat and the enumeration's item count.
         fun reportGathered() {
@@ -675,10 +678,7 @@ class RemoteGather(
                 ) {
                     is CapabilityResult.Success -> {
                         val page = result.value
-                        for (item in page.items) {
-                            val resolved = resolveItemPath(item) ?: continue
-                            admitChange(resolved)
-                        }
+                        for (item in page.items) admitChange(item)
                         placeTwins(changes, collisions, fullListing = false)
                         reportCollisions(collisions, readOnly)
                         // UD-223: promote the cursor directly. Bootstrap guarantees no transfers
@@ -866,10 +866,7 @@ class RemoteGather(
                 return placed
             }
             var page = nextPage(start)
-            for (item in page.items) {
-                val resolved = resolveItemPath(item) ?: continue
-                admitChange(resolved)
-            }
+            for (item in page.items) admitChange(item)
             persistPendingCursor(page.cursor)
             // UD-742: heartbeat after each remote page. Internxt paginates
             // LISTING_PAGE_SIZE = 999 per page (measured + source-verified, archive#392
@@ -880,10 +877,7 @@ class RemoteGather(
 
             while (page.hasMore) {
                 page = nextPage(page.cursor)
-                for (item in page.items) {
-                    val resolved = resolveItemPath(item) ?: continue
-                    admitChange(resolved)
-                }
+                for (item in page.items) admitChange(item)
                 persistPendingCursor(page.cursor)
                 reportGathered()
             }
@@ -918,9 +912,10 @@ class RemoteGather(
                     backups = guard.backups.enabled,
                 )
             // Reset all mutable accumulation state for the recovery pass.
-            changes = mutableMapOf()
+            changes.clear()
             keyToPath.clear()
             collisions.clear()
+            ids.clear()
             unreachable.clear()
             skippedPaths.clear()
             allComplete = true
@@ -1808,10 +1803,9 @@ class RemoteGather(
         while (pending.isNotEmpty() && stepsLeft-- > 0) {
             val sourceOf = sourcesOf(pending)
             if (pending.isEmpty()) break
-            val ready =
-                pending.filter { rename ->
-                    !blocked(rename.to, blockers(pending, rename, sourceOf, held))
-                }
+            // #745 finding 8: the blocking trees are built once per step (RenameBlockers), not once per rename.
+            val blockers = RenameBlockers(sourceOf.values, held)
+            val ready = pending.filter { rename -> !blockers.blocks(rename.to, sourceOf.getValue(rename)) }
             if (ready.isEmpty()) {
                 parkOne(pending, sourceOf, moved, landed, held)
                 continue
@@ -1898,24 +1892,6 @@ class RemoteGather(
         }
         pending.removeAll(drop)
         return sourceOf
-    }
-
-    // [dest] would land on [source], or inside the tree that source has not left. Slash-bounded: /a does not cover /ab.
-    private fun blocked(
-        dest: String,
-        sources: Collection<String>,
-    ): Boolean = sources.any { it == dest || dest.startsWith("$it/") }
-
-    private fun blockers(
-        pending: List<PendingFolder>,
-        move: PendingFolder,
-        sourceOf: Map<PendingFolder, String>,
-        held: List<String>,
-    ): List<String> {
-        val out = ArrayList<String>(held.size + pending.size)
-        out.addAll(held)
-        for (other in pending) if (other !== move) sourceOf[other]?.let { out += it }
-        return out
     }
 
     private fun pathCovers(

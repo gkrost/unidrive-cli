@@ -1443,76 +1443,8 @@ class Reconciler(
         val deletes = actions.filterIsInstance<SyncAction.DeleteRemote>()
         if (deletes.isEmpty()) return
 
-        // Folder moves: DeleteRemote(oldFolder) + CreateRemoteFolder(newFolder).
-        //
-        // UD-240j + UD-240k: the loop iterates CREATES (the user's intent — "I
-        // just made this folder, where did it come from?") and picks the BEST
-        // matching delete for each. "Best" = same basename AND longest common
-        // parent-path with the create. A score of 0 (no shared parent segment)
-        // is rejected: that's two independent operations the user happened to
-        // perform with same-named folders, not a move.
-        //
-        // Pre-UD-240k the loop went deletes→creates with basename-only match.
-        // With stale DB rows sharing a basename across totally unrelated subtrees
-        // (legacy /Sample vs current /userhome/Pictures/Sample, both with
-        // remoteId), set-iteration order picked one effectively at random —
-        // routinely the wrong one. UD-240j (matchedFolderCreates dedup) capped
-        // the false-positive count at 1; UD-240k makes that 1 actually correct.
-        val folderCreates = actions.filterIsInstance<SyncAction.CreateRemoteFolder>()
-        val matchedFolderDeletes = mutableSetOf<String>()
-        val matchedFolderCreates = mutableSetOf<String>()
-        for (create in folderCreates) {
-            if (create.path in matchedFolderCreates) continue
-
-            // Find the best matching delete: same basename, has a folder DB
-            // row with remoteId, longest common parent-segment overlap with
-            // this create.
-            //
-            // Tie-break rule:
-            //   - 1 candidate                → accept (legitimate move,
-            //     possibly cross-parent at top level like /a/X → /b/X)
-            //   - >= 2 candidates with same max score == 0 → REJECT
-            //     (ambiguous; without parent overlap we can't tell which
-            //     stale row corresponds to the user's actual intent)
-            //   - otherwise → pick the highest-scoring candidate, ties
-            //     broken by iteration order
-            // #743 finding 10: a candidate also needs evidence that the new folder is the old one: at least one child
-            // name the old folder held (a row under it) that the new folder uploads or creates, and the old folder gone
-            // from disk. A same-named folder alone is two independent operations, not a move.
-            val newPrefix = create.path + "/"
-            val candidates = folderMoveCandidates(create, deletes, actions, entryByPath, matchedFolderDeletes, ::isAbsentLocally)
-            if (candidates.isEmpty()) continue
-            val maxScore = candidates.maxOf { it.score }
-            // UD-240k ambiguous-zero guard: when several candidates share
-            // basename but none have parent overlap with the destination,
-            // we don't have a structural signal to pick between them.
-            // Refusing to emit a MoveRemote is safer than guessing wrong;
-            // the standalone DeleteRemote / CreateRemoteFolder will run
-            // independently and the engine handles 404s gracefully.
-            if (candidates.size > 1 && maxScore == 0) continue
-            val best = candidates.first { it.score == maxScore }
-
-            val del = best.del
-            val entry = entryByPath[del.path]!! // proven non-null + isFolder + remoteId by filter above
-            actions.add(
-                SyncAction.MoveRemote(
-                    path = create.path,
-                    // archive#115: fromPath stays real-local (the source row's path) so
-                    // the executor's DB ops + resolveLocal work; the canonical
-                    // remote source is derived in the executor from the source
-                    // row. remoteTarget carries the canonical destination.
-                    fromPath = del.path,
-                    remoteId = entry.remoteId!!,
-                    remoteTarget = aliasTarget(alias, create.path),
-                ),
-            )
-            // Remove the folder delete and create
-            actions.remove(del)
-            actions.remove(create)
-            settleChildrenOfFolderMove(actions, del.path + "/", newPrefix, best.movedNames, entryByPath, ::isAbsentLocally)
-            matchedFolderDeletes.add(del.path)
-            matchedFolderCreates.add(create.path)
-        }
+        // Folder moves: DeleteRemote(oldFolder) + CreateRemoteFolder(newFolder) (FolderMovePairing.kt).
+        val matchedFolderDeletes = pairFolderMoves(actions, deletes, entryByPath, ::isAbsentLocally) { aliasTarget(alias, it) }
 
         // File moves: DeleteRemote(oldFile) + Upload(newFile) with matching size.
         // UD-240i: the original implementation walked every (delete × upload) pair
@@ -1673,6 +1605,7 @@ class Reconciler(
         // a move replaces (removed by identity), and the deletes planned at the old paths. The loop never adds a
         // delete and never reads one, so removing them later removes the same ones.
         val replacedCandidates = identitySet<SyncAction>()
+        val carried = CarriedRenameChildren() // #743 finding 7: below the renamed folders' old paths, one pass
         val movedFromPaths = HashSet<String>()
         for (candidate in candidates) {
             // The remote delta key is canonical; the candidate path is real-local.
@@ -1696,13 +1629,7 @@ class Reconciler(
             // Another live item took the folder's old place (the trash root moves aside for a folder of its name): what
             // is planned below that place is that item's, not left over from the move.
             val oldPlaceTaken = remoteChanges[oldEffectiveRemote]?.let { !it.deleted && it.id != remoteItem.id } == true
-            if (oldEntry.isFolder && !oldPlaceTaken) {
-                val oldPrefix = oldEntry.path + "/"
-                actions.removeAll { action ->
-                    action.path.startsWith(oldPrefix) &&
-                        (action is SyncAction.CreatePlaceholder || action is SyncAction.DownloadContent)
-                }
-            }
+            if (oldEntry.isFolder && !oldPlaceTaken) carried.folderLeft(oldEntry.path)
             actions.add(
                 SyncAction.MoveLocal(
                     // candidate.path is real-local — the local move destination.
@@ -1711,7 +1638,9 @@ class Reconciler(
                     remoteItem = remoteItem,
                 ),
             )
+            val planned = actions.size
             keepContentAction(actions, candidate.path, remoteItem, oldEntry, localChanges[oldEntry.path])
+            if (actions.size > planned) carried.appended(actions.last())
         }
         if (replacedCandidates.isNotEmpty()) {
             actions.removeAll { action ->
@@ -1722,6 +1651,7 @@ class Reconciler(
                     )
             }
         }
+        carried.dropFrom(actions)
         dropMovesCarriedByFolderMoves(actions)
     }
 
