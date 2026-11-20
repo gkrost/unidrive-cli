@@ -79,4 +79,45 @@ class StateDatabaseHotReadsTest {
             assertEquals(cached, db.cachedStatementCount(), "repeat calls take the cached statements, adding none")
         }
     }
+
+    // #841 (#744 finding 10, remainder): the three path-keyed `local:` tests match the synthetic as the rest of the code
+    // does (case-sensitive `startsWith("local:")`), so a cloud id that merely resembles it in another case stays a cloud id.
+
+    @Test
+    fun `a pending row at a path held by a LOCAL-cased cloud id does not take that id as its synthetic`() {
+        db.upsertEntry(row("/x.txt", id = "LOCAL:cloud"))
+        db.upsertEntry(row("/x.txt", id = null))
+        assertEquals(null, db.getEntry("/x.txt")?.remoteId, "the pending row reads as pending, not as the cloud item")
+    }
+
+    @Test
+    fun `a refusal that keeps the cloud baseline keeps it for a LOCAL-cased cloud id`() {
+        db.upsertEntry(row("/r.txt", id = "LOCAL:cloud").copy(localMtime = 5, localSize = 7))
+        assertEquals(true, db.markUploadRefused("/r.txt", "100|200|x", keepCloudBaseline = true))
+        val after = db.getEntry("/r.txt")!!
+        assertEquals(5L to 7L, after.localMtime to after.localSize, "a cloud-backed row keeps its baseline")
+    }
+
+    @Test
+    fun `an edit of a LOCAL-cased cloud id records its edit base`() {
+        db.upsertEntry(row("/e.txt", id = "LOCAL:cloud"))
+        assertEquals(true, db.markEdited("/e.txt", "v1"), "a cloud-backed row takes the edit base")
+    }
+
+    @Test
+    fun `lookups by many paths and by prefix reuse one prepared statement whatever the batch size`() {
+        for (i in 0 until 600) db.upsertEntry(row("/p/f$i", id = "id$i"))
+        db.batch {
+            val before = db.cachedStatementCount()
+            assertEquals(2, db.getEntriesByPaths(listOf("/p/f0", "/p/f1", "/none")).size)
+            assertEquals(600, db.getEntriesByPrefix("/p/").size)
+            val cached = db.cachedStatementCount()
+            assertEquals(before + 2, cached, "each read left its statement in the cache")
+            assertEquals(1, db.getEntriesByPaths(listOf("/p/f9")).size)
+            assertEquals(600, db.getEntriesByPaths((0 until 600).map { "/p/f$it" }).size, "more paths than one chunk")
+            assertEquals(40, db.getEntriesByPaths((0 until 40).map { "/p/f$it" }).size)
+            db.getEntriesByPrefix("/p/")
+            assertEquals(cached, db.cachedStatementCount(), "every batch size takes the cached statements, adding none")
+        }
+    }
 }

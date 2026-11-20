@@ -742,6 +742,7 @@ class IpcServer(
                 closeChannel(client)
                 return
             } catch (e: Exception) {
+                currentCoroutineContext().ensureActive() // #743-12: our own cancellation (daemon stop) propagates
                 handlerThrew = true
                 log.error("IPC: handler '$verb' threw", e)
                 handlerThrewReply(connId, verb, e)
@@ -769,6 +770,7 @@ class IpcServer(
             runCatching {
                 kotlinx.coroutines.withContext(handlerDispatcher) { pending() }
             }.onFailure { e ->
+                currentCoroutineContext().ensureActive()
                 log.warn("IPC: post-reply hook for connId={} threw: {}", connId, e.message)
             }
         }
