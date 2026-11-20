@@ -48,9 +48,9 @@ sync_root = "~/Internxt"
 # hydration_cache_max_bytes = 21474836480
 
 # How many transfers the daemon runs at once: one budget shared by the sync pass and the mount's
-# uploads. Default: the provider's audited cap (Internxt 2, OneDrive 8, Dropbox 4, others 4).
-# A value above the cap is clamped to it; `unidrive sync` always runs at the cap. The line the
-# daemon logs at start shows the effective value.
+# uploads. Default: the provider's audited cap (Internxt 2, Dropbox 4, OneDrive, S3 and localfs 8;
+# 4 for a provider that declares none). A value above the cap is clamped to it; `unidrive sync`
+# always runs at the cap. The line the daemon logs at start shows the effective value.
 # max_concurrent_transfers = 2
 
 # How many mount uploads may wait to run before an open_write is held back until a slot frees
