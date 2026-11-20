@@ -1,5 +1,7 @@
 package org.krost.unidrive.cli
 
+import org.krost.unidrive.auth.CredentialProtectors
+import org.krost.unidrive.sync.ConfigSecrets
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.Vault
 import java.nio.file.Files
@@ -9,6 +11,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 /**
@@ -48,7 +51,12 @@ class VaultDecryptOrphanTest {
 
         decrypt()
 
-        assertEquals("keep-secret", SyncConfig.parseRaw(Files.readString(dir.resolve("config.toml"))).providers.getValue("keep").password)
+        val configPath = dir.resolve("config.toml")
+        val keep = SyncConfig.parseRaw(Files.readString(configPath)).providers.getValue("keep")
+        assertEquals("keep-secret", ConfigSecrets.decode(keep, "keep", configPath)?.password)
+        if (CredentialProtectors.atRestDefaultOrNull() != null) {
+            assertNotEquals("keep-secret", keep.password, "a protector exists: the restored password must not be plaintext at rest")
+        }
         assertEquals(1, warnings.size, warnings.toString())
         assertTrue("unidrive vault forget gone" in warnings.single(), warnings.single())
         assertFalse("old-secret" in warnings.single(), "a warning never carries a secret")
