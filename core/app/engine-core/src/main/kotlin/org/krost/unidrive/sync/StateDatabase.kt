@@ -1413,12 +1413,7 @@ class StateDatabase(
 
     fun getEntryCaseInsensitive(pathRaw: String): SyncEntry? =
         read("getEntryCaseInsensitive") { c ->
-            val path = PathNormalizer.nfc(pathRaw)
-            c.prepareStatement("SELECT * FROM alive_entries WHERE path = ? COLLATE NOCASE").use { stmt ->
-                stmt.setString(1, path)
-                val rs = stmt.executeQuery()
-                return if (rs.next()) rs.toSyncEntry() else null
-            }
+            caseInsensitivePathMatch(c, PathNormalizer.nfc(pathRaw))?.let { getEntry(it) }
         }
 
     /**
