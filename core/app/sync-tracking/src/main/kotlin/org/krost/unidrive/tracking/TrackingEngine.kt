@@ -73,6 +73,8 @@ class TrackingEngine(
      * journalled.
      */
     private val conflictLog: ConflictLog? = null,
+    /** Hashes a local file's bytes (a seam: the #745 finding 9 tests count the reads). */
+    private val localHasher: (Path) -> String = ::fileSha256Hex,
 ) {
     private val reconciler: TrackingReconciler =
         reconciler
@@ -811,7 +813,7 @@ class TrackingEngine(
             // Keep-local: don't even hash excluded junk. The syncOnce universe loop also
             // skips these paths, so this is a perf guard; the correctness guard is there.
             if (isExcluded(rel)) return@forEachEntry
-            out[rel] = makeLocalObs(p)
+            out[rel] = makeLocalObs(p, trackingSet.lookup(rel))
         }
         return LocalScan(out, unobserved)
     }
@@ -822,15 +824,18 @@ class TrackingEngine(
     private fun isExcluded(path: String): Boolean =
         path.startsWith("/.unidrive-trash/") || excludePatterns.any { Reconciler.matchesGlob(path, it) }
 
-    private fun makeLocalObs(p: Path): LocalObservation {
+    private fun makeLocalObs(p: Path, track: TrackingRecord? = null): LocalObservation {
         val attrs = Files.readAttributes(p, java.nio.file.attribute.BasicFileAttributes::class.java)
         val size = attrs.size()
-        val hash = fileSha256Hex(p)
+        val mtime = attrs.lastModifiedTime().toInstant()
+        // #745 finding 9: the scan (the one caller that passes the row) reuses its hash while size and mtime hold; the
+        // apply steps that delete or overwrite local bytes pass none and hash in full.
+        val hash = track?.localHash?.takeIf { track.localSize == size && track.localMtime == mtime } ?: localHasher(p)
         return LocalObservation(
             exists = true,
             hash = hash,
             size = size,
-            mtime = attrs.lastModifiedTime().toInstant(),
+            mtime = mtime,
             inode = attrs.fileKey()?.toString(),
         )
     }
