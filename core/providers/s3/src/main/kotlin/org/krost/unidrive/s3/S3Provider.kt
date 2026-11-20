@@ -264,7 +264,10 @@ class S3Provider(
                 }
             }
         }
-        if (localStats(localPath) != sourceStats || sha256Of(localPath) != digest) {
+        // A single-part body is verified by S3 itself: it carries the Content-MD5 of the bytes the digest pass read and S3 stores
+        // nothing for others (BadDigest), so a second read to hash it again proves nothing more (#748 finding 7). The parts of a
+        // multipart upload are each checked against an MD5 taken in a read of their own, not the digest pass: those get the re-hash.
+        if (localStats(localPath) != sourceStats || (!singlePart && sha256Of(localPath) != digest)) {
             throw ProviderException("'$remotePath' changed while it was uploaded")
         }
         onProgress?.invoke(size, size)
@@ -273,6 +276,9 @@ class S3Provider(
         // not the object's); the HEAD also tells the encryption kind that decides whether the ETag is an MD5 (`fileItem`).
         return fileItem(api.head(key) ?: throw ProviderException("S3 does not show '$key' right after its upload"))
     }
+
+    // A test seam: told of every read of a source file this provider makes itself (hash passes), not the transport's body read.
+    internal var sourceReadObserver: ((Path) -> Unit)? = null
 
     private fun localStats(file: Path): Pair<Long, Long>? =
         try {
@@ -289,6 +295,7 @@ class S3Provider(
         md5: Boolean,
     ): Pair<String, ByteArray?> =
         withContext(Dispatchers.IO) {
+            sourceReadObserver?.invoke(file)
             val sha = MessageDigest.getInstance("SHA-256")
             val md = if (md5) MessageDigest.getInstance("MD5") else null
             Files.newInputStream(file).use { input ->
@@ -775,6 +782,7 @@ class S3Provider(
         length: Long,
     ): ByteArray =
         withContext(Dispatchers.IO) {
+            sourceReadObserver?.invoke(file)
             val md = MessageDigest.getInstance("MD5")
             java.io.RandomAccessFile(file.toFile(), "r").use { raf ->
                 raf.seek(offset)
