@@ -62,9 +62,10 @@ class DoctorCommandTest {
         full: Boolean = false,
         now: Instant = Instant.parse("2026-05-17T12:00:00Z"),
         excludePatterns: List<String> = emptyList(),
+        mode: ProfileMode? = null,
     ): List<DoctorCommand.CheckResult> {
         val cmd = DoctorCommand()
-        return cmd.runChecks(profileDir, syncRoot, full, nowOverride = now, excludePatterns = excludePatterns)
+        return cmd.runChecks(profileDir, syncRoot, full, nowOverride = now, excludePatterns = excludePatterns, mode = mode)
     }
 
     private fun result(
@@ -514,6 +515,87 @@ class DoctorCommandTest {
         }
         val check = result(runDoctor(), "write-upload-failures")
         assertEquals(DoctorCommand.Severity.OK, check.severity)
+    }
+
+    // gkrost/unidrive-cli#852: the WARN must say WHY each unsynced file did not
+    // upload, and must not tell a mount profile to re-run sync.
+
+    /** A row the mount holds but the cloud has never seen: the `local:` synthetic, hydrated. */
+    private fun neverUploaded(
+        db: StateDatabase,
+        path: String,
+    ) {
+        db.upsertEntry(
+            SyncEntry(
+                path = path,
+                remoteId = null,
+                remoteHash = null,
+                remoteSize = 0L,
+                remoteModified = null,
+                localMtime = Instant.parse("2026-05-17T08:00:00Z").toEpochMilli(),
+                localSize = 0L,
+                isFolder = false,
+                isPinned = false,
+                isHydrated = true,
+                lastSynced = Instant.parse("2026-05-17T08:00:00Z"),
+            ),
+        )
+    }
+
+    @Test
+    fun `write-upload-failures check names a reason per sampled path for each cause`() {
+        seedDb { db ->
+            db.setSyncState("last_full_scan", Instant.parse("2026-05-17T08:00:00Z").toString())
+            db.setSyncState("pending_cursor_complete", "true")
+            db.setSyncState("quota_fetched_at", Instant.parse("2026-05-17T08:00:00Z").toString())
+            neverUploaded(db, "/failed.txt")
+            db.markUploadFailed("/failed.txt", Instant.parse("2026-05-17T08:30:00Z"))
+            neverUploaded(db, "/refused.txt")
+            // What the refusal path does (HydrationImpl.completeRefused): the failed
+            // attempt stamp AND the refusal, or the row would not match the predicate.
+            db.markUploadFailed("/refused.txt", Instant.parse("2026-05-17T08:30:00Z"))
+            db.markUploadRefused(
+                "/refused.txt",
+                "1747459200000|9|1747459800000|plan_limit: upgrade your plan",
+                keepCloudBaseline = true,
+            )
+            neverUploaded(db, "/blocked.txt")
+            db.markNameBlocked("/blocked.txt", "name_incompatible", "Blocked.TXT")
+        }
+        val check = result(runDoctor(), "write-upload-failures")
+        assertEquals(DoctorCommand.Severity.WARN, check.severity)
+        val blockedLine = check.detail.first { it.contains("/blocked.txt") }
+        assertTrue("blocked by name: name_incompatible" in blockedLine, blockedLine)
+        val refusedLine = check.detail.first { it.contains("/refused.txt") }
+        assertTrue("refused by the provider: plan_limit: upgrade your plan" in refusedLine, refusedLine)
+        val failedLine = check.detail.first { it.contains("/failed.txt") }
+        assertTrue("upload attempt failed" in failedLine, failedLine)
+        // The sample is grouped by cause: name-blocked, then refused, then failed.
+        assertTrue(
+            check.detail.indexOfFirst { it.contains("/blocked.txt") } <
+                check.detail.indexOfFirst { it.contains("/refused.txt") } &&
+                check.detail.indexOfFirst { it.contains("/refused.txt") } <
+                check.detail.indexOfFirst { it.contains("/failed.txt") },
+            check.detail.toString(),
+        )
+    }
+
+    @Test
+    fun `write-upload-failures check does not advise re-running sync on a mount profile`() {
+        seedDb { db ->
+            db.setSyncState("last_full_scan", Instant.parse("2026-05-17T08:00:00Z").toString())
+            db.setSyncState("pending_cursor_complete", "true")
+            db.setSyncState("quota_fetched_at", Instant.parse("2026-05-17T08:00:00Z").toString())
+            neverUploaded(db, "/draft.txt")
+            db.markUploadFailed("/draft.txt", Instant.parse("2026-05-17T08:30:00Z"))
+        }
+        val mount = result(runDoctor(mode = ProfileMode.MOUNT), "write-upload-failures")
+        assertEquals(DoctorCommand.Severity.WARN, mount.severity)
+        assertFalse("re-run sync" in mount.summary, mount.summary)
+        assertTrue("daemon" in mount.summary, mount.summary)
+        // The sync advice is deliberately kept for the modes that have a sync.
+        val mirror = result(runDoctor(mode = ProfileMode.MIRROR), "write-upload-failures")
+        assertTrue("re-run sync" in mirror.summary, mirror.summary)
     }
 
     // ── Hydration cache size (archive#450) ───────────────────────────────────────
