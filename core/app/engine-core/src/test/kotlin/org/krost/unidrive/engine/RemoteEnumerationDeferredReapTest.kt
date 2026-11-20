@@ -41,7 +41,7 @@ class RemoteEnumerationDeferredReapTest {
         tmp.toFile().deleteRecursively()
     }
 
-    private fun enumeration() =
+    private fun enumeration(bulkReapGuard: Boolean = true) =
         RemoteEnumeration(
             gather =
                 RemoteGather(
@@ -70,6 +70,7 @@ class RemoteEnumerationDeferredReapTest {
             tracker = EnumerationTracker(),
             reapGuards = RemoteEnumeration.ReapGuards(cachePathOf = { tmp.resolve("cache").resolve(it.removePrefix("/")) }),
             log = LoggerFactory.getLogger(RemoteEnumerationDeferredReapTest::class.java),
+            bulkReapGuard = bulkReapGuard,
         )
 
     private fun file(n: Int) =
@@ -115,6 +116,23 @@ class RemoteEnumerationDeferredReapTest {
             val later = enumeration.enumerate(reset = false)
             assertEquals(0, later.reaped, "reaped exactly once")
             assertEquals(listOf<String?>(null, null, null, "c3"), provider.cursors, "after the recovery the pass continues from the delta cursor")
+        }
+
+    // bulk_reap_guard = false: the same 60-path disappearance that the guard holds is reaped by the first full listing,
+    // and no latch is set, so the next poll is an ordinary incremental one.
+    @Test
+    fun `with the bulk guard off a bulk disappearance is reaped at once and sets no latch`() =
+        runTest {
+            val enumeration = enumeration(bulkReapGuard = false)
+            provider.items = files(1..200)
+            enumeration.enumerate(reset = false)
+            provider.items = files(1..140)
+
+            val reaped = enumeration.enumerate(reset = true)
+
+            assertEquals(60, reaped.reaped)
+            assertNull(db.getEntry("/f150.txt"))
+            assertEquals("false", latch(), "no deferral, no recovery latch")
         }
 
     @Test
