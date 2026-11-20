@@ -243,7 +243,10 @@ class S3Provider(
         val singlePart = size <= config.multipartThreshold
         // One read of the file gives the SHA-256 proof and, for a single-part PUT, the MD5 that goes in Content-MD5 (#570): the
         // proof pass was there already, so the header costs the MD5 arithmetic and no further read.
-        val (digest, contentMd5) = digestsOf(localPath, md5 = singlePart)
+        // A multipart upload takes each part's MD5 from the same pass (partSizeFor is fixed by the size), so the part reads only feed the bodies.
+        val digests = digestsOf(localPath, md5 = singlePart, partSize = if (singlePart) 0L else partSizeFor(size))
+        val digest = digests.sha256
+        val contentMd5 = digests.md5
         if (localStats(localPath) != sourceStats) throw ProviderException("'$remotePath' changed while its upload proof was prepared")
         val meta = mapOf("mtime" to S3Api.epochText(mtime), "unidrive-sha256-v1" to digest)
         if (ifMatchETag != null && !config.vendor.conditionalWrites) requireUnchanged(key, ifMatchETag)
@@ -257,7 +260,7 @@ class S3Provider(
                 api.put(key, localPath, meta, ifMatch, contentMd5 = contentMd5)
             }
         } else {
-            uploadInParts(localPath, key, size, mtime.toEpochMilli(), meta, onProgress) { uploadId, parts ->
+            uploadInParts(localPath, key, sourceStats, meta, digests.partMd5s, onProgress) { uploadId, parts ->
                 if (create) {
                     createGuarded(key) { api.completeMultipart(key, uploadId, parts, ifNoneMatch = it) }
                 } else {
@@ -267,7 +270,7 @@ class S3Provider(
         }
         // A single-part body is verified by S3 itself: it carries the Content-MD5 of the bytes the digest pass read and S3 stores
         // nothing for others (BadDigest), so a second read to hash it again proves nothing more (#748 finding 7). The parts of a
-        // multipart upload are each checked against an MD5 taken in a read of their own, not the digest pass: those get the re-hash.
+        // multipart upload are each checked against an MD5 taken in the digest pass; the re-hash still proves the whole file did not change.
         if (localStats(localPath) != sourceStats || (!singlePart && sha256Of(localPath) != digest)) {
             throw ProviderException("'$remotePath' changed while it was uploaded")
         }
@@ -288,17 +291,27 @@ class S3Provider(
             null
         }
 
-    private suspend fun sha256Of(file: Path): String = digestsOf(file, md5 = false).first
+    private suspend fun sha256Of(file: Path): String = digestsOf(file, md5 = false).sha256
 
-    /** The SHA-256 of [file] as hex and, when [md5] is set, its MD5, both from one read. */
+    private class Digests(
+        val sha256: String,
+        val md5: ByteArray?,
+        val partMd5s: List<ByteArray>,
+    )
+
+    /** The SHA-256 of [file] as hex and, when [md5] is set, its MD5; with a [partSize] above 0, also the MD5 of each part. One read. */
     private suspend fun digestsOf(
         file: Path,
         md5: Boolean,
-    ): Pair<String, ByteArray?> =
+        partSize: Long = 0L,
+    ): Digests =
         withContext(Dispatchers.IO) {
             sourceReadObserver?.invoke(file)
             val sha = MessageDigest.getInstance("SHA-256")
             val md = if (md5) MessageDigest.getInstance("MD5") else null
+            val partMd5s = mutableListOf<ByteArray>()
+            val partMd = if (partSize > 0) MessageDigest.getInstance("MD5") else null
+            var inPart = 0L
             Files.newInputStream(file).use { input ->
                 val bytes = ByteArray(64 * 1024)
                 while (true) {
@@ -308,9 +321,21 @@ class S3Provider(
                     if (count < 0) break
                     sha.update(bytes, 0, count)
                     md?.update(bytes, 0, count)
+                    var at = 0
+                    while (partMd != null && at < count) {
+                        val take = minOf((count - at).toLong(), partSize - inPart).toInt()
+                        partMd.update(bytes, at, take)
+                        at += take
+                        inPart += take
+                        if (inPart == partSize) {
+                            partMd5s.add(partMd.digest())
+                            inPart = 0
+                        }
+                    }
                 }
             }
-            HexFormat.of().formatHex(sha.digest()) to md?.digest()
+            if (partMd != null && inPart > 0) partMd5s.add(partMd.digest())
+            Digests(HexFormat.of().formatHex(sha.digest()), md?.digest(), partMd5s)
         }
 
     // The racy form of a conditional write, for vendors without If-Match: the object must still carry the ETag the engine saw.
@@ -382,17 +407,18 @@ class S3Provider(
     private suspend fun uploadInParts(
         localPath: Path,
         key: String,
-        size: Long,
-        mtimeMillis: Long,
+        sourceStats: Pair<Long, Long>, // the file's (mtime in ms, size) as the upload read them
         meta: Map<String, String>,
+        partMd5s: List<ByteArray>,
         onProgress: ((Long, Long) -> Unit)?,
         complete: suspend (uploadId: String, parts: List<Pair<Int, String>>) -> Unit,
     ) {
+        val (mtimeMillis, size) = sourceStats
         val partSize = partSizeFor(size)
         val (uploadId, held) = openUpload(localPath, key, size, mtimeMillis, partSize, meta)
         val partCount = ((size + partSize - 1) / partSize).toInt()
         val etags = arrayOfNulls<String>(partCount)
-        // Up to [partConcurrency] parts at once, each read from disk for its MD5 and again as its body. A failed part
+        // Up to [partConcurrency] parts at once, each read from disk as its body (the MD5s came from the digest pass). A failed part
         // cancels the others; the upload stays open and recorded, so the next attempt resumes with what S3 holds.
         val permits = kotlinx.coroutines.sync.Semaphore(partConcurrency)
         val progress = Any()
@@ -404,7 +430,7 @@ class S3Provider(
                         val number = index + 1
                         val offset = index * partSize
                         val length = minOf(partSize, size - offset)
-                        val md5 = md5Of(localPath, offset, length)
+                        val md5 = partMd5s[index]
                         val md5Hex = HexFormat.of().formatHex(md5)
                         etags[index] = held[number]?.takeIf { it.size == length && it.etag == md5Hex }?.etag
                             ?: api.uploadPart(key, uploadId, number, localPath, offset, length, md5)
@@ -803,28 +829,6 @@ class S3Provider(
             mimeType = null,
         )
     }
-
-    private suspend fun md5Of(
-        file: Path,
-        offset: Long,
-        length: Long,
-    ): ByteArray =
-        withContext(Dispatchers.IO) {
-            sourceReadObserver?.invoke(file)
-            val md = MessageDigest.getInstance("MD5")
-            java.io.RandomAccessFile(file.toFile(), "r").use { raf ->
-                raf.seek(offset)
-                val buf = ByteArray(64 * 1024)
-                var left = length
-                while (left > 0) {
-                    val n = raf.read(buf, 0, minOf(buf.size.toLong(), left).toInt())
-                    if (n <= 0) throw java.io.IOException("'$file' became shorter while it was uploaded")
-                    md.update(buf, 0, n)
-                    left -= n
-                }
-            }
-            md.digest()
-        }
 
     companion object {
         private const val FULL_LISTING = "full-listing"

@@ -11,7 +11,8 @@ import kotlin.test.assertEquals
 /**
  * gkrost/unidrive-cli#748 finding 7: a single-part upload reads the source in one hashing pass (SHA-256 proof plus the
  * Content-MD5) and once more as the PUT body; S3 checks that body against the MD5, so no third pass hashes it again. A
- * multipart upload keeps its re-hash: its parts are checked against MD5s taken in reads of their own.
+ * multipart upload takes its part MD5s from that same pass (#845), so only the digest pass and the final re-hash read it
+ * besides the bodies.
  */
 class S3UploadSourceReadsTest {
     private val dir = TestScratch.directory("s3-source-reads")
@@ -39,7 +40,7 @@ class S3UploadSourceReadsTest {
         }
 
     @Test
-    fun `a multipart upload keeps the digest pass, one MD5 read per part and the final re-hash`() =
+    fun `a multipart upload hashes the source in the digest pass for its part MD5s too and keeps the final re-hash`() =
         runTest {
             val fake = FakeS3()
             val reads = mutableListOf<Path>()
@@ -47,7 +48,22 @@ class S3UploadSourceReadsTest {
 
             provider(fake, reads).upload(file, "/big.bin")
 
-            val parts = 3
-            assertEquals(1 + parts + 1, reads.size, "digest, one MD5 per part, final re-hash, got: $reads")
+            assertEquals(2, reads.size, "digest pass (SHA-256 and part MD5s) and the final re-hash, got: $reads")
+        }
+
+    @Test
+    fun `the part MD5s taken in the digest pass are the ones S3 verifies each part body against`() =
+        runTest {
+            val fake = FakeS3()
+            val reads = mutableListOf<Path>()
+            val bytes = ByteArray((2.5 * mib).toInt()) { b -> (b % 241).toByte() }
+            val file = dir.resolve("parts.bin").also { Files.write(it, bytes) }
+
+            provider(fake, reads).upload(file, "/parts.bin")
+
+            // FakeS3 answers 400 BadDigest to a part whose Content-MD5 is not the MD5 of its body, so a part MD5 cut at the wrong
+            // offset fails the upload; the stored object must be the file.
+            assertEquals(3, fake.requests.count { it.method == HttpMethod.Put && it.query.containsKey("partNumber") })
+            assertEquals(bytes.toList(), fake.objects.getValue("parts.bin").bytes!!.toList())
         }
 }
