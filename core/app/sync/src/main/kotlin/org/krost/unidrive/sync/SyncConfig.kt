@@ -566,6 +566,7 @@ class NoDefaultProfileException(message: String) : IllegalStateException(message
 /** A config value the schema refuses (out of range, not one of the enum spellings); the message names the key. The CLI exits 78. */
 class ConfigValueException(message: String) : IllegalArgumentException(message)
 
+@Suppress("TooManyFunctions") // one accessor per documented profile-key family; the count is the config surface's, not complexity
 data class SyncConfig(
     val syncRoot: Path,
     val pollInterval: Int,
