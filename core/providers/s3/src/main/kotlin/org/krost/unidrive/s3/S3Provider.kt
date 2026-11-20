@@ -503,7 +503,7 @@ class S3Provider(
         if (key.isEmpty()) throw ProviderException("Refusing to delete the whole bucket")
         if (remoteId.endsWith('/')) {
             deleteTree("$key/")
-        } else if (api.head(key) != null) {
+        } else {
             api.delete(key)
         }
     }
