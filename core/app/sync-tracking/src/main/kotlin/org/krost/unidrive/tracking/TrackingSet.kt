@@ -215,6 +215,8 @@ class SqliteTrackingSet(
                 )
                 """,
             )
+            // #745 finding 9: an additive, nullable column (an older build ignores it), added to a db that predates it.
+            if (!hasColumn(c, "tracking_entries", "local_mtime")) stmt.executeUpdate("ALTER TABLE tracking_entries ADD COLUMN local_mtime TEXT")
             stmt.executeUpdate(
                 """
                 CREATE INDEX IF NOT EXISTS idx_tracking_state
@@ -247,12 +249,23 @@ class SqliteTrackingSet(
         }
     }
 
+    private fun hasColumn(
+        c: Connection,
+        table: String,
+        column: String,
+    ): Boolean =
+        c.createStatement().use { st ->
+            st.executeQuery("PRAGMA table_info($table)").use { rs ->
+                generateSequence { if (rs.next()) rs.getString("name") else null }.any { it == column }
+            }
+        }
+
     @Synchronized
     override fun lookup(path: String): TrackingRecord? {
         val c = conn ?: error("not initialized")
         c.prepareStatement(
             "SELECT path, provider_id, remote_file_id, state, local_hash, local_size, " +
-                "remote_etag, remote_size, last_synced FROM tracking_entries WHERE path = ?",
+                "remote_etag, remote_size, last_synced, local_mtime FROM tracking_entries WHERE path = ?",
         ).use { ps ->
             ps.setString(1, path)
             ps.executeQuery().use { rs ->
@@ -267,6 +280,7 @@ class SqliteTrackingSet(
                     remoteEtag = rs.getString("remote_etag"),
                     remoteSize = rs.getObject("remote_size")?.let { (it as Number).toLong() },
                     lastSynced = Instant.parse(rs.getString("last_synced")),
+                    localMtime = rs.getString("local_mtime")?.let(Instant::parse),
                 )
             }
         }
@@ -279,8 +293,8 @@ class SqliteTrackingSet(
             """
             INSERT INTO tracking_entries
                 (path, provider_id, remote_file_id, state, local_hash, local_size,
-                 remote_etag, remote_size, last_synced)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 remote_etag, remote_size, last_synced, local_mtime)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET
                 provider_id    = excluded.provider_id,
                 remote_file_id = excluded.remote_file_id,
@@ -289,7 +303,8 @@ class SqliteTrackingSet(
                 local_size     = excluded.local_size,
                 remote_etag    = excluded.remote_etag,
                 remote_size    = excluded.remote_size,
-                last_synced    = excluded.last_synced
+                last_synced    = excluded.last_synced,
+                local_mtime    = excluded.local_mtime
             """,
         ).use { ps ->
             ps.setString(1, record.path)
@@ -301,6 +316,7 @@ class SqliteTrackingSet(
             ps.setString(7, record.remoteEtag)
             if (record.remoteSize != null) ps.setLong(8, record.remoteSize) else ps.setNull(8, java.sql.Types.INTEGER)
             ps.setString(9, record.lastSynced.toString())
+            ps.setString(10, record.localMtime?.toString())
             ps.executeUpdate()
         }
     }
@@ -332,6 +348,7 @@ class SqliteTrackingSet(
                 remoteEtag = remote.etag,
                 remoteSize = remote.size,
                 lastSynced = at,
+                localMtime = local.mtime,
             ),
         )
     }
