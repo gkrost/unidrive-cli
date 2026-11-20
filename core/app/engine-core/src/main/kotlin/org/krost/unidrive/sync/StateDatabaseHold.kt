@@ -46,6 +46,15 @@ internal class StateDatabaseHold : Event() {
     var reader: Boolean = false
 }
 
+/**
+ * Test seam (gkrost/unidrive-cli#845): called with the method name of every outermost call into any [StateDatabase], so a test
+ * of a command (which opens its own database) can see which queries it ran. Production code never sets it.
+ */
+object StateDatabaseCallTap {
+    @Volatile
+    var observer: ((String) -> Unit)? = null
+}
+
 internal const val STATE_DATABASE_HOLD_EVENT = "org.krost.unidrive.StateDatabaseHold"
 
 /** What [MonitorHolds] counted for one method of [StateDatabase] since the start (or the last [MonitorHolds.reset]). */
@@ -108,6 +117,7 @@ internal class MonitorHolds(
         heldNanos: Long,
         reader: Boolean = false,
     ) {
+        StateDatabaseCallTap.observer?.invoke(method)
         val counter = counters[method] ?: counters.computeIfAbsent(method, ::Counter)
         counter.calls.incrementAndGet()
         counter.held.addAndGet(heldNanos)

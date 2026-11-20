@@ -118,4 +118,50 @@ class StateDatabaseReportsTest {
         assertEquals(StateDatabase.ALIVE_SCAN_CHUNK_ROWS + 1, visited.size)
         assertEquals(visited.size, visited.toSet().size)
     }
+
+    private fun calls(method: String): Long = db.holds.snapshot().firstOrNull { it.method == method }?.calls ?: 0
+
+    // #845 (#749-8): the cost of the report reads. Calls into the database are counted (see [MonitorHolds]); the whole-table
+    // read is the one call a report must not make.
+    @Test
+    fun `file totals is one aggregate query and never reads the whole table`() {
+        for (i in 0 until 20) db.upsertEntry(row("/f$i"))
+        db.holds.reset()
+        db.fileTotals()
+        assertEquals(1, calls("fileTotals"), "one aggregate query")
+        assertEquals(1, db.holds.snapshot().sumOf { it.calls }, "and no other call: ${db.holds.snapshot().map { it.method }}")
+        assertEquals(0, calls("getAllEntries"))
+    }
+
+    @Test
+    fun `the hydrated sample is one limited query and never reads the whole table`() {
+        for (i in 0 until 20) db.upsertEntry(row("/f$i", hydrated = true))
+        db.holds.reset()
+        assertEquals(5, db.hydratedFiles(5).size)
+        assertEquals(1, calls("hydratedFiles"))
+        assertEquals(0, calls("getAllEntries"))
+        assertEquals(0, calls("scanAliveRows"), "the sample is not a scan of the table")
+    }
+
+    @Test
+    fun `the most recently synced list is a stepped scan and never reads the whole table`() {
+        val rows = StateDatabase.ALIVE_SCAN_CHUNK_ROWS + 1
+        db.batch { for (i in 0 until rows) db.upsertEntry(row("/f$i", synced = t0.plusSeconds(i.toLong()))) }
+        db.holds.reset()
+        assertEquals(20, db.mostRecentlySynced(20).size)
+        assertEquals(0, calls("getAllEntries"), "no whole-table read")
+        assertEquals(2, calls("scanAliveRows"), "one short read per step of ALIVE_SCAN_CHUNK_ROWS rows")
+    }
+
+    @Test
+    fun `the once-per-path scan reads in steps and never reads the whole table`() {
+        val rows = StateDatabase.ALIVE_SCAN_CHUNK_ROWS + 1
+        db.batch { for (i in 0 until rows) db.upsertEntry(row("/f$i")) }
+        db.holds.reset()
+        var seen = 0
+        db.scanAliveRowsOncePerPath { seen++ }
+        assertEquals(rows, seen)
+        assertEquals(0, calls("getAllEntries"))
+        assertEquals(2, calls("scanAliveRows"))
+    }
 }
