@@ -295,7 +295,7 @@ class LocalFsProvider(
         to: Path,
         create: Boolean = false,
     ) {
-        val staging = to.resolveSibling(stagingSiblingName(to.fileName.toString(), ".unidrive-tmp"))
+        val staging = to.resolveSibling(stagingSiblingName(to.fileName.toString(), ".${java.util.UUID.randomUUID().toString().take(8)}.unidrive-tmp"))
         try {
             Files.copy(from, staging, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES)
             staging.toFile().setWritable(true)
@@ -353,7 +353,11 @@ class LocalFsProvider(
         RemoteConflictException("localfs: '${to.fileName}' appeared at the target since the upload was planned; it is not overwritten")
 
     override suspend fun delete(remotePath: String, ifMatchETag: String?) {
-        withContext(Dispatchers.IO) { deleteRecursivelyNoFollow(toLocal(remotePath)) }
+        withContext(Dispatchers.IO) {
+            val target = toLocal(remotePath)
+            if (target == rootNorm) throw ProviderException("Refusing to delete the whole localfs root")
+            deleteRecursivelyNoFollow(target)
+        }
     }
 
     // archive#1178: localfs has no trash; delete already deletes for good.
