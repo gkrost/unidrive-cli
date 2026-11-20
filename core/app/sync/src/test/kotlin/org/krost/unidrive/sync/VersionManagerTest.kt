@@ -348,4 +348,43 @@ class VersionManagerTest {
         assertTrue(manager.restore("/docs/deep/v.txt", listed.timestamp), "restore matches the cloud-style key")
         assertEquals("one", syncRoot.resolve("docs/deep/v.txt").readText())
     }
+
+    // #743 finding 11: two snapshots of one file in the same second (a streamed re-download of a twice-edited file,
+    // keep-both followed by a download) both succeed and both versions are kept.
+    @Test
+    fun `a second snapshot of one file within the same second succeeds`() {
+        val file = syncRoot.resolve("twice.txt")
+        file.writeText("first")
+        val frozen = Instant.parse("2026-11-20T10:00:00.250Z")
+        val manager = VersionManager(syncRoot) { frozen }
+        val first = manager.snapshot("twice.txt")
+        file.writeText("second")
+
+        val second = manager.snapshot("twice.txt")
+
+        assertNotNull(first)
+        assertNotNull(second)
+        assertNotEquals(first, second)
+    }
+
+    @Test
+    fun `a second snapshot within the same second keeps both versions listed and restorable`() {
+        val file = syncRoot.resolve("twice.txt")
+        file.writeText("first")
+        val frozen = Instant.parse("2026-11-20T10:00:00.250Z")
+        val manager = VersionManager(syncRoot) { frozen }
+        manager.snapshot("twice.txt")
+        file.writeText("second")
+        manager.snapshot("twice.txt")
+
+        val versions = manager.listVersions("twice.txt")
+
+        assertEquals(2, versions.size)
+        assertEquals(setOf("first", "second"), versions.map { it.versionPath.readText() }.toSet())
+        for (version in versions) {
+            file.writeText("current")
+            assertTrue(manager.restore("twice.txt", version.timestamp))
+            assertEquals(version.versionPath.readText(), file.readText())
+        }
+    }
 }
