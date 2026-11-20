@@ -198,6 +198,11 @@ class DaemonRunCommand : Runnable {
             // archive#891: the health line, one INFO line per minute in unidrive.log.
             healthIntervalMs = 60_000,
             hydrationCacheMaxBytes = config.hydrationCacheMaxBytes(profile.name),
+            // issue#72: the profile's transfer budget (null = the provider's audited cap), upload queue depth
+            // and cache access grace; the limits line at start prints the effective values.
+            maxConcurrentTransfersOverride = config.maxConcurrentTransfersOverride(profile.name),
+            uploadQueueDepth = config.uploadQueueDepth(profile.name),
+            cacheAccessGraceMs = config.cacheAccessGraceMs(profile.name),
             deleteGuards = deleteGuardsFor(config, profile.name),
             profileMode = mode,
             // archive#655: the quota snapshot's TTL (profile config quota_refresh_minutes, default 15
