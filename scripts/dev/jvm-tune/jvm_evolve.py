@@ -61,7 +61,8 @@ REPO_FLAGS = Path(__file__).resolve().parents[3] / "dist" / "launcher" / "jvm-fl
 BASE_EXCLUDE_PREFIXES = ("-Xms", "-Xmx", "-XX:FlightRecorderOptions")
 
 TIME_LINE = re.compile(r"^(\d+(?:\.\d+)?) (\d+)$")
-GC_PAUSE = re.compile(r"Pause .*? (\d+(?:\.\d+)?)ms$")
+# The JVM writes decimal commas under a comma locale (e.g. "2,786ms"), so both separators are accepted.
+GC_PAUSE = re.compile(r"Pause .*? (\d+(?:[.,]\d+)?)ms$")
 
 FORBIDDEN_WORKDIRS = (
     Path.home() / ".config" / "unidrive",
@@ -134,7 +135,7 @@ def parse_gc_pauses_ms(gc_log: str) -> float:
     for line in gc_log.splitlines():
         m = GC_PAUSE.search(line)
         if m:
-            total += float(m.group(1))
+            total += float(m.group(1).replace(",", "."))
     return total
 
 

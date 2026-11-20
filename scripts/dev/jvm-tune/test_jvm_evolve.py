@@ -57,6 +57,10 @@ class ParserTest(unittest.TestCase):
         )
         self.assertAlmostEqual(je.parse_gc_pauses_ms(log), 6.0)
 
+    def test_gc_pauses_accept_decimal_commas(self):
+        log = "[0,168s] GC(0) Pause Young (Allocation Failure) 17M->4M(61M) 2,786ms\n"
+        self.assertAlmostEqual(je.parse_gc_pauses_ms(log), 2.786)
+
     def test_time_line_is_the_last_matching_line(self):
         err = "some java output\nWARN noise\n0.45 123456\n"
         self.assertEqual(je.parse_time_line(err), (0.45, 123456))
