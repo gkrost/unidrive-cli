@@ -327,7 +327,6 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
         // The JVM starts its hooks at once and in no order, so a second hook would race it.
         val shutdown = SyncShutdown().also { this.shutdown = it }
         shutdown.unlockingLast { lock.unlock() }
-        Runtime.getRuntime().addShutdownHook(Thread({ shutdown.shutdownAndWait() }, "unidrive-sync-shutdown"))
 
         // Spec mount-sync-mode-mutex §3.4.1: warn-but-do-not-abort if a
         // stale unidrive FUSE mount survived a kill -9'd MountCommand.
@@ -362,6 +361,9 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
         requestTrace?.let { rawProvider.attachRequestMetrics(it) }
         if (watch && requestTrace != null) System.err.println("--trace-requests prints its summary after a one-shot sync; --watch prints none.")
         val config = parent.loadSyncConfig()
+        // #749 finding 5: registered only once the config and the provider exist. A configuration error above exits the JVM
+        // with nothing to stop, and a hook already registered would wait out the whole deadline for a run that never starts.
+        Runtime.getRuntime().addShutdownHook(Thread({ shutdown.shutdownAndWait() }, "unidrive-sync-shutdown"))
         // A sync_path in config.toml is the profile's standing scope; --sync-path
         // replaces it for this invocation. --full-tree would run unscoped against a
         // profile whose scope is configured, so it is refused rather than silently
