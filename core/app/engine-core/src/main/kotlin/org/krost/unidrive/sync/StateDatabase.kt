@@ -1140,8 +1140,8 @@ class StateDatabase(
         rawEntry: SyncEntry,
         keepMarks: Boolean = false,
     ) {
-        locked("upsertEntry") {
-            beginWrite()
+        // #744 finding 5: the eviction and the insert are one transaction (a batch is re-entrant).
+        locked("upsertEntry") { batch {
             val entry = storedForm(rawEntry, keepMarks)
             // Path-collision resolution: if a different alive row already holds
             // this path, the partial unique index `WHERE status='EXISTS'` would
@@ -1252,7 +1252,7 @@ class StateDatabase(
             }
             // INSERT OR REPLACE swapped the row of this remote id (nothing, a tombstone or an alive row) for the new one.
             countAlive((if (entry.status == EntryStatus.EXISTS) 1 else 0) - (if (wasAlive) 1 else 0))
-        }
+        } }
     }
 
     /**
@@ -1838,20 +1838,18 @@ class StateDatabase(
         locked("markDeleted") {
             val existing = getEntry(path) ?: return
             val deletedAt = java.time.Instant.now()
-            upsertEntry(
-                existing.copy(
-                    status = EntryStatus.DELETED,
-                    lastSynced = deletedAt,
-                ),
-            )
-            if (mountDelete) {
-                conn.prepareStatement(
-                    "UPDATE sync_entries SET mount_deleted_at = ? WHERE path = ? AND remote_id IS ? AND status = 'DELETED'",
-                ).use { stmt ->
-                    stmt.setString(1, deletedAt.toString())
-                    stmt.setString(2, existing.path)
-                    stmt.setString(3, existing.remoteId)
-                    stmt.executeUpdate()
+            // #744 finding 5: the tombstone and its mount_deleted_at stamp land together or not at all.
+            batch {
+                upsertEntry(existing.copy(status = EntryStatus.DELETED, lastSynced = deletedAt))
+                if (mountDelete) {
+                    conn.prepareStatement(
+                        "UPDATE sync_entries SET mount_deleted_at = ? WHERE path = ? AND remote_id IS ? AND status = 'DELETED'",
+                    ).use { stmt ->
+                        stmt.setString(1, deletedAt.toString())
+                        stmt.setString(2, existing.path)
+                        stmt.setString(3, existing.remoteId)
+                        stmt.executeUpdate()
+                    }
                 }
             }
         }
