@@ -2862,7 +2862,7 @@ class HydrationImpl(
     override suspend fun locate(remoteIds: List<String>): LocateResult =
         try {
             LocateResult.Ok(
-                remoteIds.map { id ->
+                remoteIds.mapBounded(LOCATE_PARALLELISM) { id -> // gkrost/unidrive-cli#746 finding 7: asks in flight at once
                     val row = stateDb.getEntryByRemoteId(id)
                     when (val state = mount.itemStateById(id)) {
                         is ItemRemoteState.Live -> Located(id, LocatedItem.Listed(row?.path, state.isFolder ?: row?.isFolder))
