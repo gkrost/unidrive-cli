@@ -22,6 +22,7 @@ import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.SyncEngine
 import org.krost.unidrive.sync.UploadRefusals
 import org.krost.unidrive.sync.hydratedFiles
+import org.krost.unidrive.sync.writeUploadFailedPaths
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
 import picocli.CommandLine.ParentCommand
