@@ -4,7 +4,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import org.krost.unidrive.http.UrlRedaction
 import org.krost.unidrive.io.ndjsonString
@@ -12,7 +11,6 @@ import org.krost.unidrive.sync.PathNormalizer
 import java.nio.file.InvalidPathException
 import java.nio.file.Paths
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -307,49 +305,8 @@ class HydrationIpcHandler(
     // The run part of the issued handle ids doubles as the id of this daemon run's stream: seq restarts with the daemon.
     private val runId = handleIdRun
 
-    /**
-     * One subscribed connection's queue. [events] is guarded by its own monitor; [wake] (conflated) tells the writer
-     * coroutine that [events] is not empty; closing [wake] ends the writer once it has drained [events]. [capacity] is
-     * [SUBSCRIBER_QUEUE_CAPACITY] plus the replay it started with, so a replay is never cut by the live queue's bound.
-     */
-    private class SubscriberQueue(replay: List<Sequenced>) {
-        val events = ArrayDeque(replay)
-        val wake = Channel<Unit>(Channel.CONFLATED)
-        val dropped = AtomicInteger(0)
-        private val capacity = SUBSCRIBER_QUEUE_CAPACITY + replay.size
-
-        init {
-            if (replay.isNotEmpty()) wake.trySend(Unit)
-        }
-
-        /** Add [event]; when over capacity, drop the oldest event that is not terminal (see [isTerminalForSubscriber]). */
-        fun offer(event: Sequenced) {
-            synchronized(events) {
-                events.addLast(event)
-                if (events.size > capacity) {
-                    val victim = events.indexOfFirst { !it.event.isTerminalForSubscriber() }
-                    if (victim >= 0) {
-                        events.removeAt(victim)
-                        dropped.incrementAndGet()
-                    } else if (events.size > SUBSCRIBER_TERMINAL_HARD_CAP) {
-                        // Only outcomes are queued and the reader is gone for good in all but name: bound the memory.
-                        events.removeFirst()
-                        dropped.incrementAndGet()
-                    }
-                }
-            }
-            wake.trySend(Unit)
-        }
-
-        fun poll(): Sequenced? = synchronized(events) { events.removeFirstOrNull() }
-
-        fun close() {
-            wake.close()
-        }
-    }
-
     private data class Subscriber(
-        val queue: SubscriberQueue,
+        val queue: SubscriberQueue<Sequenced>,
         val job: Job,
         // gkrost/unidrive-cli#437: released when the daemon's reply to the subscribe has been written to the connection
         // (the post-reply hook), so the stream's first line cannot overtake the reply line the write protocol pins. A
@@ -473,7 +430,8 @@ class HydrationIpcHandler(
         // Repeat-subscribe on the same connection: tear down the prior subscriber first
         // so we never have two writer coroutines competing on the same connection.
         subscribers.remove(connectionId)?.let { it.job.cancel(); it.queue.close() }
-        val queue = SubscriberQueue(replay)
+        val queue =
+            SubscriberQueue(replay, SUBSCRIBER_QUEUE_CAPACITY, SUBSCRIBER_TERMINAL_HARD_CAP, { it.event.isTerminalForSubscriber() }) { it.seq }
         val startGate =
             if (replay.isEmpty()) CompletableDeferred(Unit).apply { complete(Unit) } else CompletableDeferred()
         val job = scope.launch {
