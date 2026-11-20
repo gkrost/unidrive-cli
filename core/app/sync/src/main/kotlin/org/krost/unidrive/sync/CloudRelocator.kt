@@ -298,6 +298,23 @@ class CloudRelocator(
         }
     }
 
+    // #743 finding 8: a target folder the provider answers with a typed not-found holds nothing; any other failure
+    // propagates to the caller.
+    private suspend fun targetChildren(path: String): List<CloudItem> =
+        try {
+            target.listChildren(path)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (org.krost.unidrive.engine.RemoteErrors.isNotFound(e)) emptyList() else throw e
+        }
+
+    // #743 finding 8: a folder whose target listing failed ([index] null) has its subfolders walked, not its files.
+    private fun walkable(
+        items: List<CloudItem>,
+        index: Map<String, CloudItem>?,
+    ): List<CloudItem> = if (index != null) items else items.filter { it.isFolder }
+
     /**
      * Creates [path] on the target; null when it is a folder afterwards, else the create's failure. A failed create is
      * forgiven only when a lookup then shows the folder (it was there: the create answered a 409).
@@ -391,10 +408,13 @@ class CloudRelocator(
                 }
             }
 
-            suspend fun targetIndex(path: String): Map<String, CloudItem> {
+            // #743 finding 8: null when the target folder could not be listed. Only a typed not-found is an empty
+            // folder; any other failure (a 503, a timeout) is one error under the folder's name, and the walk skips
+            // the folder's files instead of uploading them over a target it could not check.
+            suspend fun targetIndex(path: String): Map<String, CloudItem>? {
                 if (!skipExisting) return emptyMap()
                 return try {
-                    target.listChildren(path).associateBy { it.name }
+                    targetChildren(path).associateBy { it.name }
                 } catch (e: CancellationException) {
                     // UD-286: never absorb cancellation — re-throw before the
                     // generic catch so structured concurrency keeps working.
@@ -403,13 +423,18 @@ class CloudRelocator(
                     // UD-286: log class name + throwable so postmortem can
                     // distinguish IOException / WSAECONNABORTED / 503 / 404 / …
                     log.warn(
-                        "targetIndex failed for '{}', skip check disabled: {}: {}",
+                        "targetIndex failed for '{}', its files are not transferred: {}: {}",
                         path,
                         e.javaClass.simpleName,
                         e.message,
                         e,
                     )
-                    emptyMap()
+                    errorCount.incrementAndGet()
+                    val message =
+                        "Could not list the target folder $path: ${e.javaClass.simpleName}: ${e.message}; " +
+                            "the files in it were not transferred"
+                    emitMutex.withLock { send(MigrateEvent.Error(message)) }
+                    null
                 }
             }
 
@@ -427,10 +452,10 @@ class CloudRelocator(
                 log.debug(
                     "target-index for {}: {} entries, keys={}",
                     targetPrefix,
-                    existingByName.size,
-                    existingByName.keys.take(5),
+                    existingByName?.size,
+                    existingByName?.keys?.take(5),
                 )
-                for (item in items) {
+                for (item in walkable(items, existingByName)) {
                     val itemName = item.name
                     val newSource = if (sourcePrefix == "/") "/$itemName" else "$sourcePrefix/$itemName"
                     val newTarget = if (targetPrefix == "/") "/$itemName" else "$targetPrefix/$itemName"
@@ -441,7 +466,7 @@ class CloudRelocator(
                             walk(newSource, newTarget)
                         }
                     } else {
-                        val existing = existingByName[itemName]
+                        val existing = existingByName?.get(itemName)
                         val equivalence = if (existing != null && !existing.isFolder) compare(item, existing) else null
                         if (existing != null) {
                             log.debug(
