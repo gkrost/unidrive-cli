@@ -66,7 +66,11 @@ internal class MinimalFakeProvider(
     // When set, itemStateById throws it instead of answering.
     @Volatile var itemStateFailure: Exception? = null
 
+    // When set, runs at every itemStateById call before it answers (gkrost/unidrive-cli#746 finding 7: a round trip in virtual time).
+    @Volatile var itemStateRoundTrip: (suspend (String) -> Unit)? = null
+
     override suspend fun itemStateById(remoteId: String): ItemRemoteState {
+        itemStateRoundTrip?.invoke(remoteId)
         itemStateFailure?.let { throw it }
         return itemStatesById[remoteId] ?: ItemRemoteState.Unknown
     }

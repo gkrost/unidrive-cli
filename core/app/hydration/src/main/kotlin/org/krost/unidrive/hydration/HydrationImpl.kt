@@ -2023,8 +2023,9 @@ class HydrationImpl(
      */
     private suspend fun reclaimOnLastClose(path: String) {
         if (inUse(path)) return
-        if (stateDb.getEntry(path)?.isPinned == true) return
-        if (mount.cacheDisposition(path) != CacheDisposition.DISPOSABLE) return
+        val row = stateDb.getEntry(path)?.takeUnless { it.isPinned } ?: return // no row is protected; a pinned row's copy stays
+        // gkrost/unidrive-cli#746 finding 8: no content hash here; the locked re-check proves the bytes, once.
+        if (mount.cacheDisposition(path, row, proveBytes = false) != CacheDisposition.DISPOSABLE) return
         // gkrost/unidrive-cli#452: the event changes the subscriber's view of the path, so it must
         // not go through tryEmit: with the event buffer full a tryEmit drops it before any
         // subscriber queue. emit waits for buffer room instead of losing it.
@@ -2281,7 +2282,7 @@ class HydrationImpl(
             // editing the copy meanwhile.
             if (inUse(f.path)) continue
             if (rows[f.path]?.isPinned == true) continue // a pinned row's copy is never dropped (#404)
-            if (mount.cacheDisposition(f.path, rows[f.path]) != CacheDisposition.DISPOSABLE) continue
+            if (mount.cacheDisposition(f.path, rows[f.path], proveBytes = false) != CacheDisposition.DISPOSABLE) continue // #746.8
             // gkrost/unidrive-cli#452: as in reclaimOnLastClose — the event must not be dropped
             // by a full buffer before any subscriber queue; emit waits for room instead.
             val bytes = mount.evictCacheCopy(f.path, { !inUse(f.path) }) { _events.emit(HydrationEvent.Dehydrated(it)) }
@@ -2861,7 +2862,7 @@ class HydrationImpl(
     override suspend fun locate(remoteIds: List<String>): LocateResult =
         try {
             LocateResult.Ok(
-                remoteIds.map { id ->
+                remoteIds.mapBounded(LOCATE_PARALLELISM) { id -> // gkrost/unidrive-cli#746 finding 7: asks in flight at once
                     val row = stateDb.getEntryByRemoteId(id)
                     when (val state = mount.itemStateById(id)) {
                         is ItemRemoteState.Live -> Located(id, LocatedItem.Listed(row?.path, state.isFolder ?: row?.isFolder))

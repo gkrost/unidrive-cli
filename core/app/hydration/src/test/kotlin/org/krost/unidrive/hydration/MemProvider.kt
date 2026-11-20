@@ -95,6 +95,14 @@ internal class MemProvider : CloudProvider {
             )
     }
 
+    // Every hashAlgorithm() call: the mount asks once per content-hash proof of a cache copy (gkrost/unidrive-cli#746 finding 8).
+    val hashAlgorithmAsks = java.util.concurrent.atomic.AtomicInteger()
+
+    override fun hashAlgorithm(): org.krost.unidrive.HashAlgorithm? {
+        hashAlgorithmAsks.incrementAndGet()
+        return null
+    }
+
     override fun capabilities(): Set<Capability> = setOf(Capability.Delta)
 
     override suspend fun authenticate() {}

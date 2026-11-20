@@ -1089,23 +1089,22 @@ class MountEngine private constructor(
     fun cacheDisposition(path: String): CacheDisposition = dispositionOf(path, db.getEntry(path))
 
     /**
-     * archive#728: [cacheDisposition] for a row the caller already loaded in a batch (`StateDatabase.getEntriesByPaths`).
-     * The eviction pass asks about a whole LRU slice with ONE query instead of one per cache file; the
-     * per-file checks (existence, size, mtime and, only for a copy no baseline vouches for, the content
-     * hash) stay here and run with no database monitor held.
-     *
-     * [entry] is the row as the caller last read it and may be stale: this answers "is this copy worth
-     * asking about" only. [evictCacheCopy] re-runs the same classification against the row and the bytes
-     * it is about to delete, under the path's hydration lock, so nothing is ever deleted on stale data.
+     * archive#728: [cacheDisposition] for a row the caller loaded in a batch (`StateDatabase.getEntriesByPaths`): ONE query per LRU
+     * slice instead of one per cache file; the per-file checks stay here and run with no database monitor held. [entry] may be stale:
+     * this answers "is this copy worth asking about" only, and [evictCacheCopy] re-runs the classification under the path's hydration
+     * lock, so nothing is deleted on stale data. gkrost/unidrive-cli#746 finding 8: with [proveBytes] false a copy only its content
+     * hash can vouch for counts as disposable here, so its one hash is the locked re-check's.
      */
     fun cacheDisposition(
         path: String,
         entry: SyncEntry?,
-    ): CacheDisposition = dispositionOf(path, entry)
+        proveBytes: Boolean = true,
+    ): CacheDisposition = dispositionOf(path, entry, proveBytes)
 
     private fun dispositionOf(
         path: String,
         entry: SyncEntry?,
+        proveBytes: Boolean = true,
     ): CacheDisposition {
         if (entry == null) return CacheDisposition.PROTECTED
         if (entry.isFolder || entry.remoteId == null || entry.lastErrorAt != null) {
@@ -1124,7 +1123,7 @@ class MountEngine private constructor(
                 // The cache copy is the row's local file: clean only while it is exactly what was recorded.
                 return if (cacheIsBaseline) CacheDisposition.DISPOSABLE else CacheDisposition.PROTECTED
             }
-            if (cacheMatchesRecordedVersion(entry, cache, size)) CacheDisposition.DISPOSABLE else CacheDisposition.PROTECTED
+            if (!proveBytes || cacheMatchesRecordedVersion(entry, cache, size)) CacheDisposition.DISPOSABLE else CacheDisposition.PROTECTED
         } catch (e: java.io.IOException) {
             CacheDisposition.PROTECTED
         }
