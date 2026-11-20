@@ -117,7 +117,7 @@ internal class QuotaSnapshotMonitor(
             provider.checkCredentials()
             val quota = provider.quota()
             val now = System.currentTimeMillis()
-            quotaSnapshot =
+            val snapshot =
                 QuotaSnapshot(
                     usedBytes = quota.used,
                     totalBytes = quota.total,
@@ -126,7 +126,8 @@ internal class QuotaSnapshotMonitor(
                     stale = false,
                     error = null,
                 )
-            persistQuotaSnapshot(db(), quotaSnapshot!!)
+            quotaSnapshot = snapshot
+            persistQuotaSnapshot(db(), snapshot)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {

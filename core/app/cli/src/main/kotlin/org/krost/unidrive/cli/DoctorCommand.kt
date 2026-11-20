@@ -382,9 +382,7 @@ class DoctorCommand : Runnable {
         val sampleOrphans = mutableListOf<String>()
         val sidecarDirs = setOf(".unidrive-trash", ".unidrive-versions")
         Files.walk(syncRoot).use { stream ->
-            val iter = stream.iterator()
-            while (iter.hasNext()) {
-                val p = iter.next()
+            for (p in stream.iterator()) {
                 if (p == syncRoot) continue
                 if (Files.isDirectory(p)) continue
                 val dbPath = engineKey(syncRoot.relativize(p))
@@ -514,9 +512,7 @@ class DoctorCommand : Runnable {
         var files = 0
         if (Files.isDirectory(cacheDir)) {
             Files.walk(cacheDir).use { stream ->
-                val iter = stream.iterator()
-                while (iter.hasNext()) {
-                    val p = iter.next()
+                for (p in stream.iterator()) {
                     if (Files.isRegularFile(p)) {
                         files++
                         bytes += runCatching { Files.size(p) }.getOrDefault(0L)
