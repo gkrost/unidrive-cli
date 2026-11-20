@@ -2130,46 +2130,6 @@ internal fun foldersWithLiveRemoteItemsBelow(actions: List<SyncAction>): Set<Str
     return holders
 }
 
-// #451: the folder DeleteRemotes of [actions] whose live content below them the plan does not delete: a path
-// [skippedByScan] excludes or ignores, or one without an alive tracked row (an EXISTS row with a remote id). A
-// provider's folder delete takes its whole subtree with it, so such a folder must not go: the tracked children
-// keep their own file-level deletes and the engine's empty-directory reaper removes the folder once its live
-// listing shows nothing surviving below it.
-internal fun folderDeletesHoldingUnplannedRemoteItems(
-    actions: List<SyncAction>,
-    remoteChangesLocal: Map<String, CloudItem>,
-    entryByPath: Map<String, SyncEntry>,
-    skippedByScan: (path: String, item: CloudItem) -> Boolean,
-): List<SyncAction.DeleteRemote> =
-    actions.filterIsInstance<SyncAction.DeleteRemote>()
-        .filter { entryByPath[it.path]?.isFolder == true }
-        .filter { delete -> unplannedRemoteItemBelow(delete.path, remoteChangesLocal, entryByPath, skippedByScan) }
-
-// True when a live item under [folderPath] in [remoteChangesLocal] gets no delete of its own.
-internal fun unplannedRemoteItemBelow(
-    folderPath: String,
-    remoteChangesLocal: Map<String, CloudItem>,
-    entryByPath: Map<String, SyncEntry>,
-    skippedByScan: (path: String, item: CloudItem) -> Boolean,
-): Boolean {
-    val prefix = folderPath + "/"
-    return remoteChangesLocal.any { (path, item) ->
-        !item.deleted && path.startsWith(prefix) && unplannedRemoteItem(path, item, entryByPath, skippedByScan)
-    }
-}
-
-// True when [path] (a live item under a folder the plan deletes remotely) gets no delete of its own: the scan
-// skips it ([skippedByScan]), or no alive row with a remote id tracks it.
-private fun unplannedRemoteItem(
-    path: String,
-    item: CloudItem,
-    entryByPath: Map<String, SyncEntry>,
-    skippedByScan: (path: String, item: CloudItem) -> Boolean,
-): Boolean {
-    val entry = entryByPath[path]
-    return skippedByScan(path, item) || entry == null || entry.remoteId == null || entry.status != EntryStatus.EXISTS
-}
-
 // #99: a scoped run never deletes in the cloud above its scope. A scope ancestor that is gone
 // locally — a profile narrowed after an unscoped sync leaves hydrated ancestor rows — is the
 // scope's bookkeeping, not a user delete: propagating it would delete the remote subtree the run

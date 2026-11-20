@@ -18,7 +18,7 @@ private val log = LoggerFactory.getLogger("org.krost.unidrive.sync.TouchedFolder
  *  - it is the same folder (a folder in the row and in the listing, with the row's remote id), and
  *  - no other action of the plan brings a live remote item down below it (a download, a conflict with a live remote
  *    side, a placeholder, a local move: [foldersWithLiveRemoteItemsBelow]), and
- *  - the listing shows no live item below it that the plan does not delete ([unplannedRemoteItemBelow]).
+ *  - the listing shows no live item below it that the plan does not delete ([foldersHoldingUnplannedRemoteItems]).
  *
  * A real remote change below the folder (a file someone else added there) therefore keeps the conflict, as before.
  * Runs before detectMoves, so a settled delete can still pair with the create of the new name into one folder move;
@@ -44,10 +44,9 @@ internal fun settleTouchedFolderConflictsIn(
     // folder and its old subfolder are both touched by the same rename).
     val touchedPaths = touched.mapTo(HashSet()) { it.path }
     val holders = foldersWithLiveRemoteItemsBelow(actions.filterNot { it is SyncAction.Conflict && it.path in touchedPaths })
-    val settled =
-        touched.filter { conflict ->
-            conflict.path !in holders && !unplannedRemoteItemBelow(conflict.path, remoteChangesLocal, entryByPath, skippedByScan)
-        }
+    val candidates = touchedPaths.filterTo(HashSet()) { it !in holders }
+    val held = foldersHoldingUnplannedRemoteItems(candidates, remoteChangesLocal, entryByPath, skippedByScan)
+    val settled = touched.filter { conflict -> conflict.path in candidates && conflict.path !in held }
     if (settled.isEmpty()) return emptyList()
     val settledPaths = settled.mapTo(HashSet()) { it.path }
     val iterator = actions.listIterator()
