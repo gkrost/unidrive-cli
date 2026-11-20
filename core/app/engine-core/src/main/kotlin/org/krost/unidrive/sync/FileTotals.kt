@@ -52,10 +52,28 @@ fun StateDatabase.mostRecentlySynced(limit: Int): List<SyncEntry> {
     // Worst first: the oldest, and among equally old the one seen last.
     val worstFirst = compareBy<IndexedValue<SyncEntry>> { it.value.lastSynced }.thenByDescending { it.index }
     val kept = java.util.PriorityQueue(limit + 1, worstFirst)
+    // A row replaced while the scan runs is visited twice (see [StateDatabase.scanAliveRows]): one path is kept once, newest copy.
+    val keptByPath = HashMap<String, IndexedValue<SyncEntry>>()
     var seen = 0
     scanAliveRows { row ->
-        kept += IndexedValue(seen++, row.entry())
-        if (kept.size > limit) kept.poll()
+        val next = IndexedValue(seen++, row.entry())
+        val prior = keptByPath[next.value.path]
+        if (prior != null) {
+            if (!next.value.lastSynced.isAfter(prior.value.lastSynced)) return@scanAliveRows
+            kept.remove(prior)
+        }
+        kept += next
+        keptByPath[next.value.path] = next
+        if (kept.size > limit) keptByPath.remove(kept.poll().value.path)
     }
     return kept.sortedWith(worstFirst.reversed()).map { it.value }
+}
+
+/**
+ * [StateDatabase.scanAliveRows] with each path visited once: a row replaced while the scan runs moves to the end of the table
+ * and would be visited again, which a report that counts rows must not do. The first copy seen is the one visited.
+ */
+fun StateDatabase.scanAliveRowsOncePerPath(visit: (StateDatabase.AliveRow) -> Unit) {
+    val visited = HashSet<String>()
+    scanAliveRows { row -> if (visited.add(row.path)) visit(row) }
 }

@@ -84,4 +84,38 @@ class StateDatabaseReportsTest {
         assertEquals(expected.map { it.path }, db.mostRecentlySynced(20).map { it.path })
         assertEquals(3, db.mostRecentlySynced(3).size)
     }
+
+    // One row more than a scan step, and "/f0" (the first row of the first step) re-synced between the steps: the replace moves it
+    // to the end of the table, so the second step visits it again.
+    private fun resyncFirstRowDuringTheScan(): Instant {
+        // "/f0" is already the newest row, so its first copy and its replacement both rank at the top.
+        for (i in 0..StateDatabase.ALIVE_SCAN_CHUNK_ROWS) db.upsertEntry(row("/f$i", synced = t0.plusSeconds(if (i == 0) 999_999L else i.toLong())))
+        val resynced = t0.plusSeconds(1_000_000)
+        var once = true
+        db.aliveScanChunkGap = {
+            if (once) {
+                once = false
+                db.upsertEntry(row("/f0", synced = resynced))
+            }
+        }
+        return resynced
+    }
+
+    @Test
+    fun `the most recently synced list names a row replaced during the scan once`() {
+        val resynced = resyncFirstRowDuringTheScan()
+        val top = db.mostRecentlySynced(3)
+        assertEquals(top.map { it.path }.distinct(), top.map { it.path }, "no path twice: ${top.map { it.path }}")
+        assertEquals("/f0", top.first().path)
+        assertEquals(resynced, top.first().lastSynced, "the newest copy is kept")
+    }
+
+    @Test
+    fun `a once-per-path scan visits a row replaced during the scan once`() {
+        resyncFirstRowDuringTheScan()
+        val visited = mutableListOf<String>()
+        db.scanAliveRowsOncePerPath { visited += it.path }
+        assertEquals(StateDatabase.ALIVE_SCAN_CHUNK_ROWS + 1, visited.size)
+        assertEquals(visited.size, visited.toSet().size)
+    }
 }

@@ -26,6 +26,7 @@ import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.SyncScope
 import org.krost.unidrive.sync.UploadRefusals
 import org.krost.unidrive.sync.fileTotals
+import org.krost.unidrive.sync.scanAliveRowsOncePerPath
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
 import picocli.CommandLine.ParentCommand
@@ -243,20 +244,20 @@ class StatusCommand : Callable<Int> {
         try {
             db.initialize()
             // #841 (#749-8): one pass in steps of rows, not every row as an object at once.
-            db.scanAliveRows { row ->
-                val entry = row.entry().takeUnless { it.isFolder } ?: return@scanAliveRows
+            db.scanAliveRowsOncePerPath { row ->
+                val entry = row.entry().takeUnless { it.isFolder } ?: return@scanAliveRowsOncePerPath
                 if (!entry.isHydrated) {
                     downloadsPending++
                     downloadBytes += entry.remoteSize
-                    return@scanAliveRows
+                    return@scanAliveRowsOncePerPath
                 }
-                if (!entry.isPendingUpload) return@scanAliveRows
+                if (!entry.isPendingUpload) return@scanAliveRowsOncePerPath
                 // archive#136: hydrated rows use the whole UD-901 predicate; the !isHydrated
                 // branch above already routed sparse partial-downloads to downloads.
                 val refusal = db.uploadRefusal(entry.path)
                 if (UploadRefusals.holds(refusal, entry.localMtime, entry.localSize)) {
                     refusedUploads += entry.path to UploadRefusals.reason(refusal, entry.localMtime, entry.localSize).orEmpty()
-                    return@scanAliveRows
+                    return@scanAliveRowsOncePerPath
                 }
                 uploadsPending++
                 uploadBytes += entry.localSize ?: 0L
