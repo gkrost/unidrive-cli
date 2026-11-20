@@ -51,6 +51,22 @@ class StateDatabaseCaseInsensitiveLookupTest {
         assertNull(db.getEntryCaseInsensitive("/docs/Uebersicht.docx"), "a different spelling is not a case variant")
     }
 
+    // The non-ASCII comparison reads the folder's siblings only, so the folder itself must be found case-insensitively too.
+    @Test
+    fun `case-insensitive lookup matches a non-ASCII name under a folder whose row differs in case`() {
+        db.upsertEntry(row("/Ärger").copy(isFolder = true))
+        db.upsertEntry(row("/Ärger/Übung.txt"))
+
+        assertEquals("/Ärger/Übung.txt", db.getEntryCaseInsensitive("/ärger/übung.txt")?.path)
+    }
+
+    @Test
+    fun `case-insensitive lookup does not match a non-ASCII name in another folder`() {
+        db.upsertEntry(row("/a/übersicht.docx"))
+
+        assertNull(db.getEntryCaseInsensitive("/b/Übersicht.docx"))
+    }
+
     @Test
     fun `case-insensitive lookup picks the same row whatever the insertion order`() {
         db.upsertEntry(row("/a/Report.txt"))
