@@ -517,16 +517,12 @@ data class RawProvider(
     val upload_concurrency: Int? = null,
     val upload_chunk_mb: Int? = null,
     val upload_cutoff_mb: Int? = null,
-    // issue#72: the daemon's transfer budget — how many transfers (the sync pass's and the mount's uploads
-    // together) run at once. Absent = the provider's audited cap (ProviderMetadata.maxConcurrentTransfers,
-    // fallback 4); a configured value above the audited cap is clamped to it at the engine's guard, never
-    // past the audit. `unidrive sync` keeps the audited cap.
+    // issue#72: the daemon's transfer budget (sync pass + mount uploads together); absent = the provider's audited
+    // cap, clamped to it at the engine's guard, never past the audit. `unidrive sync` keeps the audited cap.
     val max_concurrent_transfers: Int? = null,
-    // issue#72: how many submitted-but-not-yet-running mount uploads the daemon holds before open_write
-    // back-pressures (HydrationImpl.uploadQueueDepth). Absent = 256. A mount profile only.
+    // issue#72: mount uploads waiting before open_write back-pressures; absent = 256. A mount profile only.
     val upload_queue_depth: Int? = null,
-    // issue#72: how long a hydration-cache file stays un-evictable after its last use, in ms
-    // (HydrationImpl.cacheAccessGraceMs). Absent = 60000. A mount profile only.
+    // issue#72: how long a hydration-cache file stays un-evictable after its last use, in ms; absent = 60000. Mount only.
     val cache_access_grace_ms: Long? = null,
 )
 
@@ -620,26 +616,6 @@ data class SyncConfig(
     fun hydrationCacheMaxBytes(profileName: String): Long =
         providers[profileName]?.hydrationCacheMaxBytes ?: DEFAULT_HYDRATION_CACHE_MAX_BYTES
 
-    /**
-     * issue#72: this profile's configured transfer budget (key `max_concurrent_transfers`), or null for the
-     * provider's audited cap ([org.krost.unidrive.ProviderMetadata.maxConcurrentTransfers], fallback 4). The
-     * engine clamps the value to the audited cap; `unidrive sync` does not read it.
-     */
-    fun maxConcurrentTransfersOverride(profileName: String): Int? = providers[profileName]?.maxConcurrentTransfersOverride
-
-    /**
-     * issue#72: how many submitted-but-not-yet-running mount uploads this profile's daemon holds before
-     * open_write back-pressures (HydrationImpl.uploadQueueDepth); [DEFAULT_UPLOAD_QUEUE_DEPTH] when unset.
-     */
-    fun uploadQueueDepth(profileName: String): Int = providers[profileName]?.uploadQueueDepth ?: DEFAULT_UPLOAD_QUEUE_DEPTH
-
-    /**
-     * issue#72: how long a hydration-cache file of this profile stays un-evictable after its last use, in ms
-     * (HydrationImpl.cacheAccessGraceMs); [DEFAULT_CACHE_ACCESS_GRACE_MS] when unset.
-     */
-    fun cacheAccessGraceMs(profileName: String): Long =
-        providers[profileName]?.cacheAccessGraceMs ?: DEFAULT_CACHE_ACCESS_GRACE_MS
-
     /** archive#463: seconds between the daemon's polls of the cloud for this profile; 0 = off. */
     fun daemonPollSeconds(profileName: String): Int =
         (providers[profileName]?.daemonPollSeconds ?: DEFAULT_DAEMON_POLL_SECONDS).coerceAtLeast(0)
@@ -722,29 +698,6 @@ data class SyncConfig(
          * [hydrationCacheMaxBytes] passes through and the hydration layer reads as "no content cache".
          */
         const val DEFAULT_HYDRATION_CACHE_MAX_BYTES: Long = -1L
-
-        /**
-         * issue#72: the mount uploads' waiting-queue bound a profile without `upload_queue_depth` gets — the value
-         * HydrationImpl's own DEFAULT_UPLOAD_QUEUE_DEPTH default runs at (:app:hydration does not depend on this
-         * module, so the two constants are kept in step by hand). A profile key may narrow or widen it, 1..[MAX_UPLOAD_QUEUE_DEPTH].
-         */
-        const val DEFAULT_UPLOAD_QUEUE_DEPTH: Int = 256
-
-        /** The ceiling of `upload_queue_depth`. */
-        const val MAX_UPLOAD_QUEUE_DEPTH: Int = 4096
-
-        /**
-         * issue#72: the cache access grace a profile without `cache_access_grace_ms` gets, in ms — the value
-         * HydrationImpl's own CACHE_ACCESS_GRACE_MS default runs at (constants kept in step by hand, as for
-         * [DEFAULT_UPLOAD_QUEUE_DEPTH]). 0..[MAX_CACHE_ACCESS_GRACE_MS].
-         */
-        const val DEFAULT_CACHE_ACCESS_GRACE_MS: Long = 60_000L
-
-        /** The ceiling of `cache_access_grace_ms`. */
-        const val MAX_CACHE_ACCESS_GRACE_MS: Long = 3_600_000L
-
-        /** The ceiling of `max_concurrent_transfers` as typed; the engine then clamps to the provider's audited cap. */
-        const val MAX_CONCURRENT_TRANSFERS: Int = 16
 
         /** The floor of `poll_interval` and `min_poll_interval`, in seconds. */
         const val MIN_POLL_INTERVAL_SECONDS: Int = 5
@@ -1187,19 +1140,6 @@ data class SyncConfig(
                 "last_writer_wins" -> ConflictPolicy.LAST_WRITER_WINS
                 else -> ConflictPolicy.KEEP_BOTH
             }
-
-        /** issue#72: an out-of-range daemon-limit key is refused naming the section, key and range (the CLI exits 78). */
-        private fun validateDaemonLimit(
-            profile: String,
-            key: String,
-            value: Long?,
-            min: Long,
-            max: Long,
-        ) {
-            if (value != null && value !in min..max) {
-                throw ConfigValueException("[providers.$profile] $key = $value: must be a whole number from $min to $max.")
-            }
-        }
 
         private fun RawSyncConfig.toSyncConfig(profileName: String): SyncConfig {
             val profile = providers[profileName]

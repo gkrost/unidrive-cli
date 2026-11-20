@@ -86,8 +86,8 @@ class SyncConfigValidationTest {
     fun `a profile without the daemon limit keys gets the current constants`() {
         val config = SyncConfig.parse("[providers.p]\ntype = \"internxt\"\n", "p")
         assertNull(config.maxConcurrentTransfersOverride("p"), "null = the provider's audited cap stays in force")
-        assertEquals(SyncConfig.DEFAULT_UPLOAD_QUEUE_DEPTH, config.uploadQueueDepth("p"))
-        assertEquals(SyncConfig.DEFAULT_CACHE_ACCESS_GRACE_MS, config.cacheAccessGraceMs("p"))
+        assertEquals(DEFAULT_UPLOAD_QUEUE_DEPTH, config.uploadQueueDepth("p"))
+        assertEquals(DEFAULT_CACHE_ACCESS_GRACE_MS, config.cacheAccessGraceMs("p"))
     }
 
     @Test
@@ -102,7 +102,7 @@ class SyncConfigValidationTest {
         assertEquals(5, config.uploadQueueDepth("a"))
         assertEquals(1000L, config.cacheAccessGraceMs("a"))
         assertNull(config.maxConcurrentTransfersOverride("b"))
-        assertEquals(SyncConfig.DEFAULT_UPLOAD_QUEUE_DEPTH, config.uploadQueueDepth("b"))
-        assertEquals(SyncConfig.DEFAULT_CACHE_ACCESS_GRACE_MS, config.cacheAccessGraceMs("b"))
+        assertEquals(DEFAULT_UPLOAD_QUEUE_DEPTH, config.uploadQueueDepth("b"))
+        assertEquals(DEFAULT_CACHE_ACCESS_GRACE_MS, config.cacheAccessGraceMs("b"))
     }
 }

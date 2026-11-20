@@ -428,10 +428,7 @@ open class SyncEngine(
     // provider's audited cap (a profile may lower the budget, never widen it past the audit — the throttle fallback
     // and the sync pass share this semaphore), else the audited cap.
     private val effectiveTransferBudget: Int =
-        when (val override = maxConcurrentTransfersOverride?.coerceAtLeast(1)) {
-            null -> providerMetadata?.maxConcurrentTransfers ?: 4
-            else -> minOf(override, providerMetadata?.maxConcurrentTransfers ?: 4)
-        }
+        minOf(maxConcurrentTransfersOverride?.coerceAtLeast(1) ?: Int.MAX_VALUE, providerMetadata?.maxConcurrentTransfers ?: 4)
 
     private val guard =
         org.krost.unidrive.engine.RemoteOperationGuard(
