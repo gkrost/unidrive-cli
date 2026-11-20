@@ -102,6 +102,11 @@ open class SyncEngine(
     // budget adds runs before a transfer takes a permit of the transfer budget
     // ([transferBudget]), so pacing never idles a concurrency slot.
     private val maxBandwidthKbps: Int? = null,
+    // issue#72: the profile's configured transfer budget (key `max_concurrent_transfers`), or null for the
+    // provider's audited cap. Applied at the guard below, clamped to the audited cap: the cap guards provider-side
+    // races (Internxt's 2 guards the IV-pinning upload race), so a profile may narrow the budget, never widen it
+    // past the audit. `unidrive sync` passes nothing and keeps the audited cap.
+    private val maxConcurrentTransfersOverride: Int? = null,
     private val fastBootstrap: Boolean = false,
     // UD-113: optional structured audit log of mutations (Download/Upload/Delete/Move/
     // CreateRemoteFolder). Wired from CLI/MCP startup; null in tests that don't need it.
@@ -419,6 +424,15 @@ open class SyncEngine(
     // caller that leaves providerId blank), which then runs at the conservative 4.
     private val providerMetadata = org.krost.unidrive.ProviderRegistry.getMetadata(providerId)
 
+    // issue#72: the transfer budget the guard runs at: the profile's `max_concurrent_transfers` narrowed to the
+    // provider's audited cap (a profile may lower the budget, never widen it past the audit — the throttle fallback
+    // and the sync pass share this semaphore), else the audited cap.
+    private val effectiveTransferBudget: Int =
+        when (val override = maxConcurrentTransfersOverride?.coerceAtLeast(1)) {
+            null -> providerMetadata?.maxConcurrentTransfers ?: 4
+            else -> minOf(override, providerMetadata?.maxConcurrentTransfers ?: 4)
+        }
+
     private val guard =
         org.krost.unidrive.engine.RemoteOperationGuard(
             standingScope = standingScope,
@@ -431,7 +445,7 @@ open class SyncEngine(
                 } else {
                     effectiveExcludePatterns.filterNot { it in SyncConfig.DEFAULT_EXCLUDE_PATTERNS }
                 },
-            maxConcurrentTransfers = providerMetadata?.maxConcurrentTransfers ?: 4,
+            maxConcurrentTransfers = effectiveTransferBudget,
             // gkrost/unidrive-cli#392: the small-file width of the hydration downloads' budget (the guard's downloadBudget).
             maxConcurrentSmallDownloads = providerMetadata?.maxConcurrentSmallDownloads ?: 4,
             // gkrost/unidrive-cli#392: the large-file width of the same budget; uploads keep maxConcurrentTransfers.
