@@ -59,22 +59,30 @@ class CaseSensitivityTest {
         assertEquals(expected, CaseSensitivity.ofDirectory(dir))
     }
 
-    // A folder whose case flag fsutil set inside a temp folder that folds; the test is skipped where that cannot be done.
+    // A folder whose case flag fsutil set inside a temp folder that folds; the test is skipped where that cannot be
+    // done. fsutil refuses on a volume without the per-directory flag but still exits 0, and its message is
+    // locale-dependent, so neither is trusted: the flag's effect is what is verified — only a case-sensitive folder
+    // lets two names that differ in case alone coexist.
     private fun caseSensitiveFolderInFoldingParent(): Path {
         val parent = TestScratch.directory("caseprobe")
         assumeTrue("a parent that folds case", folds(parent))
         val root = Files.createDirectory(parent.resolve("root"))
+        runCatching {
+            ProcessBuilder("fsutil", "file", "setCaseSensitiveInfo", root.toString(), "enable")
+                .redirectErrorStream(true)
+                .start()
+                .let { process ->
+                    process.inputStream.readAllBytes()
+                    process.waitFor()
+                }
+        }
         val flagged =
             runCatching {
-                ProcessBuilder("fsutil", "file", "setCaseSensitiveInfo", root.toString(), "enable")
-                    .redirectErrorStream(true)
-                    .start()
-                    .let { process ->
-                        process.inputStream.readAllBytes()
-                        process.waitFor() == 0
-                    }
+                Files.createFile(root.resolve("Aa"))
+                Files.createFile(root.resolve("AA"))
+                true
             }.getOrDefault(false)
-        assumeTrue("per-directory case sensitivity (fsutil)", flagged)
+        assumeTrue("per-directory case sensitivity (the flag did not land on this volume)", flagged)
         return root
     }
 
