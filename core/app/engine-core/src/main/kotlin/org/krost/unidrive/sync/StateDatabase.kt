@@ -1538,6 +1538,9 @@ class StateDatabase(
             }
         }
 
+    // #841 (#749-8): [read] for the report queries of FileTotals.kt.
+    internal fun <T> readForReport(method: String, body: (CachingConnection) -> T): T = read(method, body)
+
     fun getAllEntries(): List<SyncEntry> =
         read("getAllEntries") { c ->
             c.createStatement().use { stmt ->
@@ -1760,11 +1763,9 @@ class StateDatabase(
             val prefix = PathNormalizer.nfc(prefixRaw)
             c.cached("SELECT * FROM alive_entries WHERE ${underPrefix(prefix)}") { stmt ->
                 stmt.bindPrefix(1, prefix)
-                stmt.executeQuery().use { rs ->
-                    val entries = mutableListOf<SyncEntry>()
-                    while (rs.next()) entries.add(rs.toSyncEntry())
-                    entries
-                }
+                val entries = mutableListOf<SyncEntry>()
+                stmt.executeQuery().use { rs -> while (rs.next()) entries.add(rs.toSyncEntry()) }
+                entries
             }
         }
 
