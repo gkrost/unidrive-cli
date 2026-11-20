@@ -915,6 +915,7 @@ class RemoteGather(
             changes.clear()
             keyToPath.clear()
             collisions.clear()
+            ids.clear()
             unreachable.clear()
             skippedPaths.clear()
             allComplete = true

@@ -37,6 +37,9 @@ internal class GatherIdIndex(
         if (item.deleted && collapses(item.id)) keyById.remove(item.id)?.let { retract(item.id, it) }
     }
 
+    /** Forgets every id, with the maps it indexes (a recovery pass starts the gather over). */
+    fun clear() = keyById.clear()
+
     private fun collapses(id: String): Boolean = id.isNotEmpty() && !PlacedNamespace.isAnyOwnKey(id)
 
     private fun retract(
