@@ -57,6 +57,18 @@ class ParserTest(unittest.TestCase):
         )
         self.assertAlmostEqual(je.parse_gc_pauses_ms(log), 6.0)
 
+    def test_zgc_pauses_are_read_from_the_phases_lines(self):
+        # JDK 25 ZGC under -Xlog:gc,gc+phases: the `gc` line is the whole (mostly concurrent) collection in seconds and
+        # must not count; the `gc,phases` Pause lines are the stop-the-world time.
+        log = (
+            "[0,226s][info][gc,phases] GC(0) Y: Pause Mark Start (Major) 0,016ms\n"
+            "[0,231s][info][gc,phases] GC(0) Y: Pause Mark End 0,011ms\n"
+            "[0,238s][info][gc,phases] GC(0) O: Pause Relocate Start 0,009ms\n"
+            "[0,238s][info][gc       ] GC(0) Major Collection (Warmup) 26M(10%)->20M(8%) 0,012s\n"
+        )
+        self.assertAlmostEqual(je.parse_gc_pauses_ms(log), 0.036)
+        self.assertEqual(je.GC_LOG_SELECTION, "gc,gc+phases")
+
     def test_gc_pauses_accept_decimal_commas(self):
         log = "[0,168s] GC(0) Pause Young (Allocation Failure) 17M->4M(61M) 2,786ms\n"
         self.assertAlmostEqual(je.parse_gc_pauses_ms(log), 2.786)
@@ -117,6 +129,16 @@ class GeneticAlgorithmTest(unittest.TestCase):
         je.evolve(random.Random(5), population=4, generations=4, mutation_rate=0.0, scorer=scorer, log=lambda *_: None)
         self.assertEqual(len(calls), len(set(calls)), "no genome is timed twice")
 
+    def test_history_rows_keep_their_own_generation(self):
+        # The baseline is the best genome, so elitism carries the same cached Score through every generation.
+        def scorer(g, gen):
+            return je.Score(g, self.fake_fitness(g), generation=gen)
+
+        _, history = je.evolve(random.Random(4), population=4, generations=3, mutation_rate=0.3, scorer=scorer, log=lambda *_: None)
+        baseline = je.Genome.of(je.BASELINE)
+        gens = [s.generation for row in history for s in row if s.genome == baseline]
+        self.assertEqual(gens, [0, 1, 2])
+
     def test_a_failed_genome_never_wins(self):
         rng = random.Random(2)
 
@@ -130,9 +152,37 @@ class GeneticAlgorithmTest(unittest.TestCase):
 
 
 class WorkdirGuardTest(unittest.TestCase):
-    def test_refuses_a_live_unidrive_directory(self):
+    def setUp(self):
+        # The guard is tested against a stand-in for the live directory, never the real ~/.config/unidrive.
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.live = self.root / "live" / "unidrive"
+        self.live.mkdir(parents=True)
+        self._saved = je.FORBIDDEN_WORKDIRS
+        je.FORBIDDEN_WORKDIRS = (self.live,)
+
+    def tearDown(self):
+        je.FORBIDDEN_WORKDIRS = self._saved
+        self._tmp.cleanup()
+
+    def assert_refused(self, workdir: Path):
         with self.assertRaises(SystemExit):
-            je.check_workdir(je.FORBIDDEN_WORKDIRS[0])
+            je.check_workdir(workdir)
+        self.assertFalse((self.live / je.WORKDIR_MARKER).exists())
+
+    def test_refuses_a_live_unidrive_directory(self):
+        self.assert_refused(self.live)
+
+    def test_refuses_a_subdirectory_of_a_live_directory(self):
+        self.assert_refused(self.live / "sub")
+
+    def test_refuses_a_parent_of_a_live_directory(self):
+        self.assert_refused(self.live.parent)
+
+    def test_refuses_a_symlink_to_a_live_directory(self):
+        link = self.root / "link"
+        link.symlink_to(self.live, target_is_directory=True)
+        self.assert_refused(link)
 
     def test_refuses_a_non_empty_foreign_directory(self):
         with tempfile.TemporaryDirectory() as d:

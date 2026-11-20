@@ -25,12 +25,17 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import dataclasses
 import json
+import math
+import os
 import random
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -38,7 +43,7 @@ from pathlib import Path
 # contains the production baseline. Empty string = flag omitted.
 SEARCH_SPACE: dict[str, list[str]] = {
     "gc": ["G1", "Parallel", "Serial", "Z"],
-    "xmx": ["1g", "2g", "3g", "4g"],
+    "xmx": ["2g", "1g", "3g", "4g"],
     "xms": ["64m", "0", "256m"],
     "xss": ["", "512k", "2m"],
     "codecache": ["", "128m", "240m"],
@@ -61,7 +66,10 @@ REPO_FLAGS = Path(__file__).resolve().parents[3] / "dist" / "launcher" / "jvm-fl
 BASE_EXCLUDE_PREFIXES = ("-Xms", "-Xmx", "-XX:FlightRecorderOptions")
 
 TIME_LINE = re.compile(r"^(\d+(?:\.\d+)?) (\d+)$")
-# The JVM writes decimal commas under a comma locale (e.g. "2,786ms"), so both separators are accepted.
+# The JVM writes decimal commas under a comma locale (e.g. "2,786ms"), so both separators are accepted. G1, Parallel
+# and Serial log their pauses under `gc`; ZGC logs them only under `gc+phases` ("Y: Pause Mark Start (Major) 0,016ms"),
+# so the log selection is `gc,gc+phases` (it adds no Pause lines for the other collectors).
+GC_LOG_SELECTION = "gc,gc+phases"
 GC_PAUSE = re.compile(r"Pause .*? (\d+(?:[.,]\d+)?)ms$")
 
 FORBIDDEN_WORKDIRS = (
@@ -225,9 +233,8 @@ def evolve(
         for g in pop:
             if g.key() not in cache:
                 cache[g.key()] = scorer(g, gen)
-            s = cache[g.key()]
-            s.generation = gen
-            scored.append(s)
+            # A copy per generation: the cached Score is shared, and earlier history rows must keep their generation.
+            scored.append(dataclasses.replace(cache[g.key()], generation=gen))
         history.append(sorted(scored, key=lambda s: s.fitness))
         best = history[-1][0]
         log(f"gen {gen}: best fitness {best.fitness:.3f} {best.genome.values()} ({len(cache)} evaluated)")
@@ -275,14 +282,43 @@ class Workload:
         self.tree = workdir / "tree"
         make_tree(self.tree, files, big_every=8)
 
-    def _unidrive(self, cfg: Path, *args: str, java_flags: list[str] | None = None, timeout: int | None = None):
-        java = ["java", *(java_flags or ["-Xmx2g"]), "-jar", str(self.jar), "-c", str(cfg), *args]
-        return subprocess.run(
+    def _unidrive(
+        self, run_dir: Path, ipc: Path, *args: str, java_flags: list[str] | None = None, timeout: int | None = None
+    ):
+        # `-c` moves only the config dir. The profile data dir and the IPC socket follow $HOME / UNIDRIVE_IPC_DIR,
+        # the log file and other caches follow user.home, so all of them are pointed into the run dir as well.
+        home = run_dir / "home"
+        home.mkdir(parents=True, exist_ok=True)
+        env = {
+            **os.environ,
+            "HOME": str(home),
+            "XDG_CONFIG_HOME": str(home / ".config"),
+            "XDG_DATA_HOME": str(home / ".local" / "share"),
+            "XDG_CACHE_HOME": str(home / ".cache"),
+            "XDG_STATE_HOME": str(home / ".local" / "state"),
+            "UNIDRIVE_IPC_DIR": str(ipc),
+        }
+        java = [
+            "java", *(java_flags or ["-Xmx2g"]), f"-Duser.home={home}",
+            "-jar", str(self.jar), "-c", str(run_dir / "cfg"), *args,
+        ]
+        # A session of its own: on a timeout the whole group (time and java) is killed, not only /usr/bin/time.
+        proc = subprocess.Popen(
             ["/usr/bin/time", "-f", "%e %M", *java],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout or self.timeout_s,
+            env=env,
+            start_new_session=True,
         )
+        limit = timeout or self.timeout_s
+        try:
+            out, err = proc.communicate(timeout=limit)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.communicate()
+            raise
+        return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
 
     def run(self, flags: list[str], run_dir: Path) -> dict:
         if run_dir.exists():
@@ -293,8 +329,18 @@ class Workload:
         cfg.mkdir(parents=True)
         remote.mkdir(parents=True)
         shutil.copytree(self.tree, local)
+        # The IPC folder lives under the system temp dir, not the run dir: a unix socket path holds at most 107 bytes.
+        ipc = Path(tempfile.mkdtemp(prefix="jve-ipc-"))
+        try:
+            return self._run(flags, run_dir, ipc)
+        finally:
+            shutil.rmtree(ipc, ignore_errors=True)
+
+    def _run(self, flags: list[str], run_dir: Path, ipc: Path) -> dict:
+        local = run_dir / "local"
+        remote = run_dir / "remote"
         setup = self._unidrive(
-            cfg,
+            run_dir, ipc,
             "profile", "add", "--type", "localfs", "--name", "lfs", "--mode", "mirror",
             "--sync-root", str(local), "--option", f"root_path={remote}", "--json",
         )
@@ -302,8 +348,8 @@ class Workload:
             raise RuntimeError(f"profile add failed: {setup.stderr.strip()[-400:]}")
         gc_log = run_dir / "gc.log"
         timed = self._unidrive(
-            cfg, "-p", "lfs", "sync",
-            java_flags=[*flags, f"-Xlog:gc:file={gc_log}:uptime"],
+            run_dir, ipc, "-p", "lfs", "sync",
+            java_flags=[*flags, f"-Xlog:{GC_LOG_SELECTION}:file={gc_log}:uptime"],
         )
         if timed.returncode != 0:
             raise RuntimeError(f"sync exited {timed.returncode}: {timed.stderr.strip()[-400:]}")
@@ -398,14 +444,21 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.jar.is_file():
         raise SystemExit(f"--jar {args.jar} does not exist")
+    if not Path("/usr/bin/time").is_file():
+        raise SystemExit("/usr/bin/time is missing (GNU time; package `time`)")
+    if ":" in str(args.workdir.resolve()):
+        raise SystemExit(f"--workdir {args.workdir.resolve()} contains ':', which breaks -Xlog:...:file=<path>")
     check_workdir(args.workdir)
     out = args.out or (args.workdir / "results")
     workload = Workload(args.jar, args.workdir, base, args.files, args.timeout)
     rng = random.Random(args.seed)
     scorer = make_scorer(workload, args.repeats, args.workdir)
     best, history = evolve(rng, args.population, args.generations, args.mutation_rate, scorer)
-    write_outputs(out, best, history, base)
     b = best[0]
+    if b.error or not math.isfinite(b.fitness):
+        print(f"no genome succeeded; last error: {b.error}", file=sys.stderr)
+        return 1
+    write_outputs(out, best, history, base)
     print(f"best: fitness {b.fitness:.3f} wall {b.wall_s} rss_gb {b.rss_gb} gc_s {b.gc_s} genes {b.genome.values()}")
     print(f"results in {out}")
     return 0

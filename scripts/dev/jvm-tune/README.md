@@ -26,14 +26,15 @@ run:
 
 - wall time (`/usr/bin/time`, `%e`),
 - peak RSS (`/usr/bin/time`, `%M`),
-- total GC pause time (`-Xlog:gc`, the `Pause ... <n>ms` lines).
+- total GC pause time (`-Xlog:gc,gc+phases`, the `Pause ... <n>ms` lines; ZGC logs its pauses only under
+  `gc+phases`).
 
 Fitness, lower is better:
 
     fitness = wall_s + 0.5 * peak_rss_GB + 1.0 * gc_pause_s
 
-Each genome runs `--repeats` times (default 2). The best wall time, the highest RSS and the highest GC pause count,
-because noise shows up as slower runs, not faster ones.
+Each genome runs `--repeats` times (default 2). The best wall time, the highest RSS and the highest total GC pause time
+count, because noise shows up as slower runs, not faster ones.
 
 The weights are a judgement, not a measurement. They are in `W_RSS_PER_GB` and `W_GC_PER_S`, and `summary.json`
 records them.
@@ -62,7 +63,11 @@ A full default run is at most 80 timed syncs. Results go to `<workdir>/results/`
 
 - `--workdir` is refused if it overlaps `~/.config/unidrive`, `~/.local/share/unidrive` or `~/.cache/unidrive`, or if
   it is non-empty and was not created by the tool (the marker file `.jvm-evolve-workdir`).
-- The profile is created with `-c <workdir>/…`, so the live config and state are never read or written.
+- Every JVM runs with `-c <run dir>/cfg`, `HOME`, the `XDG_*` dirs and `-Duser.home` pointing into the run dir, and
+  `UNIDRIVE_IPC_DIR` set to a fresh temp folder per run (short, for the unix socket path limit). The live config,
+  profile data, log file and IPC sockets are never read or written.
+- A sync that exceeds `--timeout` is killed with its whole process group (`/usr/bin/time` and `java`).
+- If no genome succeeds, the tool exits 1 and writes no results.
 - The tool never edits `jvm-flags.txt`, the launchers, systemd units or the running daemon.
 
 ## Known limits (read before trusting a result)
