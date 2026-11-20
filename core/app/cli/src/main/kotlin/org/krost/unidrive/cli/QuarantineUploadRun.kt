@@ -14,8 +14,12 @@ import java.nio.file.Path
  * Per copy, two synced lines of the [ConversionJournalLog]: the name an upload is about to go to, before the bytes go,
  * and the landing, after the provider confirmed it. A re-run skips every landed copy. A copy with a started upload and
  * no landing (a kill, or a response lost after the bytes arrived) is looked up at each started name first: a file there
- * with the copy's size, and its content hash where the provider has one, is that upload, and is recorded instead of
- * uploaded again. Anything else at that name is someone else's file, and the copy goes up as before, never over it.
+ * with the copy's size and a content hash equal to the copy's is that upload, and is recorded instead of uploaded again.
+ * Anything else at that name goes up as before, beside it and never over it. That includes a file whose content
+ * cannot be compared (a provider without content hashes, an S3 multipart ETag): a size match proves nothing, and the
+ * run must not say a copy landed that it cannot show landed, since a user who reads that deletes the quarantine. The
+ * price is a second conflict copy where the earlier upload did land, which only a kill mid-upload on such a provider
+ * can cause.
  *
  * The started names make the lookup independent of the day: a conflict name carries the date of the run that chose it.
  */
@@ -77,8 +81,8 @@ internal object QuarantineUploadRun {
         return Outcome(uploaded, already, found, missing)
     }
 
-    // A file at [path] that is the bytes of [local]: same size, and no content hash proving otherwise. A proven
-    // absence is false; any other failure propagates, as the conflict-copy probe does.
+    // A file at [path] proven to be the bytes of [local]: same size and an equal content hash. No hash to compare is
+    // false, like a different one. A proven absence is false; any other failure propagates, as the conflict-copy probe does.
     @Suppress("TooGenericExceptionCaught") // classified by RemoteErrors.isNotFound, anything else is rethrown unchanged
     private suspend fun holdsCopy(
         provider: CloudProvider,
@@ -93,6 +97,6 @@ internal object QuarantineUploadRun {
                 throw e
             }
         if (item.isFolder || item.size != Files.size(local)) return false
-        return HashVerifier.compare(local, item.hash, provider.hashAlgorithm()) != false
+        return HashVerifier.compare(local, item.hash, provider.hashAlgorithm()) == true
     }
 }

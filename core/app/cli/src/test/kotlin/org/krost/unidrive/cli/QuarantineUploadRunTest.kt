@@ -37,9 +37,12 @@ class QuarantineUploadRunTest {
         var failOn: String? = null
         var landThenFailOn: String? = null
 
+        /** False: a drive without content hashes (Internxt, WebDAV, SFTP, localfs; an S3 multipart ETag). */
+        var hashes = true
+
         override fun capabilities(): Set<Capability> = setOf(Capability.Delta)
 
-        override fun hashAlgorithm(): HashAlgorithm = HashAlgorithm.Sha256Hex
+        override fun hashAlgorithm(): HashAlgorithm? = if (hashes) HashAlgorithm.Sha256Hex else null
 
         override suspend fun authenticate() {}
 
@@ -102,7 +105,7 @@ class QuarantineUploadRunTest {
             isFolder = false,
             modified = Instant.parse("2026-11-20T00:00:00Z"),
             created = null,
-            hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)),
+            hash = if (hashes) HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)) else null,
             mimeType = null,
         )
     }
@@ -224,6 +227,39 @@ class QuarantineUploadRunTest {
         assertEquals("BYTES OF a.txt", String(drive.cloud.getValue("/docs/a.txt")), "the other file is untouched")
         assertEquals(1, second.uploaded, "our copy still goes up, beside it")
         assertTrue(drive.cloud.keys.any { it.startsWith("/docs/a (conflict ") }, "as a conflict copy: ${drive.cloud.keys}")
+    }
+
+    @Test
+    fun `on a drive without content hashes a same-size file at the recorded target is not taken for the landed upload`() {
+        converted("a.txt")
+        val drive = Drive().apply { hashes = false; failOn = "a.txt" }
+        assertFailsWith<IllegalStateException> { run(drive) }
+        // Someone else's file, the very same size, at the name the upload was started to: only a hash could tell it apart.
+        drive.cloud["/docs/a.txt"] = "BYTES OF a.txt".toByteArray()
+        drive.failOn = null
+
+        val second = run(drive)
+
+        assertEquals("BYTES OF a.txt", String(drive.cloud.getValue("/docs/a.txt")), "the other file is untouched")
+        assertEquals(0, second.foundInCloud, "a size match is never reported as our upload")
+        assertEquals(1, second.uploaded, "our copy still goes up, beside it")
+        assertTrue(drive.cloud.keys.any { it.startsWith("/docs/a (conflict ") }, "as a conflict copy: ${drive.cloud.keys}")
+    }
+
+    @Test
+    fun `on a drive without content hashes an unrecorded landing is uploaded again rather than claimed`() {
+        converted("a.txt")
+        val drive = Drive().apply { hashes = false; landThenFailOn = "a.txt" }
+        assertFailsWith<IllegalStateException> { run(drive) }
+        drive.landThenFailOn = null
+
+        val second = run(drive)
+
+        // The price of never claiming what cannot be shown: one extra conflict copy, nothing lost.
+        assertEquals(0, second.foundInCloud)
+        assertEquals(1, second.uploaded)
+        assertEquals("/docs/a.txt", drive.uploads.first())
+        assertTrue(drive.uploads.last().startsWith("/docs/a (conflict "), "the second upload is a conflict copy: ${drive.uploads}")
     }
 
     @Test
