@@ -608,12 +608,6 @@ data class SyncConfig(
     fun hydrationCacheMaxBytes(profileName: String): Long =
         providers[profileName]?.hydrationCacheMaxBytes ?: DEFAULT_HYDRATION_CACHE_MAX_BYTES
 
-    /** The bulk-disappearance guard of this profile's remote enumeration; false reaps a bulk disappearance at once. */
-    fun bulkReapGuard(profileName: String): Boolean = providers[profileName]?.bulkReapGuard ?: true
-
-    /** The never-hydrated top-level guard of this profile's sync; false drops the skip. */
-    fun topLevelGuard(profileName: String): Boolean = providers[profileName]?.topLevelGuard ?: true
-
     /** archive#463: seconds between the daemon's polls of the cloud for this profile; 0 = off. */
     fun daemonPollSeconds(profileName: String): Int =
         (providers[profileName]?.daemonPollSeconds ?: DEFAULT_DAEMON_POLL_SECONDS).coerceAtLeast(0)
