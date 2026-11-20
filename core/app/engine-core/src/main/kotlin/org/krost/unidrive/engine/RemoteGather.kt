@@ -1802,10 +1802,9 @@ class RemoteGather(
         while (pending.isNotEmpty() && stepsLeft-- > 0) {
             val sourceOf = sourcesOf(pending)
             if (pending.isEmpty()) break
-            val ready =
-                pending.filter { rename ->
-                    !blocked(rename.to, blockers(pending, rename, sourceOf, held))
-                }
+            // #745 finding 8: the blocking trees are built once per step (RenameBlockers), not once per rename.
+            val blockers = RenameBlockers(sourceOf.values, held)
+            val ready = pending.filter { rename -> !blockers.blocks(rename.to, sourceOf.getValue(rename)) }
             if (ready.isEmpty()) {
                 parkOne(pending, sourceOf, moved, landed, held)
                 continue
@@ -1892,24 +1891,6 @@ class RemoteGather(
         }
         pending.removeAll(drop)
         return sourceOf
-    }
-
-    // [dest] would land on [source], or inside the tree that source has not left. Slash-bounded: /a does not cover /ab.
-    private fun blocked(
-        dest: String,
-        sources: Collection<String>,
-    ): Boolean = sources.any { it == dest || dest.startsWith("$it/") }
-
-    private fun blockers(
-        pending: List<PendingFolder>,
-        move: PendingFolder,
-        sourceOf: Map<PendingFolder, String>,
-        held: List<String>,
-    ): List<String> {
-        val out = ArrayList<String>(held.size + pending.size)
-        out.addAll(held)
-        for (other in pending) if (other !== move) sourceOf[other]?.let { out += it }
-        return out
     }
 
     private fun pathCovers(
