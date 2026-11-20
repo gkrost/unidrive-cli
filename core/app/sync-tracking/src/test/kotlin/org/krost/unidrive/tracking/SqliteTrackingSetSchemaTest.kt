@@ -134,4 +134,56 @@ class SqliteTrackingSetSchemaTest {
             reopened.close()
         }
     }
+
+    private fun sql(dbPath: Path, statement: String) =
+        DriverManager.getConnection("jdbc:sqlite:${dbPath.toAbsolutePath().toUri()}").use { c -> c.createStatement().use { it.executeUpdate(statement) } }
+
+    private fun record(hash: String, mtime: java.time.Instant?) =
+        TrackingRecord("/a.txt", "p", "id-a", TrackState.TrackedSynced, hash, 3, null, 3, java.time.Instant.EPOCH, mtime)
+
+    @Test
+    fun `a hash an older build rewrites without the mtime does not keep the newer build's mtime`() {
+        // #745 finding 9: an older build's upsert sets local_hash and local_size and leaves local_mtime as it was. The pair
+        // (new hash, old mtime) would let a later scan reuse the hash for bytes it was not taken of.
+        val dbPath = TestScratch.directory("tracking-mtime-downgrade").resolve("tracking.db")
+        val mtime = java.time.Instant.parse("2026-11-01T10:00:00Z")
+        SqliteTrackingSet(dbPath).let { it.initialize(); it.upsert(record("h1", mtime)); it.close() }
+
+        sql(dbPath, "UPDATE tracking_entries SET local_hash = 'h2', local_size = 3 WHERE path = '/a.txt'") // the older build
+
+        SqliteTrackingSet(dbPath).let {
+            it.initialize()
+            val row = assertNotNull(it.lookup("/a.txt"))
+            assertEquals("h2", row.localHash)
+            assertNull(row.localMtime, "the mtime is forgotten, so the next scan hashes")
+            it.upsert(record("h3", mtime))
+            assertEquals(mtime, it.lookup("/a.txt")?.localMtime, "this build's own upsert writes hash and mtime together")
+            it.close()
+        }
+    }
+
+    @Test
+    fun `a db that predates local_mtime opened by several processes at once gains the column once`() {
+        val dbPath = TestScratch.directory("tracking-mtime-alter-race").resolve("tracking.db")
+        SqliteTrackingSet(dbPath).let { it.initialize(); it.close() }
+        sql(dbPath, "DROP TRIGGER IF EXISTS tracking_local_mtime_follows_hash")
+        sql(dbPath, "ALTER TABLE tracking_entries DROP COLUMN local_mtime")
+
+        val start = java.util.concurrent.CountDownLatch(1)
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(4)
+        try {
+            val opens =
+                (1..4).map {
+                    pool.submit<Unit> {
+                        start.await()
+                        SqliteTrackingSet(dbPath).let { set -> set.initialize(); set.close() }
+                    }
+                }
+            start.countDown()
+            opens.forEach { it.get(30, java.util.concurrent.TimeUnit.SECONDS) } // a lost ALTER race throws here
+        } finally {
+            pool.shutdownNow()
+        }
+        SqliteTrackingSet(dbPath).let { it.initialize(); it.upsert(record("h", java.time.Instant.EPOCH)); it.close() }
+    }
 }

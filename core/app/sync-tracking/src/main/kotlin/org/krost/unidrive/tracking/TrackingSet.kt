@@ -215,8 +215,23 @@ class SqliteTrackingSet(
                 )
                 """,
             )
-            // #745 finding 9: an additive, nullable column (an older build ignores it), added to a db that predates it.
-            if (!hasColumn(c, "tracking_entries", "local_mtime")) stmt.executeUpdate("ALTER TABLE tracking_entries ADD COLUMN local_mtime TEXT")
+            // #745 finding 9: an additive, nullable column (an older build ignores it), added to a db that predates it. A daemon and
+            // a CLI command may open a db that predates it at once: the one whose ALTER loses finds the column there and goes on.
+            if (!hasColumn(c, "tracking_entries", "local_mtime")) addLocalMtimeColumn(c, stmt)
+            // An older build rewrites local_hash/local_size and leaves local_mtime alone, which would pair a new hash with an old
+            // mtime and let the hash be reused for content it was not computed from. The trigger lives in the db, so it runs
+            // under the older build too: a hash or size changed without its mtime forgets the mtime (the next scan hashes).
+            stmt.executeUpdate(
+                """
+                CREATE TRIGGER IF NOT EXISTS tracking_local_mtime_follows_hash
+                AFTER UPDATE OF local_hash, local_size ON tracking_entries
+                WHEN NEW.local_mtime IS OLD.local_mtime
+                 AND (NEW.local_hash IS NOT OLD.local_hash OR NEW.local_size IS NOT OLD.local_size)
+                BEGIN
+                    UPDATE tracking_entries SET local_mtime = NULL WHERE path = NEW.path;
+                END
+                """,
+            )
             stmt.executeUpdate(
                 """
                 CREATE INDEX IF NOT EXISTS idx_tracking_state
@@ -246,6 +261,17 @@ class SqliteTrackingSet(
                 )
                 """,
             )
+        }
+    }
+
+    private fun addLocalMtimeColumn(
+        c: Connection,
+        stmt: java.sql.Statement,
+    ) {
+        try {
+            stmt.executeUpdate("ALTER TABLE tracking_entries ADD COLUMN local_mtime TEXT")
+        } catch (e: java.sql.SQLException) {
+            if (!hasColumn(c, "tracking_entries", "local_mtime")) throw e
         }
     }
 
