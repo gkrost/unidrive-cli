@@ -250,7 +250,7 @@ internal object LegacyConversion {
             ) {
                 val f = file(profileDir)
                 Files.createDirectories(profileDir)
-                Files.writeString(f, json.encodeToString(serializer(), journal))
+                org.krost.unidrive.io.OwnerOnlyAtomicWrite.replace(f, json.encodeToString(serializer(), journal).toByteArray())
             }
         }
 
