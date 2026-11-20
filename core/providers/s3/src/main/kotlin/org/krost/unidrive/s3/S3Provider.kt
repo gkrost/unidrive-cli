@@ -4,6 +4,7 @@ import io.ktor.client.engine.HttpClientEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.krost.unidrive.AuthenticationException
@@ -474,14 +475,22 @@ class S3Provider(
     // #748 finding 5: an upload whose file is never uploaded again (deleted, renamed, the profile moved on) keeps its parts billed
     // until a lifecycle rule ends it, and nothing else ever reads its record. A record not written (or resumed) for
     // [STALE_UPLOAD_DAYS] days is aborted, once per provider instance, when a multipart upload opens; [except] is the key about to open.
-    private val staleSwept = java.util.concurrent.atomic.AtomicBoolean(false)
+    // Every other upload that opens meanwhile waits for the sweep, so it never resumes (or re-records) an upload the sweep then
+    // aborts or forgets. A record is dropped only when its abort went through: it is the one handle to the parts S3 still bills.
+    private val staleSweep = kotlinx.coroutines.sync.Mutex()
+
+    @Volatile
+    private var staleSwept = false
 
     private suspend fun abortStaleUploads(except: String) {
-        if (!staleSwept.compareAndSet(false, true)) return
-        uploads.olderThan(java.time.Instant.now().minus(java.time.Duration.ofDays(STALE_UPLOAD_DAYS))).filter { it.key != except }.forEach {
-            log.info("Aborting the multipart upload of '{}' left open for more than {} days", it.key, STALE_UPLOAD_DAYS)
-            abortQuietly(it.key, it.uploadId)
-            uploads.remove(it.key)
+        if (staleSwept) return
+        staleSweep.withLock {
+            if (staleSwept) return
+            uploads.olderThan(java.time.Instant.now().minus(java.time.Duration.ofDays(STALE_UPLOAD_DAYS))).filter { it.key != except }.forEach {
+                log.info("Aborting the multipart upload of '{}' left open for more than {} days", it.key, STALE_UPLOAD_DAYS)
+                if (abortQuietly(it.key, it.uploadId)) uploads.remove(it.key)
+            }
+            staleSwept = true
         }
     }
 
@@ -497,13 +506,16 @@ class S3Provider(
     private suspend fun abortQuietly(
         key: String,
         uploadId: String,
-    ) {
+    ): Boolean =
         try {
-            api.abortMultipart(key, uploadId)
+            api.abortMultipart(key, uploadId) // an upload already gone (404) counts as aborted
+            true
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             log.warn("Could not abort the multipart upload of '{}' ({}); its parts stay until a lifecycle rule removes them", key, e.javaClass.simpleName)
+            false
         }
-    }
 
     override suspend fun delete(
         remotePath: String,

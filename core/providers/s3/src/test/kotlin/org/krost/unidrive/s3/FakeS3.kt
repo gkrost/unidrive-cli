@@ -55,6 +55,10 @@ class FakeS3(
     @Volatile
     var onHead: ((key: String, count: Int) -> Unit)? = null
 
+    /** Runs for every recorded request, outside any lock of the fake: a test may block in it to hold one request back. */
+    @Volatile
+    var onRequest: ((Request) -> Unit)? = null
+
     /** Runs when a request arrives, before its body is read: what a test uses to change a file between the client's pre-read and the PUT. */
     var beforeBody: ((method: HttpMethod, key: String?) -> Unit)? = null
     private val headCount = java.util.concurrent.atomic.AtomicInteger()
@@ -138,6 +142,7 @@ class FakeS3(
                     request.url.encodedPath,
                 )
             requests += r
+            onRequest?.invoke(r)
             // Finding the scripted failure and taking it out of the list is one step: it answers one request, however many are in flight.
             val failure = synchronized(failures) { failures.firstOrNull { it.first(r) }?.also { failures.remove(it) } }
             if (failure != null) return@MockEngine error(failure.second, failure.third)
