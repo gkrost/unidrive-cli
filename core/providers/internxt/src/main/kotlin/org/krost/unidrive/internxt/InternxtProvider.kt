@@ -1361,7 +1361,7 @@ class InternxtProvider(
 
         // archive#464: a stale write token is refused before the file is encrypted and sent, not after: the late check below only
         // narrows the window, but discovering a conflict after a gigabyte went to the storage backend wastes it all.
-        checkReplaceTarget(existingRemoteId, ifMatchETag, remotePath)
+        checkReplaceTarget(existingRemoteId, ifMatchETag.takeUnless { tombstoneStore.archivedPriorBefore(localPath, existingRemoteId) }, remotePath)
 
         val fileName = segments.last()
         val (plainName, ext) = splitLeaf(fileName)
@@ -2105,18 +2105,18 @@ class InternxtProvider(
         // NEW uploads POST /files (create). Defensive fallback below catches the 409 that
         // appears when the reconciler thought a path was new but the remote already has it.
         val finalItem: CloudItem
-        // Destructive-overwrite guard: when `keepOverwritten` is on,
-        // rename the prior cloud content to `${plainName}.unidrive-prev-${utcStamp}`
-        // and create the new content as a fresh file instead of letting
-        // `replaceFile` drop the prior bytes (Internxt has no server-side
-        // versioning). Falls through to the destructive replace if the
-        // rename can't be made unique after `MAX_KEEP_OVERWRITTEN_RETRIES`
-        // collision attempts or the rename itself errors — better to land
-        // the new content than to strand the local edit.
+        // keepOverwritten: the prior file is renamed to an archive name and the new content created as a fresh file; a failed
+        // rename falls through to the destructive replace. The archive is recorded in the tombstone (#747), see [recordArchive].
         val archivedPrior =
             if (existingRemoteId != null) {
-                checkWriteToken(existingRemoteId, ifMatchETag, remotePath) // the narrow window between the early check and the replace
-                config.keepOverwritten && tryKeepOverwrittenRename(existingRemoteId, plainName)
+                if (currentTomb.archivedPriorId == existingRemoteId) {
+                    true
+                } else {
+                    checkWriteToken(existingRemoteId, ifMatchETag, remotePath) // the narrow window between the early check and the replace
+                    (config.keepOverwritten && tryKeepOverwrittenRename(existingRemoteId, plainName)).also { archived ->
+                        if (archived) currentTomb = tombstoneStore.recordArchive(pathHashStr, currentTomb, existingRemoteId)
+                    }
+                }
             } else {
                 false
             }

@@ -392,6 +392,12 @@ internal data class UploadTombstone(
      * listed entry yet, ends as a refusal). Null in a sidecar from before, which keeps the old finish-again path.
      */
     val bridgeFileId: String? = null,
+    /**
+     * #747 finding 4: the file ([existingRemoteId]) the keep_overwritten rename of this upload already archived. The create
+     * that follows can fail; the retry then neither renames the archive again nor reads the write token (the rename changed
+     * the file's modification time, so the token no longer matches) but goes on to the create.
+     */
+    val archivedPriorId: String? = null,
 ) {
     enum class Stage {
         ENCRYPTING,
