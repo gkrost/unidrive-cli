@@ -44,16 +44,13 @@ import org.krost.unidrive.ShareInfo
 import org.krost.unidrive.TokenRevocation
 import org.krost.unidrive.dropbox.DropboxApi.Companion.obj
 import org.krost.unidrive.dropbox.DropboxItems.Companion.apiPath
-import org.krost.unidrive.http.UploadTimeoutPolicy
 import org.krost.unidrive.http.UploadWatchdogLimits
-import org.krost.unidrive.http.progressTrackingBody
 import org.krost.unidrive.http.progressTrackingFileBody
-import java.io.RandomAccessFile
+import org.krost.unidrive.http.progressTrackingFileRangeBody
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import java.time.temporal.ChronoUnit
-import java.util.Collections
 
 /**
  * Dropbox through its HTTP API v2 (no SDK).
@@ -105,10 +102,6 @@ class DropboxProvider(
     // pages, and whether the last page said hasMore (a no after it means the next call begins a new walk).
     private var pageProgress = 0
     private var walkHasMore = false
-
-    // Cursors handed out in the middle of a full listing (one that began without a cursor). Their pages list what
-    // exists; a deleted entry there is history from before the walk, never a deletion to act on.
-    private val fullListingCursors = Collections.synchronizedSet(HashSet<String>())
 
     private val hintScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var hintJob: Job? = null
@@ -256,10 +249,8 @@ class DropboxProvider(
     ): Long {
         ready()
         return try {
-            // The declared size sizes the request timeout (the flat 10 minute cap cut every download that needs longer);
-            // the metadata call also answers "gone" before the download is spent on it.
-            val size = metadata(target)["size"]?.jsonPrimitive?.longOrNull ?: 0L
-            api.download(target, destination, requestTimeoutMs = UploadTimeoutPolicy.computeRequestTimeoutMs(size)).second
+            // One request: the download's own path/not_found answers "gone", and its Content-Length sizes the body's time cap.
+            api.download(target, destination).second
         } catch (e: DropboxApiException) {
             if (e.isA("path/not_found")) {
                 throw PermanentDownloadFailureException("Dropbox has no file at '$remotePath' any more", e, e.requestId)
@@ -343,57 +334,69 @@ class DropboxProvider(
         // archive#867: the session survives the process. A same-shaped local file resumes at the committed
         // offset; a changed file (or an older session, or none) starts a new one.
         val stored = sessionStore.get(remotePath, size, mtime)
-        val sessionId =
-            stored?.sessionId ?: api.content("files/upload_session/start", obj("close" to false)) { ByteArray(0) }["session_id"]
-                ?.jsonPrimitive
-                ?.contentOrNull
-                ?.also { sessionStore.put(remotePath, it, 0L, size, mtime) }
-                ?: throw ProviderException("Dropbox started an upload session without an id")
+        var sessionId = stored?.sessionId
         var offset = stored?.committedOffset ?: 0L
-        val buffer = ByteArray(config.uploadChunkBytes)
         var offsetCorrected = false
-        RandomAccessFile(localPath.toFile(), "r").use { file ->
-            while (offset < size) {
-                val length = withContext(Dispatchers.IO) {
-                    file.seek(offset)
-                    file.read(buffer, 0, minOf(buffer.size.toLong(), size - offset).toInt())
-                }
-                if (length <= 0) throw java.io.IOException("'$localPath' became shorter while it was uploaded")
-                val chunk = buffer.copyOf(length)
-                val corrected = appendChunkOrCorrect(remotePath, sessionId, offset, chunk, offsetCorrected)
-                if (corrected != null) {
-                    offset = corrected
-                    offsetCorrected = true
-                    continue
-                }
-                offset += length
-                sessionStore.put(remotePath, sessionId, offset, size, mtime)
-                onProgress?.invoke(offset, size)
+        // Each chunk is streamed from its byte range of the file, never copied. The session's first chunk rides on the
+        // start and the last one on the finish, so a session costs no request without a body (gkrost/unidrive-cli#841).
+        while (offset < size) {
+            val length = minOf(config.uploadChunkBytes.toLong(), size - offset)
+            if (sessionId != null && offset + length == size) break
+            if (withContext(Dispatchers.IO) { Files.size(localPath) } < offset + length) {
+                throw java.io.IOException("'$localPath' became shorter while it was uploaded")
             }
+            if (sessionId == null) {
+                sessionId = startSession(localPath, length)
+                sessionStore.put(remotePath, sessionId, length, size, mtime)
+                offset = length
+                onProgress?.invoke(offset, size)
+                continue
+            }
+            val corrected = appendChunkOrCorrect(remotePath, sessionId, localPath, offset, length, offsetCorrected)
+            if (corrected != null) {
+                offset = corrected
+                offsetCorrected = true
+                continue
+            }
+            offset += length
+            sessionStore.put(remotePath, sessionId, offset, size, mtime)
+            onProgress?.invoke(offset, size)
         }
-        val meta = finishSession(remotePath, sessionId, offset, commit)
+        val meta = finishSession(remotePath, sessionId!!, localPath, offset, size - offset, commit)
         sessionStore.delete(remotePath)
         return meta
     }
 
+    private suspend fun startSession(
+        localPath: Path,
+        length: Long,
+    ): String =
+        api.contentWatched("files/upload_session/start", obj("close" to false), length) {
+            progressTrackingFileRangeBody(localPath, 0L, length, it)
+        }["session_id"]?.jsonPrimitive?.contentOrNull ?: throw ProviderException("Dropbox started an upload session without an id")
+
+    // The finish carries the bytes from [offset] to the end of the file (none when the session already holds them all).
     private suspend fun finishSession(
         remotePath: String,
         sessionId: String,
+        localPath: Path,
         offset: Long,
+        length: Long,
         commit: JsonObject,
     ): JsonObject =
         try {
-            api.content(
+            api.contentWatched(
                 "files/upload_session/finish",
                 obj("cursor" to obj("session_id" to sessionId, "offset" to offset), "commit" to commit),
-            ) { ByteArray(0) }
+                length,
+            ) { progressTrackingFileRangeBody(localPath, offset, length, it) }
         } catch (e: DropboxApiException) {
             if (isDeadSession(e)) sessionStore.delete(remotePath)
             throw e
         }
 
     /**
-     * One append of [chunk] at [offset]; the returned offset is Dropbox's correction to resume at
+     * One append of [length] bytes of [localPath] at [offset]; the returned offset is Dropbox's correction to resume at
      * (`incorrect_offset` answered with the offset the session actually holds — trusted once per
      * session, a second mismatch means the session is not ours any more). A session Dropbox no longer
      * has ([isDeadSession]) is dropped; any other failure keeps it — the next attempt resumes where
@@ -402,16 +405,17 @@ class DropboxProvider(
     private suspend fun appendChunkOrCorrect(
         remotePath: String,
         sessionId: String,
+        localPath: Path,
         offset: Long,
-        chunk: ByteArray,
+        length: Long,
         offsetCorrected: Boolean,
     ): Long? {
         try {
             api.contentWatched(
                 "files/upload_session/append_v2",
                 obj("cursor" to obj("session_id" to sessionId, "offset" to offset), "close" to false),
-                chunk.size.toLong(),
-            ) { progressTrackingBody(chunk, it) }
+                length,
+            ) { progressTrackingFileRangeBody(localPath, offset, length, it) }
             return null
         } catch (e: DropboxApiException) {
             val correct = correctOffsetOf(e)
@@ -591,13 +595,17 @@ class DropboxProvider(
             pageProgress = 0
             items.beginWalk()
         }
-        val fullListing = cursor == null || cursor in fullListingCursors
+        // A cursor handed out in the middle of a full listing (one that began without a cursor) carries FULL_LISTING_PREFIX:
+        // the flag lives in the cursor string, so a page fetched twice or resumed after a restart is still classified a
+        // listing. Its pages list what exists; a deleted entry there is history from before the walk, never a deletion to act on.
+        val fullListing = cursor == null || cursor.startsWith(FULL_LISTING_PREFIX)
+        val dropboxCursor = cursor?.removePrefix(FULL_LISTING_PREFIX)
         val page =
             try {
                 if (cursor == null) {
                     api.rpc("files/list_folder", listArgs("", recursive = true))
                 } else {
-                    api.rpc("files/list_folder/continue", obj("cursor" to cursor))
+                    api.rpc("files/list_folder/continue", obj("cursor" to dropboxCursor))
                 }
             } catch (e: DropboxApiException) {
                 if (e.isA("reset")) {
@@ -609,8 +617,6 @@ class DropboxProvider(
         val visible = if (fullListing) entries.filterNot { it.deleted } else entries
         val next = page.cursor()
         val hasMore = page["has_more"]?.jsonPrimitive?.booleanOrNull == true
-        cursor?.let { fullListingCursors.remove(it) }
-        if (hasMore && fullListing) fullListingCursors += next
         if (!hasMore) {
             lastCursor = next
             items.endWalk()
@@ -618,7 +624,7 @@ class DropboxProvider(
         pageProgress += visible.size
         walkHasMore = hasMore
         onPageProgress?.invoke(pageProgress)
-        return DeltaPage(visible, next, hasMore)
+        return DeltaPage(visible, if (hasMore && fullListing) FULL_LISTING_PREFIX + next else next, hasMore)
     }
 
     override suspend fun deltaFromLatest(scanContext: ScanContext?): CapabilityResult<DeltaPage> {
@@ -779,6 +785,7 @@ class DropboxProvider(
     companion object {
         private const val HTTP_NOT_FOUND = 404
         private const val LIST_LIMIT = 2000
+        private const val FULL_LISTING_PREFIX = "full:"
 
         // A 10,000-page listing is twenty million entries (2,000 a page): far above any folder this holds a cursor into.
         private const val MAX_PAGES = 10_000
