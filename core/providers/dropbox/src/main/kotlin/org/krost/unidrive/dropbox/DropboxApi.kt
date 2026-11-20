@@ -35,6 +35,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.HttpDefaults
 import org.krost.unidrive.ProviderException
@@ -225,7 +226,7 @@ class DropboxApi(
                         val meta =
                             response.headers[API_RESULT]?.let { json.parseToJsonElement(it).jsonObject }
                                 ?: throw ProviderException("Dropbox download of '$path' came without its metadata")
-                        RetryOutcome.Done(meta to writeCapped(response, destination, path))
+                        RetryOutcome.Done(meta to writeCapped(response, destination, path, meta["size"]?.jsonPrimitive?.longOrNull))
                     }
                 }
             }
@@ -441,16 +442,23 @@ internal fun dropboxHttpClient(
     return if (engine != null) HttpClient(engine, configure) else unidriveHttpClient(configure = configure)
 }
 
-// The body's time cap is sized from the response's own Content-Length. On IO it runs on the wall clock (under runTest
-// the dispatcher's timer would be virtual time).
+// The body's time cap is sized from the response's own Content-Length, or, for a chunked answer without one, from the
+// `size` of the Dropbox-API-Result metadata. On IO it runs on the wall clock (under runTest the dispatcher's timer would be
+// virtual time).
 private suspend fun writeCapped(
     response: HttpResponse,
     destination: Path,
     path: String,
+    metadataSize: Long?,
 ): Long {
     val declared = response.contentLength()
-    val limitMs = UploadTimeoutPolicy.computeRequestTimeoutMs(declared ?: 0L)
+    val limitMs = downloadBodyCapMs(declared, metadataSize)
     return withContext(Dispatchers.IO) {
         withTimeoutOrNull(limitMs) { writeStagedDownload(response.bodyAsChannel(), destination, declared, "Dropbox download of '$path'") }
     } ?: throw HttpRequestTimeoutException(response.call.request.url.toString(), limitMs)
 }
+
+internal fun downloadBodyCapMs(
+    contentLength: Long?,
+    metadataSize: Long?,
+): Long = UploadTimeoutPolicy.computeRequestTimeoutMs(contentLength ?: metadataSize ?: 0L)

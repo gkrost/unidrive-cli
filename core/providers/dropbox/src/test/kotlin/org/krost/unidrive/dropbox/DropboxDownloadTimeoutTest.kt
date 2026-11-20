@@ -42,4 +42,14 @@ class DropboxDownloadTimeoutTest {
                     "(got ${timeouts.requestTimeoutMillis} ms)",
             )
         }
+
+    @Test
+    fun `a chunked answer without Content-Length sizes the body cap from the metadata`() {
+        val fiveGiB = 5L * 1024 * 1024 * 1024
+        assertTrue(
+            downloadBodyCapMs(contentLength = null, metadataSize = fiveGiB) > HttpDefaults.REQUEST_TIMEOUT_MS,
+            "a 5 GiB body without Content-Length is not under the flat cap",
+        )
+        assertTrue(downloadBodyCapMs(contentLength = fiveGiB, metadataSize = null) == downloadBodyCapMs(null, fiveGiB))
+    }
 }
