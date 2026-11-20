@@ -361,8 +361,7 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
         requestTrace?.let { rawProvider.attachRequestMetrics(it) }
         if (watch && requestTrace != null) System.err.println("--trace-requests prints its summary after a one-shot sync; --watch prints none.")
         val config = parent.loadSyncConfig()
-        // #749 finding 5: registered only once the config and the provider exist. A configuration error above exits the JVM
-        // with nothing to stop, and a hook already registered would wait out the whole deadline for a run that never starts.
+        // #749 finding 5: after the provider and config, whose errors exit the JVM; an earlier hook would wait out its deadline.
         Runtime.getRuntime().addShutdownHook(Thread({ shutdown.shutdownAndWait() }, "unidrive-sync-shutdown"))
         // A sync_path in config.toml is the profile's standing scope; --sync-path
         // replaces it for this invocation. --full-tree would run unscoped against a
