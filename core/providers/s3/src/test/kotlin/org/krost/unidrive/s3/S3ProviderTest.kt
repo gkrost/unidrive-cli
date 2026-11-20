@@ -421,7 +421,8 @@ class S3ProviderTest {
             provider.deletePermanentlyById("a/report", "/a/report")
 
             assertEquals(listOf("a/report/x", "a/report/y"), fake.objects.keys.toList())
-            assertTrue(fake.requests.none { it.method == HttpMethod.Delete || it.query.containsKey("delete") })
+            // The DELETE for the gone key itself is idempotent (#748 finding 9: no HEAD first); nothing else is deleted.
+            assertTrue(fake.requests.none { it.query.containsKey("delete") || (it.method == HttpMethod.Delete && it.key != "a/report") })
         }
 
     @Test
