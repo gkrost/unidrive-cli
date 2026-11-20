@@ -35,6 +35,7 @@ import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.concurrent.Callable
 
 // Shared data classes for table rendering
 //
@@ -160,7 +161,7 @@ internal fun computeLocalSizeBuckets(entries: List<org.krost.unidrive.sync.model
 }
 
 @Command(name = "status", description = ["Show sync status"], mixinStandardHelpOptions = true)
-class StatusCommand : Runnable {
+class StatusCommand : Callable<Int> {
     @ParentCommand
     lateinit var parent: Main
 
@@ -185,7 +186,7 @@ class StatusCommand : Runnable {
     @Option(names = ["--json"], description = ["Print the status of one profile as JSON (its row and its duplicate names)"])
     var json: Boolean = false
 
-    override fun run() {
+    override fun call(): Int {
         // archive#646: without -p, profile resolution falls back to the implicit localfs default when
         // `[general] default_profile` is unset — a status that renders the localfs row ("never")
         // and looks like nothing is configured even though real profiles exist. Name the remedy
@@ -204,22 +205,16 @@ class StatusCommand : Runnable {
                 System.exit(1)
             }
         }
-        if (checkAuth) {
-            showCredentialHealthReport()
-            return
+        statusJsonConflict(json, all, checkAuth, audit, pending)?.let {
+            System.err.println(it)
+            return 2
         }
-        if (audit) {
-            showAuditReport()
-            return
-        }
-        if (pending) {
-            showPendingReport()
-            return
-        }
-        if (all) {
-            showMultiProviderStatus()
-        } else {
-            showSingleProviderStatus()
+        return when {
+            checkAuth -> if (showCredentialHealthReport()) 0 else 1
+            audit -> showAuditReport().let { 0 }
+            pending -> showPendingReport().let { 0 }
+            all -> showMultiProviderStatus().let { 0 }
+            else -> showSingleProviderStatus().let { 0 }
         }
     }
 
@@ -507,16 +502,17 @@ class StatusCommand : Runnable {
         scopeLinesForProfiles(profiles, baseDir).forEach { println(it) }
     }
 
-    private fun showCredentialHealthReport() {
+    private fun showCredentialHealthReport(): Boolean {
         val baseDir = parent.configBaseDir()
         val profiles = discoverProfiles(baseDir)
         if (profiles.isEmpty()) {
             println("No configured profiles found.")
-            return
+            return true
         }
 
         println("Credential health check (offline — no network calls):")
         println()
+        var allHealthy = true
         for (profile in profiles) {
             val configDir = baseDir.resolve(profile.name)
             val displayName = profileDisplayLabel(profile)
@@ -529,9 +525,11 @@ class StatusCommand : Runnable {
                     is CredentialHealth.ExpiresIn -> GlyphRenderer.warn() to health.message
                 }
             val hint = if (credentialNeedsReauth(health)) " — ${reauthHint(profile.name)}" else ""
+            if (credentialNeedsReauth(health)) allHealthy = false
             val line = "  $icon  $displayName: $message$hint"
             if (health is CredentialHealth.Ok) println(line) else System.err.println(line)
         }
+        return allHealthy
     }
 
     /**

@@ -73,7 +73,10 @@ class SweepCommand : Runnable {
             }
 
             // Only --rehydrate without --dry-run writes rows; every other mode just reports.
-            val db = StateDatabase(dbPath, readOnly = !(rehydrate && !dryRun))
+            // The write is a whole-row read-modify-write, so it holds the profile lock (#749 finding 9).
+            val writes = rehydrate && !dryRun
+            val lock = if (writes) parent.acquireProfileLock() else null
+            val db = StateDatabase(dbPath, readOnly = !writes)
             db.initialize()
             try {
                 val syncRoot = profile.syncRoot
@@ -119,6 +122,7 @@ class SweepCommand : Runnable {
                 }
             } finally {
                 db.close()
+                lock?.unlock()
             }
         }
 

@@ -6,7 +6,7 @@
     <ID>CyclomaticComplexMethod:DaemonRuntime.kt$DaemonRuntime$private suspend fun lifecycle()</ID>
     <ID>CyclomaticComplexMethod:LegacyInventory.kt$LegacyInventory$private fun classify( inputs: Inputs, lockFacts: LockFacts, state: State?, ): Report</ID>
     <ID>CyclomaticComplexMethod:MigrateConvertCommand.kt$LegacyConversion$internal fun execute( setup: Setup, rawMode: String, rawDisposition: String?, restart: Boolean, verbose: Boolean, ): Int</ID>
-    <ID>CyclomaticComplexMethod:ProfileCommand.kt$ProfileAddCommand$private fun run()</ID>
+    <ID>CyclomaticComplexMethod:ProfileCommand.kt$ProfileAddCommand$private fun run(): Int</ID>
     <ID>CyclomaticComplexMethod:SyncCommand.kt$SyncCommand$private fun runSync()</ID>
     <ID>FunctionOnlyReturningConstant:GlyphRenderer.kt$GlyphRenderer$fun orphanLabel(): String</ID>
     <ID>FunctionOnlyReturningConstant:GlyphRenderer.kt$GlyphRenderer$fun trackingSetLabel(): String</ID>
@@ -90,7 +90,7 @@
     <ID>TooManyFunctions:GlyphRenderer.kt$GlyphRenderer</ID>
     <ID>TooManyFunctions:LegacyInventory.kt$LegacyInventory</ID>
     <ID>TooManyFunctions:Main.kt$Main : Runnable</ID>
-    <ID>TooManyFunctions:StatusCommand.kt$StatusCommand : Runnable</ID>
+    <ID>TooManyFunctions:StatusCommand.kt$StatusCommand : Callable</ID>
     <ID>UnusedPrivateClass:MigrateConvertCommand.kt$LegacyConversion$Refusal</ID>
     <ID>UnusedPrivateProperty:IpcContractCorpusTest.kt$IpcContractCorpusTest$attempt</ID>
     <ID>UseCheckOrError:CliExtensionRegistrarImpl.kt$CliExtensionRegistrarImpl$throw IllegalStateException( "Extension '$extensionId': unknown parent command '$parentCommandName'", )</ID>

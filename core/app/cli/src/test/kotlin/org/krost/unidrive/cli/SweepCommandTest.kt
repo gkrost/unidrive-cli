@@ -63,6 +63,56 @@ class SweepCommandTest {
         }
     }
 
+    @Test
+    fun `rehydrate sweep refuses to write state db while another process holds the profile lock`() {
+        val config = TestScratch.directory("sweep-locked")
+        try {
+            val root = Files.createDirectories(config.resolve("root"))
+            Files.write(root.resolve("stub.bin"), ByteArray(1000))
+            Files.writeString(config.resolve("config.toml"), """
+                [providers.repair]
+                type = "localfs"
+                mode = "mirror"
+                sync_root = '${root.toString().replace('\\', '/')}'
+            """.trimIndent())
+            val profileDir = Files.createDirectories(config.resolve("repair"))
+            val dbPath = profileDir.resolve("state.db")
+            val initial = StateDatabase(dbPath)
+            try {
+                initial.initialize()
+                initial.upsertEntry(entry("/stub.bin", 1000))
+            } finally {
+                initial.close()
+            }
+            val holder = org.krost.unidrive.sync.ProcessLock(profileDir.resolve(".lock"))
+            assertTrue(holder.tryLock(org.krost.unidrive.sync.ProcessLock.Mode.SYNC))
+            val output: String
+            val exit: Int
+            try {
+                val process = ProcessBuilder(
+                    Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                    "-jar", System.getProperty("unidrive.runtime.test.jar"),
+                    "-c", config.toString(), "-p", "repair", "sweep", "--null-bytes", "--rehydrate",
+                ).redirectErrorStream(true).start()
+                assertTrue(process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS), "sweep must terminate")
+                output = process.inputStream.bufferedReader().readText()
+                exit = process.exitValue()
+            } finally {
+                holder.unlock()
+            }
+            assertEquals(1, exit, output)
+            val after = StateDatabase(dbPath)
+            try {
+                after.initialize()
+                assertTrue(after.getEntry("/stub.bin")!!.isHydrated, "a locked profile's state.db must stay untouched: $output")
+            } finally {
+                after.close()
+            }
+        } finally {
+            config.toFile().deleteRecursively()
+        }
+    }
+
     private lateinit var syncRoot: Path
     private lateinit var db: StateDatabase
 
