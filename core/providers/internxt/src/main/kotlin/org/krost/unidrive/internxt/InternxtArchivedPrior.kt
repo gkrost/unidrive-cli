@@ -25,3 +25,46 @@ internal suspend fun UploadTombstoneStore.recordArchive(
     withContext(Dispatchers.IO) { write(pathHash, marked) }
     return marked
 }
+
+/**
+ * The keep_overwritten archive of an empty file's replace (#747 finding 4): the write-token check and the rename are skipped
+ * when an earlier attempt's marker says the rename landed; otherwise the token is checked, the rename tried and, when it
+ * archived the file, a marker-only tombstone written (an empty file has no ciphertext to resume). True when the file is archived.
+ */
+@Suppress("LongParameterList")
+internal suspend fun UploadTombstoneStore.archiveForEmptyReplace(
+    localPath: Path,
+    bucket: String,
+    folderUuid: String,
+    plainName: String,
+    ext: String?,
+    localMtime: java.time.Instant,
+    existingRemoteId: String,
+    keepOverwritten: Boolean,
+    checkToken: suspend () -> Unit,
+    rename: suspend () -> Boolean,
+): Boolean {
+    if (archivedPriorBefore(localPath, existingRemoteId)) return true
+    checkToken()
+    if (!keepOverwritten || !rename()) return false
+    val absolute = localPath.toAbsolutePath().toString()
+    val now = System.currentTimeMillis()
+    val marker =
+        UploadTombstone(
+            localPath = absolute,
+            localMtimeMillis = localMtime.toEpochMilli(),
+            localSize = 0L,
+            bucket = bucket,
+            folderUuid = folderUuid,
+            plainName = plainName,
+            ext = ext,
+            indexBytesHex = "",
+            existingRemoteId = existingRemoteId,
+            stage = UploadTombstone.Stage.ENCRYPTING,
+            startedAtMillis = now,
+            tombstoneWrittenAtMillis = now,
+            archivedPriorId = existingRemoteId,
+        )
+    withContext(Dispatchers.IO) { write(UploadTombstoneStore.pathHash(absolute), marker) }
+    return true
+}
