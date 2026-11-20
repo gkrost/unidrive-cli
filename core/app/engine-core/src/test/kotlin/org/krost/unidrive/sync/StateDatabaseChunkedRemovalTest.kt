@@ -77,6 +77,23 @@ class StateDatabaseChunkedRemovalTest {
         assertNull(db.getEntry("/out/c.txt"))
     }
 
+    // #744 finding 9: the chunks walk the table once (a rowid cursor); kept rows and tombstones between victims,
+    // a chunk size that does not divide the victims and one that exactly equals them must all delete every victim once.
+    @Test
+    fun `deleteOutOfScope with a cursor deletes every victim across interleaved chunks`() {
+        for (n in 0 until 30) db.upsertEntry(entry(if (n % 3 == 0) "/in/k$n.txt" else "/out/v$n.txt"))
+        db.upsertEntry(entry("/out/tomb.txt"))
+        db.markDeleted("/out/tomb.txt")
+        val victims = (0 until 30).count { it % 3 != 0 }
+
+        val deleted = db.deleteOutOfScope(listOf("/in"), setOf("/"), chunkSize = 4)
+
+        assertEquals(victims, deleted)
+        assertEquals(30 - victims, db.getEntryCount(), "the alive count follows the chunks")
+        assertEquals((0 until 30).filter { it % 3 == 0 }.map { "/in/k$it.txt" }.toSet(), committedPaths())
+        assertEquals(0, db.deleteOutOfScope(listOf("/in"), setOf("/"), chunkSize = 10), "a second pass finds nothing")
+    }
+
     @Test
     fun `deleteOutOfScope with the whole drive tracked removes nothing`() {
         db.upsertEntry(entry("/a.txt"))

@@ -1140,8 +1140,8 @@ class StateDatabase(
         rawEntry: SyncEntry,
         keepMarks: Boolean = false,
     ) {
-        locked("upsertEntry") {
-            beginWrite()
+        // #744 finding 5: the eviction and the insert are one transaction (a batch is re-entrant).
+        locked("upsertEntry") { batch {
             val entry = storedForm(rawEntry, keepMarks)
             // Path-collision resolution: if a different alive row already holds
             // this path, the partial unique index `WHERE status='EXISTS'` would
@@ -1252,7 +1252,7 @@ class StateDatabase(
             }
             // INSERT OR REPLACE swapped the row of this remote id (nothing, a tombstone or an alive row) for the new one.
             countAlive((if (entry.status == EntryStatus.EXISTS) 1 else 0) - (if (wasAlive) 1 else 0))
-        }
+        } }
     }
 
     /**
@@ -1413,12 +1413,7 @@ class StateDatabase(
 
     fun getEntryCaseInsensitive(pathRaw: String): SyncEntry? =
         read("getEntryCaseInsensitive") { c ->
-            val path = PathNormalizer.nfc(pathRaw)
-            c.prepareStatement("SELECT * FROM alive_entries WHERE path = ? COLLATE NOCASE").use { stmt ->
-                stmt.setString(1, path)
-                val rs = stmt.executeQuery()
-                return if (rs.next()) rs.toSyncEntry() else null
-            }
+            caseInsensitivePathMatch(c, PathNormalizer.nfc(pathRaw))?.let { getEntry(it) }
         }
 
     /**
@@ -1660,12 +1655,13 @@ class StateDatabase(
         read("listDirectChildren") { c ->
             val parentPath = PathNormalizer.nfc(parentPathRaw)
             val base = if (parentPath.isEmpty()) "/" else "$parentPath/"
-            c.prepareStatement(DIRECT_CHILDREN_BY_PATH).use { stmt ->
+            c.cached(DIRECT_CHILDREN_BY_PATH) { stmt ->
                 stmt.setString(1, base)
-                val rs = stmt.executeQuery()
-                val entries = mutableListOf<SyncEntry>()
-                while (rs.next()) entries.add(rs.toSyncEntry())
-                return entries
+                stmt.executeQuery().use { rs ->
+                    val entries = mutableListOf<SyncEntry>()
+                    while (rs.next()) entries.add(rs.toSyncEntry())
+                    entries
+                }
             }
         }
 
@@ -1842,20 +1838,18 @@ class StateDatabase(
         locked("markDeleted") {
             val existing = getEntry(path) ?: return
             val deletedAt = java.time.Instant.now()
-            upsertEntry(
-                existing.copy(
-                    status = EntryStatus.DELETED,
-                    lastSynced = deletedAt,
-                ),
-            )
-            if (mountDelete) {
-                conn.prepareStatement(
-                    "UPDATE sync_entries SET mount_deleted_at = ? WHERE path = ? AND remote_id IS ? AND status = 'DELETED'",
-                ).use { stmt ->
-                    stmt.setString(1, deletedAt.toString())
-                    stmt.setString(2, existing.path)
-                    stmt.setString(3, existing.remoteId)
-                    stmt.executeUpdate()
+            // #744 finding 5: the tombstone and its mount_deleted_at stamp land together or not at all.
+            batch {
+                upsertEntry(existing.copy(status = EntryStatus.DELETED, lastSynced = deletedAt))
+                if (mountDelete) {
+                    conn.prepareStatement(
+                        "UPDATE sync_entries SET mount_deleted_at = ? WHERE path = ? AND remote_id IS ? AND status = 'DELETED'",
+                    ).use { stmt ->
+                        stmt.setString(1, deletedAt.toString())
+                        stmt.setString(2, existing.path)
+                        stmt.setString(3, existing.remoteId)
+                        stmt.executeUpdate()
+                    }
                 }
             }
         }
@@ -1891,25 +1885,21 @@ class StateDatabase(
         }
         keep.append(")")
         var total = 0
+        var cursor = 0L // #744 finding 9: each chunk resumes after the last row the previous one looked at
         while (true) {
-            val deleted = locked("deleteOutOfScope") {
-                batch {
-                    val count =
-                        conn
-                            .prepareStatement(
-                                "DELETE FROM sync_entries WHERE rowid IN " +
-                                    "(SELECT rowid FROM sync_entries WHERE status='EXISTS' AND NOT $keep LIMIT ?)",
-                            ).use { stmt ->
-                                var i = 0
-                                for (param in params) stmt.setString(++i, param)
-                                stmt.setInt(i + 1, chunkSize)
-                                stmt.executeUpdate()
-                            }
-                    countAlive(-count)
-                    count
+            val (deleted, last) =
+                locked("deleteOutOfScope") {
+                    batch {
+                        val victims = outOfScopeRowids(conn, keep.toString(), params, cursor, chunkSize)
+                        if (victims.isNotEmpty()) {
+                            conn.prepareStatement("DELETE FROM sync_entries WHERE rowid IN (" + victims.joinToString(",") + ")").use { it.executeUpdate() }
+                            countAlive(-victims.size)
+                        }
+                        victims.size to (victims.lastOrNull() ?: cursor)
+                    }
                 }
-            }
             total += deleted
+            cursor = last
             if (deleted < chunkSize) break
         }
         return total
@@ -2524,17 +2514,11 @@ class StateDatabase(
     fun remoteAncestor(pathRaw: String): Pair<String, String>? =
         read("remoteAncestor") { c ->
             val path = PathNormalizer.nfc(pathRaw)
-            c
-                .prepareStatement(
-                    "SELECT path, remote_path FROM alive_entries WHERE remote_path IS NOT NULL AND is_folder=1 AND remote_path <> path " +
-                        "AND length(path) < length(?) AND substr(?, 1, length(path) + 1) = path || '/' " +
-                        "ORDER BY length(path) DESC LIMIT 1",
-                ).use { stmt ->
-                    stmt.setString(1, path)
-                    stmt.setString(2, path)
-                    val rs = stmt.executeQuery()
-                    return if (rs.next()) rs.getString(1) to rs.getString(2) else null
-                }
+            c.cached(REMOTE_ANCESTOR_SQL) { stmt ->
+                stmt.setString(1, path)
+                stmt.setString(2, path)
+                stmt.executeQuery().use { rs -> if (rs.next()) rs.getString(1) to rs.getString(2) else null }
+            }
         }
 
     /** Every alive folder with a remote path of its own, as (path, remote path): see [remoteAncestor]. */
@@ -2712,7 +2696,7 @@ class StateDatabase(
             c.createStatement().use { stmt ->
                 val rs = stmt.executeQuery(
                     "SELECT COUNT(*) FROM sync_entries WHERE status='EXISTS' " +
-                        "AND remote_id LIKE 'local:%' AND last_error_at IS NOT NULL",
+                        "AND remote_id GLOB 'local:*' AND last_error_at IS NOT NULL",
                 )
                 rs.next()
                 return rs.getInt(1)
@@ -2729,7 +2713,7 @@ class StateDatabase(
             c
                 .prepareStatement(
                     "SELECT path FROM sync_entries WHERE status='EXISTS' " +
-                        "AND remote_id LIKE 'local:%' AND last_error_at IS NOT NULL " +
+                        "AND remote_id GLOB 'local:*' AND last_error_at IS NOT NULL " +
                         "ORDER BY path LIMIT ?",
                 ).use { stmt ->
                     stmt.setInt(1, limit)
@@ -3878,6 +3862,10 @@ class StateDatabase(
         private const val PARENT_DIR_OF_PATH = "rtrim(path, replace(path, '/', ''))"
 
         /** The direct children of a path: one parameter, the folder with its trailing '/' (the root: `/`). */
+        private const val REMOTE_ANCESTOR_SQL =
+            "SELECT path, remote_path FROM alive_entries WHERE remote_path IS NOT NULL AND is_folder=1 AND remote_path <> path " +
+                "AND length(path) < length(?) AND substr(?, 1, length(path) + 1) = path || '/' " +
+                "ORDER BY length(path) DESC LIMIT 1"
         internal const val DIRECT_CHILDREN_BY_PATH = "SELECT * FROM alive_entries WHERE $PARENT_DIR_OF_PATH = ?"
 
         /**
