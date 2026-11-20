@@ -2401,16 +2401,7 @@ class InternxtProvider(
             val archived = tombstoneStore.archiveForEmptyReplace(localPath, bucket, parentUuid, plainName, ext, localMtime, existingRemoteId, config.keepOverwritten, { checkWriteToken(existingRemoteId, ifMatchETag, remotePath) }) { tryKeepOverwrittenRename(existingRemoteId, plainName) }
             val item =
                 if (archived) {
-                    val created =
-                        try {
-                            create(plainName)
-                        } catch (e: InternxtApiException) {
-                            // A create that landed on an earlier attempt (its answer lost) holds the name now: an empty
-                            // live file there is that create, and is adopted; anything else is a real clash.
-                            if (e.statusCode != 409) throw e
-                            findFileByName(parentUuid, segments.last())?.takeIf { (it.size?.toLongOrNull() ?: -1L) == 0L } ?: throw e
-                        }
-                    created.also { withContext(Dispatchers.IO) { tombstoneStore.discard(UploadTombstoneStore.pathHash(localPath.toAbsolutePath().toString())) } }
+                    createOrAdoptLandedEmpty({ create(plainName) }) { findFileByName(parentUuid, segments.last()) }.also { withContext(Dispatchers.IO) { tombstoneStore.discard(UploadTombstoneStore.pathHash(localPath.toAbsolutePath().toString())) } }
                 } else {
                     api.replaceFile(uuid = existingRemoteId, size = 0L, fileId = null, modificationTime = localMtime).afterReplace(localMtime)
                 }
