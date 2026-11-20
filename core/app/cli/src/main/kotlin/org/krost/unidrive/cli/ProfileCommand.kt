@@ -118,11 +118,15 @@ class ProfileAddCommand : Callable<Int> {
         }
     }
 
+    // Test seam (#845): the console the interactive wizard reads; a test drives the command path with a scripted one.
+    internal var consoleSource: () -> WizardConsole? = { System.console()?.asWizardConsole() }
+
     private fun run(): Int {
-        val console = System.console()
+        val console = consoleSource()
         if (console == null) {
             System.err.println("Error: 'profile add' requires an interactive terminal.")
             System.exit(1)
+            return 1
         }
 
         val main = profileCmd.parent
@@ -324,7 +328,7 @@ class ProfileAddCommand : Callable<Int> {
     }
 
     private fun promptRequired(
-        console: java.io.Console,
+        console: WizardConsole,
         label: String,
     ): String {
         print("$label: ")
@@ -337,7 +341,7 @@ class ProfileAddCommand : Callable<Int> {
      * The mode prompt of profile creation (archive#603): a required choice between the two modes, with what
      * each means. A blank answer is refused — there is no default to assume.
      */
-    private fun promptProfileMode(console: java.io.Console): org.krost.unidrive.sync.ProfileMode {
+    private fun promptProfileMode(console: WizardConsole): org.krost.unidrive.sync.ProfileMode {
         println("Mode (fixed after creation, #603):")
         println("  1) mount  — the drive as a filesystem (Explorer/FUSE; uploads from the engine's cache)")
         println("  2) mirror — bidirectional folder sync over a sync_root")
@@ -353,7 +357,7 @@ class ProfileAddCommand : Callable<Int> {
     }
 
     private fun promptOptional(
-        console: java.io.Console,
+        console: WizardConsole,
         label: String,
         default: String,
     ): String {
@@ -371,7 +375,7 @@ class ProfileAddCommand : Callable<Int> {
      * default must not silently aim a unidrive profile at the other client's folder.
      */
     private fun promptMirrorSyncRoot(
-        console: java.io.Console,
+        console: WizardConsole,
         type: String,
     ): String {
         val defaultRoot = mirrorSyncRootDefault(type)

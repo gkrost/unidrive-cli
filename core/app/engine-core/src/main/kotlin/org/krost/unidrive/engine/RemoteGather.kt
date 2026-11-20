@@ -1512,7 +1512,7 @@ class RemoteGather(
             // A root's row never moves alone (see moveNamespaceRoots): before the upsert, whose row the rename's clean-up at
             // the destination would otherwise take.
             if (renamedFrom != null && PlacedNamespace.isRootId(item.id)) db.renamePrefix(renamedFrom, realLocalPath)
-            db.upsertEntry(merged, keepMarks = true)
+            if (!mergeLeavesRowAsStored(existing, merged, renamedFrom)) db.upsertEntry(merged, keepMarks = true) // #745 finding 7
             if (existing != null && existing.downloadQuarantined && !merged.downloadQuarantined) {
                 // The delivery ended the quarantine (see deliveryEndsQuarantine): the SQL clear, as the
                 // canonical second writer beside the merged row's copy.
@@ -1810,24 +1810,14 @@ class RemoteGather(
                 parkOne(pending, sourceOf, moved, landed, held)
                 continue
             }
-            val chosen = ready.minWith(compareBy({ sourceOf.getValue(it).length }, { it.to.length }, { it.to }))
-            val from = sourceOf.getValue(chosen)
-            // An occupant that is not itself leaving stays. renamePrefix would delete it and the rows below it.
-            if (db.getEntry(chosen.to) != null) {
-                log.warn("A folder renamed in the cloud keeps its rows at {}: another row is at {}", from, chosen.to)
-                pending.remove(chosen)
-                continue
-            }
-            val cacheFrom = chosen.reportedAt
-            if (landRename(chosen, from, skipsFor(from, chosen.to, landed, held))) {
-                moved += RemoteMerge.Move(cacheFrom, chosen.to)
-                retargetReported(pending, cacheFrom, chosen.to)
-                landed += chosen.to
-            } else {
-                log.warn("A folder renamed in the cloud keeps its rows at {}: {} is still occupied", from, chosen.to)
-                held += from
-            }
-            pending.remove(chosen)
+            val order = compareBy<PendingFolder>({ sourceOf.getValue(it).length }, { it.to.length }, { it.to })
+            val chosen = ready.minWith(order)
+            // #745 finding 8: a ready rename that shares no tree with any other (RenameOverlaps) lands in this step too.
+            // Only a plain one: its cloud path is its path, its row has no remote path of its own, it is no namespace root.
+            val overlaps = RenameOverlaps(pending.associateWith { listOfNotNull(sourceOf[it], it.to, it.reportedAt, it.cloudPath, it.remoteAt) }, landed + held)
+            fun plain(it: PendingFolder) = it.cloudPath == it.to && it.remoteAt == null && !PlacedNamespace.isRootId(it.remoteId)
+            val step = listOf(chosen) + ready.filter { it !== chosen && plain(it) && overlaps.isolated(it) }.sortedWith(order)
+            for (rename in step) landOrHold(rename, sourceOf.getValue(rename), pending, moved, landed, held)
         }
         for (rename in pending) {
             val from = db.getEntryByRemoteId(rename.remoteId)?.path ?: rename.reportedAt
@@ -1842,7 +1832,34 @@ class RemoteGather(
         val to: String,
         val cloudPath: String,
         var reportedAt: String,
+        // The row's own remote path when it has one (an alias, a twin): such a rename is never batched (RenameOverlaps).
+        val remoteAt: String?,
     )
+
+    private fun landOrHold(
+        chosen: PendingFolder,
+        from: String,
+        pending: MutableList<PendingFolder>,
+        moved: MutableList<RemoteMerge.Move>,
+        landed: MutableList<String>,
+        held: MutableList<String>,
+    ) {
+        pending.remove(chosen)
+        // An occupant that is not itself leaving stays. renamePrefix would delete it and the rows below it.
+        if (db.getEntry(chosen.to) != null) {
+            log.warn("A folder renamed in the cloud keeps its rows at {}: another row is at {}", from, chosen.to)
+            return
+        }
+        val cacheFrom = chosen.reportedAt
+        if (landRename(chosen, from, skipsFor(from, chosen.to, landed, held))) {
+            moved += RemoteMerge.Move(cacheFrom, chosen.to)
+            retargetReported(pending, cacheFrom, chosen.to)
+            landed += chosen.to
+        } else {
+            log.warn("A folder renamed in the cloud keeps its rows at {}: {} is still occupied", from, chosen.to)
+            held += from
+        }
+    }
 
     private fun collectRenames(
         remoteChanges: Map<String, CloudItem>,
@@ -1863,7 +1880,7 @@ class RemoteGather(
             if (!row.isFolder || row.path == to) continue
             // archive#403: below a twin folder the key is the decorated path; the cloud path is the item's canonical one.
             val cloudPath = if (path != item.path && DuplicateNames.keyOf(path, item.path) != null) item.path else path
-            pending += PendingFolder(item.id, to, cloudPath, row.path)
+            pending += PendingFolder(item.id, to, cloudPath, row.path, row.remotePath)
         }
         for (namespace in guard.placedNamespaces) rootLeaving(namespace, remoteChanges)?.let { pending += it }
         return pending
@@ -1879,7 +1896,7 @@ class RemoteGather(
         if (item.id != namespace.rootId || item.deleted || !item.isFolder) return null
         val row = db.getEntryByRemoteId(namespace.rootId) ?: return null
         if (!row.isFolder || row.path == to) return null
-        return PendingFolder(namespace.rootId, to, to, row.path)
+        return PendingFolder(namespace.rootId, to, to, row.path, row.remotePath)
     }
 
     // Drops renames whose row is already at the destination (a parent's move put it there) or is gone.
