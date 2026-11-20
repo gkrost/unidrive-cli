@@ -125,6 +125,9 @@ open class SyncEngine(
     // rare case where the operator genuinely wants to purge a never-touched
     // top-level (e.g. final cleanup after rename).
     private val ignoreTopLevelGuard: Boolean = false,
+    // The bulk-disappearance corroboration guard of the remote enumeration (RemoteEnumeration.bulkReapGuard). False
+    // reaps a bulk disappearance at once. Profile key `bulk_reap_guard`.
+    private val bulkReapGuard: Boolean = true,
     // UD-264: sibling of failureLogPath. When non-null and a delete is dropped
     // (or would have been dropped, if ignoreTopLevelGuard=true), append a JSON
     // line: {"ts":"...","action":"del-remote","path":"...","reason":"..."}.
@@ -577,6 +580,7 @@ open class SyncEngine(
                     cachePathOf = { resolveCachePath(it) },
                 ),
             log = log,
+            bulkReapGuard = bulkReapGuard,
         )
 
     /**

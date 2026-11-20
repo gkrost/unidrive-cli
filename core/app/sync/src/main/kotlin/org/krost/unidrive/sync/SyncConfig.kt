@@ -404,6 +404,10 @@ data class RawProvider(
     // writes leave under ~/.cache/unidrive/hydration/<profile>). 0 = unlimited, below 0 = no content cache.
     // Absent = the default (#404: the cache is off).
     val hydration_cache_max_bytes: Long? = null,
+    // Guard switches (default on). `bulk_reap_guard = false` reaps a bulk remote disappearance at once instead of
+    // holding it for a second full listing; `top_level_guard = false` drops the never-hydrated top-level skip.
+    val bulk_reap_guard: Boolean? = null,
+    val top_level_guard: Boolean? = null,
     // archive#463: how often `daemon run` polls the cloud for changes made elsewhere, in seconds. 0 = off.
     // Absent = the default (60). `daemon run --poll-interval` overrides it.
     val daemon_poll_seconds: Int? = null,
@@ -604,6 +608,12 @@ data class SyncConfig(
     fun hydrationCacheMaxBytes(profileName: String): Long =
         providers[profileName]?.hydrationCacheMaxBytes ?: DEFAULT_HYDRATION_CACHE_MAX_BYTES
 
+    /** The bulk-disappearance guard of this profile's remote enumeration; false reaps a bulk disappearance at once. */
+    fun bulkReapGuard(profileName: String): Boolean = providers[profileName]?.bulkReapGuard ?: true
+
+    /** The never-hydrated top-level guard of this profile's sync; false drops the skip. */
+    fun topLevelGuard(profileName: String): Boolean = providers[profileName]?.topLevelGuard ?: true
+
     /** archive#463: seconds between the daemon's polls of the cloud for this profile; 0 = off. */
     fun daemonPollSeconds(profileName: String): Int =
         (providers[profileName]?.daemonPollSeconds ?: DEFAULT_DAEMON_POLL_SECONDS).coerceAtLeast(0)
@@ -658,6 +668,8 @@ data class SyncConfig(
         val conflictOverrides: Map<String, ConflictPolicy> = emptyMap(),
         val excludePatterns: List<String> = emptyList(),
         val hydrationCacheMaxBytes: Long? = null,
+        val bulkReapGuard: Boolean = true,
+        val topLevelGuard: Boolean = true,
         val daemonPollSeconds: Int? = null,
         val honorGitignore: Boolean = false,
         val ignoreRules: List<String> = emptyList(),
@@ -1147,6 +1159,8 @@ data class SyncConfig(
                                 .mapValues { (_, v) -> parsePolicy(v) },
                         excludePatterns = rp.exclude_patterns ?: emptyList(),
                         hydrationCacheMaxBytes = rp.hydration_cache_max_bytes,
+                        bulkReapGuard = rp.bulk_reap_guard ?: true,
+                        topLevelGuard = rp.top_level_guard ?: true,
                         daemonPollSeconds = rp.daemon_poll_seconds,
                         honorGitignore = rp.honor_gitignore ?: false,
                         ignoreRules = rp.ignore_rules ?: emptyList(),

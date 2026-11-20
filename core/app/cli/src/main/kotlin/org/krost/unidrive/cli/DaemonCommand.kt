@@ -198,6 +198,11 @@ class DaemonRunCommand : Runnable {
             // archive#891: the health line, one INFO line per minute in unidrive.log.
             healthIntervalMs = 60_000,
             hydrationCacheMaxBytes = config.hydrationCacheMaxBytes(profile.name),
+            maxDeletePercentage = config.maxDeletePercentage,
+            maxDeleteAbsolute = config.maxDeleteAbsolute,
+            maxDeletePerSubtreePercent = config.maxDeletePerSubtreePercent,
+            ignoreTopLevelGuard = !config.topLevelGuard(profile.name),
+            bulkReapGuard = config.bulkReapGuard(profile.name),
             profileMode = mode,
             // archive#655: the quota snapshot's TTL (profile config quota_refresh_minutes, default 15
             // min, 0 = off) and whether the provider reports an ACCOUNT quota at all (localfs

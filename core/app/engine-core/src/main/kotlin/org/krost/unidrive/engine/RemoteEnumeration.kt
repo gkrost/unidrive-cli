@@ -42,6 +42,9 @@ class RemoteEnumeration(
     // archive#147: how many remote rows one merge transaction upserts. Tests drive chunk
     // boundaries with a handful of items; production uses the companion default.
     private val mergeChunkRows: Int = MERGE_CHUNK_ROWS,
+    // The bulk-disappearance corroboration guard (below). False reaps a bulk disappearance at once: the profile key
+    // `bulk_reap_guard = false` takes this off. Default on.
+    private val bulkReapGuard: Boolean = true,
 ) {
     /**
      * What the reap asks the hydration layer before it evicts a cache file. Both are
@@ -432,7 +435,7 @@ class RemoteEnumeration(
             // gathers carry provider tombstones the same way. updateRemoteEntries skips
             // them, so we flip state.db here directly — never via provider.delete.
             val missingNow = reapableTombstones(db, remoteChanges, log)
-            val bulk = missingNow.size > bulkThreshold
+            val bulk = bulkReapGuard && missingNow.size > bulkThreshold
             val corroborated = if (bulk) missingNow.intersect(deferredMissing) else missingNow
             // archive#1033: the key is the REMOTE path (its row may live elsewhere). 745 f10: a tombstone of another item than
             // the row it meets says nothing about that row: it is not missing now (no count) and not corroboration (not carried).
