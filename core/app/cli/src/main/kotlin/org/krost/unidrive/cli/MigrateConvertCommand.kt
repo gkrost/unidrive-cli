@@ -90,7 +90,7 @@ class MigrateConvertCommand : Runnable {
     description = [
         "Upload the files a 'migrate convert --mode mount --sync-root retire' quarantined, as",
         "conflict copies at their original remote paths. Reads the conversion journal; touches",
-        "nothing on disk except its own progress line in the journal.",
+        "nothing on disk except its own progress lines in the journal. A re-run skips what landed.",
     ],
     mixinStandardHelpOptions = true,
 )
@@ -111,18 +111,15 @@ class MigrateUploadQuarantinedCommand : Runnable {
         try {
             kotlinx.coroutines.runBlocking {
                 provider.authenticateAndLog()
-                var uploaded = 0
-                for (entry in quarantined) {
-                    val local = Path.of(entry.quarantinePath)
-                    if (!Files.exists(local)) {
-                        System.err.println("Skipping '${entry.remotePath}': the quarantined copy is gone.")
-                        continue
+                val done =
+                    QuarantineUploadRun.run(main.providerConfigDir(), journal!!, provider) { local, remotePath, beforeUpload ->
+                        uploadAsConflictCopy(provider, local, remotePath, beforeUpload)
                     }
-                    uploadAsConflictCopy(provider, local, entry.remotePath)
-                    uploaded++
-                    println("Uploaded '${entry.remotePath}' as a conflict copy ($uploaded/${quarantined.size})")
-                }
-                println("Done: $uploaded of ${quarantined.size} quarantined file(s) uploaded as conflict copies.")
+                val earlier = done.alreadyUploaded + done.foundInCloud
+                println(
+                    "Done: ${done.uploaded} of ${quarantined.size} quarantined file(s) uploaded as conflict copies" +
+                        (if (earlier > 0) "; $earlier uploaded by an earlier run." else "."),
+                )
             }
         } finally {
             provider.close()
@@ -136,16 +133,19 @@ class MigrateUploadQuarantinedCommand : Runnable {
      * the probe missed still falls through to the conflict naming, and a probe that cannot tell (a blip) throws
      * instead of risking the live copy. Where the provider has no conditional create, the window between probe
      * and upload stays: a name freed in it can lose the race, but no live copy is ever written over on purpose.
+     * [beforeUpload] is told each name just before its upload starts; the name that took the bytes is returned.
      */
     internal suspend fun uploadAsConflictCopy(
         provider: org.krost.unidrive.CloudProvider,
         local: Path,
         remotePath: String,
-    ) {
+        beforeUpload: (String) -> Unit = {},
+    ): String {
         if (!taken(provider, remotePath)) {
             try {
+                beforeUpload(remotePath)
                 provider.upload(local, remotePath)
-                return
+                return remotePath
             } catch (_: ProviderException) {
                 // taken since the probe, or a transient failure — the conflict naming probes again either way
             }
@@ -159,8 +159,9 @@ class MigrateUploadQuarantinedCommand : Runnable {
             val candidate = "$dir/${LegacyConversion.conflictLeaf(plain, ext, date, counter)}"
             if (taken(provider, candidate)) continue
             try {
+                beforeUpload(candidate)
                 provider.upload(local, candidate)
-                return
+                return candidate
             } catch (_: ProviderException) {
                 // another conflict copy with the same counter exists — try the next
             }
@@ -232,6 +233,8 @@ internal object LegacyConversion {
         val conversionDir: String? = null,
         val baselineCleared: Boolean = false,
         val convertedAt: String? = null,
+        /** `migrate upload-quarantined`'s progress: absent in a journal written before it recorded any. */
+        val uploads: List<QuarantineUpload> = emptyList(),
     ) {
         companion object {
             private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }

@@ -41,12 +41,41 @@ internal class ConversionJournalLog private constructor(
         val run: String,
         val move: MovedFile? = null,
         val quarantined: QuarantinedFile? = null,
+        val upload: QuarantineUpload? = null,
     )
 
     private val moves = ArrayList(base.moves)
     private val movedSources = moves.mapTo(HashSet()) { it.from }
     private val quarantined = ArrayList(base.quarantined)
     private val quarantinePaths = quarantined.mapTo(HashSet()) { it.quarantinePath }
+    private val uploads = ArrayList<QuarantineUpload>()
+    private val landed = HashSet<String>()
+    private val attempts = HashMap<String, MutableList<String>>()
+
+    init {
+        base.uploads.forEach(::addUpload)
+    }
+
+    private fun addUpload(upload: QuarantineUpload) {
+        uploads += upload
+        if (upload.landed) {
+            landed += upload.quarantinePath
+        } else {
+            attempts.getOrPut(upload.quarantinePath) { mutableListOf() } += upload.target
+        }
+    }
+
+    /** True once the copy at [quarantinePath] is recorded as landed in the cloud. */
+    fun landed(quarantinePath: String): Boolean = quarantinePath in landed
+
+    /** The remote paths an upload of [quarantinePath] was started to and not recorded as landed, oldest first. */
+    fun attempts(quarantinePath: String): List<String> = attempts[quarantinePath].orEmpty()
+
+    /** Journals [upload] durably (gkrost/unidrive-cli#749 finding 2). */
+    fun recordUpload(upload: QuarantineUpload) {
+        append(Line(run = base.startedAt, upload = upload))
+        addUpload(upload)
+    }
 
     private fun add(
         move: MovedFile,
@@ -72,7 +101,7 @@ internal class ConversionJournalLog private constructor(
     }
 
     /** The journal with every recorded line folded in, for the caller to save. */
-    fun journal(): Journal = base.copy(moves = moves.toList(), quarantined = quarantined.toList())
+    fun journal(): Journal = base.copy(moves = moves.toList(), quarantined = quarantined.toList(), uploads = uploads.toList())
 
     private fun append(line: Line) {
         val bytes = (json.encodeToString(Line.serializer(), line) + "\n").toByteArray()
@@ -137,6 +166,7 @@ internal class ConversionJournalLog private constructor(
                         throw IllegalStateException("$f: line ${i + 1} is damaged; the conversion journal cannot be read", e)
                     }
                 if (line.run != journal.startedAt) continue
+                line.upload?.let(log::addUpload)
                 val move = line.move ?: continue
                 if (move.from !in log.movedSources) log.add(move, line.quarantined)
             }
@@ -154,3 +184,14 @@ internal class ConversionJournalLog private constructor(
         }
     }
 }
+
+/**
+ * One step of `migrate upload-quarantined` for the copy at [quarantinePath]: an upload to [target] about to start
+ * ([landed] false, journaled before the bytes go), or one that landed there ([landed] true).
+ */
+@Serializable
+internal data class QuarantineUpload(
+    val quarantinePath: String,
+    val target: String,
+    val landed: Boolean,
+)
