@@ -98,10 +98,7 @@ class ProfileAddCommand : Callable<Int> {
     var json: Boolean = false
 
     override fun call(): Int {
-        if (type == null && !json) {
-            run()
-            return 0
-        }
+        if (type == null && !json) return run()
         return try {
             val t = type ?: throw LifecycleError("missing_type", "--type is required for a non-interactive creation")
             val result =
@@ -121,7 +118,7 @@ class ProfileAddCommand : Callable<Int> {
         }
     }
 
-    private fun run() {
+    private fun run(): Int {
         val console = System.console()
         if (console == null) {
             System.err.println("Error: 'profile add' requires an interactive terminal.")
@@ -248,13 +245,10 @@ class ProfileAddCommand : Callable<Int> {
                 false
             }
         val writeResult = writeInteractiveProfile(configPath, name, type, mode, syncRoot, toml, wantsDefault)
-        if (writeResult == null) {
-            System.err.println("Error: config.toml could not be parsed.")
-            return
-        }
-        if (writeResult != "added" && writeResult != "default") {
-            System.err.println("Error: $writeResult")
-            return
+        val refusal = interactiveWriteRefusal(writeResult)
+        if (refusal != null) {
+            System.err.println("Error: $refusal")
+            return 1
         }
 
         println()
@@ -265,6 +259,7 @@ class ProfileAddCommand : Callable<Int> {
         }
 
         if (writeResult == "default") println("  Default: ${AnsiHelper.bold(name)}")
+        return 0
     }
 
     private fun writeInteractiveProfile(
