@@ -53,7 +53,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import java.time.temporal.ChronoUnit
-import java.util.Collections
 
 /**
  * Dropbox through its HTTP API v2 (no SDK).
@@ -105,10 +104,6 @@ class DropboxProvider(
     // pages, and whether the last page said hasMore (a no after it means the next call begins a new walk).
     private var pageProgress = 0
     private var walkHasMore = false
-
-    // Cursors handed out in the middle of a full listing (one that began without a cursor). Their pages list what
-    // exists; a deleted entry there is history from before the walk, never a deletion to act on.
-    private val fullListingCursors = Collections.synchronizedSet(HashSet<String>())
 
     private val hintScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var hintJob: Job? = null
@@ -591,13 +586,17 @@ class DropboxProvider(
             pageProgress = 0
             items.beginWalk()
         }
-        val fullListing = cursor == null || cursor in fullListingCursors
+        // A cursor handed out in the middle of a full listing (one that began without a cursor) carries FULL_LISTING_PREFIX:
+        // the flag lives in the cursor string, so a page fetched twice or resumed after a restart is still classified a
+        // listing. Its pages list what exists; a deleted entry there is history from before the walk, never a deletion to act on.
+        val fullListing = cursor == null || cursor.startsWith(FULL_LISTING_PREFIX)
+        val dropboxCursor = cursor?.removePrefix(FULL_LISTING_PREFIX)
         val page =
             try {
                 if (cursor == null) {
                     api.rpc("files/list_folder", listArgs("", recursive = true))
                 } else {
-                    api.rpc("files/list_folder/continue", obj("cursor" to cursor))
+                    api.rpc("files/list_folder/continue", obj("cursor" to dropboxCursor))
                 }
             } catch (e: DropboxApiException) {
                 if (e.isA("reset")) {
@@ -609,8 +608,6 @@ class DropboxProvider(
         val visible = if (fullListing) entries.filterNot { it.deleted } else entries
         val next = page.cursor()
         val hasMore = page["has_more"]?.jsonPrimitive?.booleanOrNull == true
-        cursor?.let { fullListingCursors.remove(it) }
-        if (hasMore && fullListing) fullListingCursors += next
         if (!hasMore) {
             lastCursor = next
             items.endWalk()
@@ -618,7 +615,7 @@ class DropboxProvider(
         pageProgress += visible.size
         walkHasMore = hasMore
         onPageProgress?.invoke(pageProgress)
-        return DeltaPage(visible, next, hasMore)
+        return DeltaPage(visible, if (hasMore && fullListing) FULL_LISTING_PREFIX + next else next, hasMore)
     }
 
     override suspend fun deltaFromLatest(scanContext: ScanContext?): CapabilityResult<DeltaPage> {
@@ -779,6 +776,7 @@ class DropboxProvider(
     companion object {
         private const val HTTP_NOT_FOUND = 404
         private const val LIST_LIMIT = 2000
+        private const val FULL_LISTING_PREFIX = "full:"
 
         // A 10,000-page listing is twenty million entries (2,000 a page): far above any folder this holds a cursor into.
         private const val MAX_PAGES = 10_000
