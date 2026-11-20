@@ -1885,25 +1885,21 @@ class StateDatabase(
         }
         keep.append(")")
         var total = 0
+        var cursor = 0L // #744 finding 9: each chunk resumes after the last row the previous one looked at
         while (true) {
-            val deleted = locked("deleteOutOfScope") {
-                batch {
-                    val count =
-                        conn
-                            .prepareStatement(
-                                "DELETE FROM sync_entries WHERE rowid IN " +
-                                    "(SELECT rowid FROM sync_entries WHERE status='EXISTS' AND NOT $keep LIMIT ?)",
-                            ).use { stmt ->
-                                var i = 0
-                                for (param in params) stmt.setString(++i, param)
-                                stmt.setInt(i + 1, chunkSize)
-                                stmt.executeUpdate()
-                            }
-                    countAlive(-count)
-                    count
+            val (deleted, last) =
+                locked("deleteOutOfScope") {
+                    batch {
+                        val victims = outOfScopeRowids(conn, keep.toString(), params, cursor, chunkSize)
+                        if (victims.isNotEmpty()) {
+                            conn.prepareStatement("DELETE FROM sync_entries WHERE rowid IN (" + victims.joinToString(",") + ")").use { it.executeUpdate() }
+                            countAlive(-victims.size)
+                        }
+                        victims.size to (victims.lastOrNull() ?: cursor)
+                    }
                 }
-            }
             total += deleted
+            cursor = last
             if (deleted < chunkSize) break
         }
         return total
