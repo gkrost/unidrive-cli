@@ -1238,6 +1238,9 @@ class CloudRelocatorTest {
         // by the MDC-propagation regression test).
         val listChildrenFailPaths = mutableSetOf<String>()
 
+        // #743 finding 8: paths whose listChildren answers a typed not-found (HTTP 404).
+        val listChildrenNotFoundPaths = mutableSetOf<String>()
+
         var listChildrenCount = 0
 
         // gkrost/unidrive-cli#63: runs after a download has written its file and before download returns, so a test
@@ -1269,6 +1272,9 @@ class CloudRelocatorTest {
             }
             if (path in listChildrenFailPaths) {
                 throw RuntimeException("Simulated listChildren failure for $path")
+            }
+            if (path in listChildrenNotFoundPaths) {
+                throw ProviderException("Simulated not found for $path", httpStatus = 404)
             }
             return children[path] ?: emptyList()
         }

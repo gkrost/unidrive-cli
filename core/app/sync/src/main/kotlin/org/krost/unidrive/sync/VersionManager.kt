@@ -2,6 +2,7 @@ package org.krost.unidrive.sync
 
 import org.krost.unidrive.io.engineKey
 import org.krost.unidrive.io.engineRelative
+import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
@@ -10,6 +11,8 @@ import kotlin.io.path.*
 
 class VersionManager(
     private val syncRoot: Path,
+    // A test seam for the clock that names the snapshots. Production code takes the default.
+    private val now: () -> Instant = Instant::now,
 ) {
     private val versionsDir: Path = syncRoot.resolve(".unidrive-versions")
 
@@ -31,12 +34,21 @@ class VersionManager(
         val normalized = engineRelative(relativePath)
         val source = safeResolveLocal(syncRoot, normalized)
         if (!source.exists() || !source.isRegularFile()) return null
-        val timestamp = UtcSecondStamp.encode(Instant.now().truncatedTo(ChronoUnit.SECONDS))
-        val dest = versionFolder(source).resolve(timestamp)
-        dest.parent.createDirectories()
+        val folder = versionFolder(source)
+        folder.createDirectories()
         copyObserver?.invoke(source)
-        Files.copy(source, dest)
-        return dest
+        // #743 finding 11: the slots are named by the second. A second snapshot of the file within one second takes
+        // the next free second instead of failing the transfer behind it, so both versions are kept and restorable.
+        var stamp = now().truncatedTo(ChronoUnit.SECONDS)
+        while (true) {
+            val dest = folder.resolve(UtcSecondStamp.encode(stamp))
+            try {
+                Files.copy(source, dest)
+                return dest
+            } catch (_: FileAlreadyExistsException) {
+                stamp = stamp.plusSeconds(1)
+            }
+        }
     }
 
     // Every entry point that takes a path derives the version folder from the contained path, so a name
