@@ -38,4 +38,32 @@ class InternxtKeepOverwrittenEmptyResumeTest {
                 tmp.toFile().deleteRecursively()
             }
         }
+
+    @Test
+    fun `a retry after a create that landed with its answer lost adopts the empty file`() =
+        runTest {
+            val tmp = TestScratch.directory("ud-keep-empty-landed-")
+            try {
+                val local = TestScratch.file(tmp, "src-", ".bin").also { Files.write(it, ByteArray(0)) }
+                val drive = UploadDrive(bucketEntryId = "bucket-entry-new")
+                drive.files += UploadDriveFile("old-1", "doc", "txt", 5, "bucket-entry-old", "root-folder-uuid")
+                drive.createFault = { call, _ -> if (call == 1) HttpStatusCode.GatewayTimeout else null }
+                drive.storeBeforeFault = true
+                val provider = rootedInternxtProvider(tmp, drive.engine, keepOverwritten = true)
+                try {
+                    assertFailsWith<Exception> { provider.upload(local, "/doc.txt", existingRemoteId = "old-1", onProgress = null) }
+                    assertEquals(1, drive.files.count { it.plainName == "doc" && it.type == "txt" && it.size == 0L }, "the first create landed: ${drive.files}")
+                    val item = provider.upload(local, "/doc.txt", existingRemoteId = "old-1", onProgress = null)
+                    assertEquals("doc.txt", item.name)
+                    assertEquals(1, drive.renames.size, "the retry archives nothing again, renames: ${drive.renames}")
+                    assertEquals(2, drive.files.size, "the archive and the adopted empty file: ${drive.files}")
+                    val third = provider.upload(local, "/doc.txt", existingRemoteId = item.id, onProgress = null)
+                    assertEquals("doc.txt", third.name, "the marker is discarded, so a later replace starts clean")
+                } finally {
+                    provider.close()
+                }
+            } finally {
+                tmp.toFile().deleteRecursively()
+            }
+        }
 }
