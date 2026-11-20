@@ -253,6 +253,8 @@ open class SyncEngine(
 
     // #742 finding 6: the row lookup behind the remote_change log lines, batched. A property so a test can count the calls.
     internal var remoteChangeRowLookup: (Collection<String>) -> Map<String, SyncEntry> = { paths -> Reconciler.entriesByPathsChunked(db, paths) }
+    // #841 (#742 finding 8): the by-remote-id fallback of [rowsAwaitingContent], batched. A property so a test can count the calls.
+    internal var awaitingContentIdLookup: (Collection<String>) -> Map<String, SyncEntry> = { ids -> db.getEntriesByRemoteIds(ids) }
     // #218: the patterns the matcher can build, as every command that reads exclude_patterns takes them.
     private val effectiveExcludePatterns =
         ExcludePatterns.accepted(
@@ -4845,8 +4847,11 @@ open class SyncEngine(
             }
         if (fetching.isEmpty()) return emptyList()
         val byPath = Reconciler.entriesByPathsChunked(db, fetching.map { it.first })
+        // A renamed file has no row at its new path yet: its row is the one that carries its id.
+        val missedIds = fetching.mapNotNullTo(LinkedHashSet()) { (path, item) -> item.id.takeIf { it.isNotEmpty() && path !in byPath } }
+        val byId = if (missedIds.isEmpty()) emptyMap() else awaitingContentIdLookup(missedIds)
         return fetching.mapNotNull { (path, item, conflict) ->
-            val row = byPath[path] ?: item.id.takeIf { it.isNotEmpty() }?.let { db.getEntryByRemoteId(it) }
+            val row = byPath[path] ?: byId[item.id]
             if (row != null && holdsBytesTheCloudDoesNot(row, conflict) && differsFromCloud(row, item)) row to item else null
         }
     }

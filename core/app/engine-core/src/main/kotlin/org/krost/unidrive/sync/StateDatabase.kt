@@ -1311,6 +1311,17 @@ class StateDatabase(
             found
         }
 
+    /** #841 (#742-8): [getEntryByRemoteId] for many ids, keyed by id (absent: no alive row); one bounded read per 512 ids. */
+    fun getEntriesByRemoteIds(remoteIds: Collection<String>): Map<String, SyncEntry> {
+        val found = HashMap<String, SyncEntry>(remoteIds.size * 2)
+        for (part in remoteIds.chunked(IN_LOOKUP_CHUNK * 4)) {
+            read("getEntriesByRemoteIds") { c ->
+                c.cached(ENTRIES_BY_REMOTE_IDS_SQL) { stmt -> stmt.queryInChunks(part) { rs -> found[rs.getString("remote_id")] = rs.toSyncEntry() } }
+            }
+        }
+        return found
+    }
+
     fun getEntryByRemoteId(remoteId: String): SyncEntry? =
         read("getEntryByRemoteId") { c ->
             c.cached(GET_ENTRY_BY_REMOTE_ID_SQL) { stmt ->
@@ -3803,6 +3814,7 @@ class StateDatabase(
         private const val GET_ENTRY_SQL = "SELECT * FROM alive_entries WHERE path = ?"
         private const val GET_ENTRY_BY_REMOTE_ID_SQL = "SELECT * FROM alive_entries WHERE remote_id = ?"
         private val ENTRIES_BY_PATHS_SQL = inLookupSql("SELECT * FROM alive_entries WHERE path")
+        private val ENTRIES_BY_REMOTE_IDS_SQL = inLookupSql("SELECT * FROM alive_entries WHERE remote_id")
         private const val NAME_BLOCK_SQL = "SELECT name_block FROM alive_entries WHERE path=?"
         private const val COUNT_NAME_BLOCKED_SQL = "SELECT COUNT(*) FROM alive_entries WHERE name_block IS NOT NULL AND substr(name_block, 1, length(?)) = ?"
         private const val BLOCKED_ANCESTOR_SQL =
