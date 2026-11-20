@@ -44,11 +44,9 @@ import org.krost.unidrive.ShareInfo
 import org.krost.unidrive.TokenRevocation
 import org.krost.unidrive.dropbox.DropboxApi.Companion.obj
 import org.krost.unidrive.dropbox.DropboxItems.Companion.apiPath
-import org.krost.unidrive.http.UploadTimeoutPolicy
 import org.krost.unidrive.http.UploadWatchdogLimits
-import org.krost.unidrive.http.progressTrackingBody
 import org.krost.unidrive.http.progressTrackingFileBody
-import java.io.RandomAccessFile
+import org.krost.unidrive.http.progressTrackingFileRangeBody
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
@@ -336,57 +334,69 @@ class DropboxProvider(
         // archive#867: the session survives the process. A same-shaped local file resumes at the committed
         // offset; a changed file (or an older session, or none) starts a new one.
         val stored = sessionStore.get(remotePath, size, mtime)
-        val sessionId =
-            stored?.sessionId ?: api.content("files/upload_session/start", obj("close" to false)) { ByteArray(0) }["session_id"]
-                ?.jsonPrimitive
-                ?.contentOrNull
-                ?.also { sessionStore.put(remotePath, it, 0L, size, mtime) }
-                ?: throw ProviderException("Dropbox started an upload session without an id")
+        var sessionId = stored?.sessionId
         var offset = stored?.committedOffset ?: 0L
-        val buffer = ByteArray(config.uploadChunkBytes)
         var offsetCorrected = false
-        RandomAccessFile(localPath.toFile(), "r").use { file ->
-            while (offset < size) {
-                val length = withContext(Dispatchers.IO) {
-                    file.seek(offset)
-                    file.read(buffer, 0, minOf(buffer.size.toLong(), size - offset).toInt())
-                }
-                if (length <= 0) throw java.io.IOException("'$localPath' became shorter while it was uploaded")
-                val chunk = buffer.copyOf(length)
-                val corrected = appendChunkOrCorrect(remotePath, sessionId, offset, chunk, offsetCorrected)
-                if (corrected != null) {
-                    offset = corrected
-                    offsetCorrected = true
-                    continue
-                }
-                offset += length
-                sessionStore.put(remotePath, sessionId, offset, size, mtime)
-                onProgress?.invoke(offset, size)
+        // Each chunk is streamed from its byte range of the file, never copied. The session's first chunk rides on the
+        // start and the last one on the finish, so a session costs no request without a body (gkrost/unidrive-cli#841).
+        while (offset < size) {
+            val length = minOf(config.uploadChunkBytes.toLong(), size - offset)
+            if (sessionId != null && offset + length == size) break
+            if (withContext(Dispatchers.IO) { Files.size(localPath) } < offset + length) {
+                throw java.io.IOException("'$localPath' became shorter while it was uploaded")
             }
+            if (sessionId == null) {
+                sessionId = startSession(localPath, length)
+                sessionStore.put(remotePath, sessionId, length, size, mtime)
+                offset = length
+                onProgress?.invoke(offset, size)
+                continue
+            }
+            val corrected = appendChunkOrCorrect(remotePath, sessionId, localPath, offset, length, offsetCorrected)
+            if (corrected != null) {
+                offset = corrected
+                offsetCorrected = true
+                continue
+            }
+            offset += length
+            sessionStore.put(remotePath, sessionId, offset, size, mtime)
+            onProgress?.invoke(offset, size)
         }
-        val meta = finishSession(remotePath, sessionId, offset, commit)
+        val meta = finishSession(remotePath, sessionId!!, localPath, offset, size - offset, commit)
         sessionStore.delete(remotePath)
         return meta
     }
 
+    private suspend fun startSession(
+        localPath: Path,
+        length: Long,
+    ): String =
+        api.contentWatched("files/upload_session/start", obj("close" to false), length) {
+            progressTrackingFileRangeBody(localPath, 0L, length, it)
+        }["session_id"]?.jsonPrimitive?.contentOrNull ?: throw ProviderException("Dropbox started an upload session without an id")
+
+    // The finish carries the bytes from [offset] to the end of the file (none when the session already holds them all).
     private suspend fun finishSession(
         remotePath: String,
         sessionId: String,
+        localPath: Path,
         offset: Long,
+        length: Long,
         commit: JsonObject,
     ): JsonObject =
         try {
-            api.content(
+            api.contentWatched(
                 "files/upload_session/finish",
                 obj("cursor" to obj("session_id" to sessionId, "offset" to offset), "commit" to commit),
-            ) { ByteArray(0) }
+                length,
+            ) { progressTrackingFileRangeBody(localPath, offset, length, it) }
         } catch (e: DropboxApiException) {
             if (isDeadSession(e)) sessionStore.delete(remotePath)
             throw e
         }
 
     /**
-     * One append of [chunk] at [offset]; the returned offset is Dropbox's correction to resume at
+     * One append of [length] bytes of [localPath] at [offset]; the returned offset is Dropbox's correction to resume at
      * (`incorrect_offset` answered with the offset the session actually holds — trusted once per
      * session, a second mismatch means the session is not ours any more). A session Dropbox no longer
      * has ([isDeadSession]) is dropped; any other failure keeps it — the next attempt resumes where
@@ -395,16 +405,17 @@ class DropboxProvider(
     private suspend fun appendChunkOrCorrect(
         remotePath: String,
         sessionId: String,
+        localPath: Path,
         offset: Long,
-        chunk: ByteArray,
+        length: Long,
         offsetCorrected: Boolean,
     ): Long? {
         try {
             api.contentWatched(
                 "files/upload_session/append_v2",
                 obj("cursor" to obj("session_id" to sessionId, "offset" to offset), "close" to false),
-                chunk.size.toLong(),
-            ) { progressTrackingBody(chunk, it) }
+                length,
+            ) { progressTrackingFileRangeBody(localPath, offset, length, it) }
             return null
         } catch (e: DropboxApiException) {
             val correct = correctOffsetOf(e)
