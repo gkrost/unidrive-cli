@@ -251,10 +251,8 @@ class DropboxProvider(
     ): Long {
         ready()
         return try {
-            // The declared size sizes the request timeout (the flat 10 minute cap cut every download that needs longer);
-            // the metadata call also answers "gone" before the download is spent on it.
-            val size = metadata(target)["size"]?.jsonPrimitive?.longOrNull ?: 0L
-            api.download(target, destination, requestTimeoutMs = UploadTimeoutPolicy.computeRequestTimeoutMs(size)).second
+            // One request: the download's own path/not_found answers "gone", and its Content-Length sizes the body's time cap.
+            api.download(target, destination).second
         } catch (e: DropboxApiException) {
             if (e.isA("path/not_found")) {
                 throw PermanentDownloadFailureException("Dropbox has no file at '$remotePath' any more", e, e.requestId)
