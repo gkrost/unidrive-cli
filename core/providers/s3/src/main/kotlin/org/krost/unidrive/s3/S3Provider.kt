@@ -409,7 +409,20 @@ class S3Provider(
                 }
             }
         }
-        complete(uploadId, etags.mapIndexed { index, etag -> index + 1 to checkNotNull(etag) })
+        try {
+            complete(uploadId, etags.mapIndexed { index, etag -> index + 1 to checkNotNull(etag) })
+        } catch (e: RemoteConflictException) {
+            // Refused for good (the key changed): nothing re-attempts this upload, so its parts would stay billed. Abort it.
+            abortQuietly(key, uploadId)
+            uploads.remove(key)
+            throw e
+        } catch (e: S3Exception) {
+            if (e.status in 400..499 && e.status != 408 && e.status != 429) {
+                abortQuietly(key, uploadId)
+                uploads.remove(key)
+            }
+            throw e
+        }
         uploads.remove(key)
     }
 
@@ -503,7 +516,7 @@ class S3Provider(
         if (key.isEmpty()) throw ProviderException("Refusing to delete the whole bucket")
         if (remoteId.endsWith('/')) {
             deleteTree("$key/")
-        } else if (api.head(key) != null) {
+        } else {
             api.delete(key)
         }
     }

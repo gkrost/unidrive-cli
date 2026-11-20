@@ -30,7 +30,14 @@ data class S3Config(
      */
     val createFromListing: Boolean = false,
 ) {
-    val host: String get() = URI(endpoint).let { if (it.port == -1) it.host else "${it.host}:${it.port}" }
+    /** The host as the Host header carries it on the wire: lower-case, with the scheme's default port left out. */
+    val host: String
+        get() =
+            URI(endpoint).let {
+                val name = it.host.lowercase()
+                val defaultPort = (it.scheme.equals("https", true) && it.port == 443) || (it.scheme.equals("http", true) && it.port == 80)
+                if (it.port == -1 || defaultPort) name else "$name:${it.port}"
+            }
 
     override fun toString(): String =
         "S3Config(bucket=$bucket, region=$region, endpoint=$endpoint, accessKey=${maskSecret(accessKey)}, " +
