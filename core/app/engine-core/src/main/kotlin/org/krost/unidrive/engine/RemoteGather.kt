@@ -1512,7 +1512,7 @@ class RemoteGather(
             // A root's row never moves alone (see moveNamespaceRoots): before the upsert, whose row the rename's clean-up at
             // the destination would otherwise take.
             if (renamedFrom != null && PlacedNamespace.isRootId(item.id)) db.renamePrefix(renamedFrom, realLocalPath)
-            db.upsertEntry(merged, keepMarks = true)
+            if (!mergeLeavesRowAsStored(existing, merged, renamedFrom)) db.upsertEntry(merged, keepMarks = true) // #745 finding 7
             if (existing != null && existing.downloadQuarantined && !merged.downloadQuarantined) {
                 // The delivery ended the quarantine (see deliveryEndsQuarantine): the SQL clear, as the
                 // canonical second writer beside the merged row's copy.
