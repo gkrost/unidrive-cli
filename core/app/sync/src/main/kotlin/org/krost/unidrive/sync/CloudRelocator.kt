@@ -1,6 +1,7 @@
 package org.krost.unidrive.sync
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
@@ -10,7 +11,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
@@ -508,46 +508,46 @@ class CloudRelocator(
                         // outerScope.cancel(e), the scope completes normally and
                         // siblings finish in parallel).
                         val outerScope: kotlinx.coroutines.CoroutineScope = this
-                        launch {
-                            transferSemaphore.withPermit {
-                                // gkrost/unidrive-cli#63: one opaque scratch path per transfer (not pre-created, as before). Naming it by the leaf
-                                // would make /a/x and /b/x share a path while they run side by side.
-                                val tempFile = tempDir.resolve("transfer-${java.util.UUID.randomUUID()}.part")
-                                try {
-                                    val size =
-                                        withContext(Dispatchers.IO) {
-                                            source.download(newSource, tempFile)
-                                        }
-                                    val uploaded = target.upload(tempFile, newTarget)
-                                    manifest?.recordTransferred(item.path, item.id, newTarget, uploaded.id)
-                                    migratedFiles.incrementAndGet()
-                                    migratedSize.addAndGet(size)
-                                    emitProgress()
-                                } catch (e: CancellationException) {
-                                    // UD-286 + UD-289: cancel siblings + re-throw
-                                    // so the channelFlow body's outer try/catch
-                                    // sees CE and lets it escape via .toList().
-                                    outerScope.cancel(e)
-                                    throw e
-                                } catch (e: Exception) {
-                                    log.warn(
-                                        "Failed to migrate {}: {}: {}",
-                                        newSource,
-                                        e.javaClass.simpleName,
-                                        e.message,
-                                        e,
-                                    )
-                                    errorCount.incrementAndGet()
-                                    emitMutex.withLock {
-                                        send(
-                                            MigrateEvent.Error(
-                                                "Failed to migrate $newSource: ${e.javaClass.simpleName}: ${e.message}",
-                                            ),
-                                        )
+                        // #743 finding 9: the slot is taken before the coroutine exists, so the walk waits while every
+                        // slot is busy instead of parking one coroutine per file of the tree.
+                        launchWithPermit(transferSemaphore) {
+                            // gkrost/unidrive-cli#63: one opaque scratch path per transfer (not pre-created, as before). Naming it by the leaf
+                            // would make /a/x and /b/x share a path while they run side by side.
+                            val tempFile = tempDir.resolve("transfer-${java.util.UUID.randomUUID()}.part")
+                            try {
+                                val size =
+                                    withContext(Dispatchers.IO) {
+                                        source.download(newSource, tempFile)
                                     }
-                                } finally {
-                                    Files.deleteIfExists(tempFile)
+                                val uploaded = target.upload(tempFile, newTarget)
+                                manifest?.recordTransferred(item.path, item.id, newTarget, uploaded.id)
+                                migratedFiles.incrementAndGet()
+                                migratedSize.addAndGet(size)
+                                emitProgress()
+                            } catch (e: CancellationException) {
+                                // UD-286 + UD-289: cancel siblings + re-throw
+                                // so the channelFlow body's outer try/catch
+                                // sees CE and lets it escape via .toList().
+                                outerScope.cancel(e)
+                                throw e
+                            } catch (e: Exception) {
+                                log.warn(
+                                    "Failed to migrate {}: {}: {}",
+                                    newSource,
+                                    e.javaClass.simpleName,
+                                    e.message,
+                                    e,
+                                )
+                                errorCount.incrementAndGet()
+                                emitMutex.withLock {
+                                    send(
+                                        MigrateEvent.Error(
+                                            "Failed to migrate $newSource: ${e.javaClass.simpleName}: ${e.message}",
+                                        ),
+                                    )
                                 }
+                            } finally {
+                                Files.deleteIfExists(tempFile)
                             }
                         }
                     }
@@ -661,4 +661,14 @@ class CloudRelocator(
             return deleted
         }
     }
+}
+
+// #743 finding 9: takes a permit of [semaphore], suspending while none is free, and only then launches [block], which
+// gives the permit back however it ends (also when the coroutine is cancelled before it starts).
+private suspend fun CoroutineScope.launchWithPermit(
+    semaphore: Semaphore,
+    block: suspend CoroutineScope.() -> Unit,
+) {
+    semaphore.acquire()
+    launch(block = block).invokeOnCompletion { semaphore.release() }
 }
