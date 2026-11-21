@@ -34,6 +34,10 @@ object UploadRefusals {
         return if (planLimitDeadline(rest) != null) rest.substringAfter('|') else rest
     }
 
+    /** Whether [reason] is the provider's plan refusal ([PlanLimitException.REASON], bare or with its sentence) — the doctor's
+     * severity split reports such rows as information, not a warning (gkrost/unidrive-cli#852). */
+    fun isPlanLimit(reason: String): Boolean = isPlanLimitReason(reason)
+
     private fun afterWatermark(
         refusal: String?,
         mtime: Long?,

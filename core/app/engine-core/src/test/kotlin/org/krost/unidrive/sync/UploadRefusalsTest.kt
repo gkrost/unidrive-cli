@@ -42,4 +42,13 @@ class UploadRefusalsTest {
         assertTrue(UploadRefusals.holds(lookalike, 5, 0, now))
         assertEquals("${now - 1}|parent_gone: /docs", UploadRefusals.reason(parentGone, 5, 0))
     }
+
+    /** gkrost/unidrive-cli#852: the doctor's severity split reads the plan's token off a row's reason. */
+    @Test
+    fun `a plan reason is recognised bare or with its sentence, not a lookalike`() {
+        assertTrue(UploadRefusals.isPlanLimit("plan_limit"))
+        assertTrue(UploadRefusals.isPlanLimit("plan_limit: upgrade your plan"))
+        assertFalse(UploadRefusals.isPlanLimit("plan_limits exceeded"))
+        assertFalse(UploadRefusals.isPlanLimit("parent_gone: /docs"))
+    }
 }
