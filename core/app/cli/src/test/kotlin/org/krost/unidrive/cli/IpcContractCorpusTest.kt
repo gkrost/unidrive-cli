@@ -525,6 +525,95 @@ class IpcContractCorpusTest {
     }
 
     /**
+     * `sessions/delete-sweep.ndjson` (gkrost/unidrive-cli#851): the `delete_sweep` object of `daemon.status`, present
+     * only while a released hold's sweep is under way. The transcript is a marked unlink, the status that shows the
+     * sweep (total 3, remaining 2: the delete that landed is off the count), two more marked unlinks and the status
+     * whose `delete_sweep` is gone (remaining 0), replayed against a live mount daemon whose provider lets the deletes
+     * land. `sweep_id` and `started_at_ms` are the run's: each must be there with its JSON type, and the transcript's
+     * value stands in for it, like the trash session's run instants.
+     */
+    @Test
+    fun delete_sweep_session_matches_corpus_over_live_socket() = runBlocking {
+        val pairs = loadSession("delete-sweep")
+        assertEquals(5, pairs.size, "delete-sweep: three marked unlinks and two statuses")
+        val tempDir = TestScratch.directory("ipc-contract-delete-sweep")
+        val socketPath = tempDir.resolve("daemon.sock")
+        seedSweepRows(tempDir.resolve("state.db"))
+        val runtime = DaemonRuntime(
+            profileMode = ProfileMode.MOUNT,
+            profileName = "contract_profile",
+            lockFile = tempDir.resolve(".lock"),
+            dbPath = tempDir.resolve("state.db"),
+            syncRoot = tempDir,
+            socketPath = socketPath,
+            providerFactory = { StubProvider(deletesLand = true) },
+            providerHasQuota = false,
+        )
+        val daemonJob = launch { runtime.start() }
+        try {
+            awaitDaemonSocket(socketPath)
+            val endpoint = IpcEndpoint(socketPath, tempDir, "contract_profile")
+
+            suspend fun ask(request: String): String {
+                val channel = IpcAuthClient.connect(endpoint, IpcAuth.Scope.FULL)
+                try {
+                    channel.configureBlocking(false)
+                    channel.write(ByteBuffer.wrap((request + "\n").toByteArray()))
+                    return readFirstLine(channel, timeoutMs = 5_000)
+                } finally {
+                    channel.close()
+                }
+            }
+
+            for ((request, expectedReply) in pairs) {
+                val reply = Json.parseToJsonElement(ask(request)) as JsonObject
+                val expected = Json.parseToJsonElement(expectedReply) as JsonObject
+                val sweep = reply["delete_sweep"] as? JsonObject
+                val comparable =
+                    if (sweep != null) {
+                        val expectedSweep = expected.getValue("delete_sweep") as JsonObject
+                        val stoodIn =
+                            listOf("sweep_id", "started_at_ms").associateWith { key ->
+                                val value = sweep.getValue(key)
+                                assertTrue(
+                                    value is JsonPrimitive && (key == "sweep_id" || !value.isString),
+                                    "delete_sweep.$key is a primitive (a number for started_at_ms), got $value",
+                                )
+                                expectedSweep.getValue(key)
+                            }
+                        JsonObject(reply + ("delete_sweep" to JsonObject(sweep + stoodIn)))
+                    } else {
+                        reply
+                    }
+                assertJsonMatches(expected, comparable, "delete-sweep: reply to $request")
+            }
+        } finally {
+            runtime.close()
+            daemonJob.join()
+            runCatching { tempDir.toFile().deleteRecursively() }
+        }
+    }
+
+    /** The three rows the delete-sweep session is written against; remote rows whose delete the stub lets land. */
+    private fun seedSweepRows(dbPath: Path) {
+        fun row(path: String, id: String) =
+            SyncEntry(
+                path = path, remoteId = id, remoteHash = "etag-$id", remoteSize = 5,
+                remoteModified = Instant.ofEpochMilli(FIXED_REMOTE_MS), localMtime = null, localSize = null,
+                isFolder = false, isPinned = false, isHydrated = false, lastSynced = Instant.ofEpochMilli(FIXED_MTIME_MS),
+            )
+        val db = StateDatabase(dbPath)
+        db.initialize()
+        try {
+            db.upsertEntry(row("/sweep/a.txt", "rid-sweep-a"))
+            db.upsertEntry(row("/sweep/b.txt", "rid-sweep-b"))
+            db.upsertEntry(row("/sweep/c.txt", "rid-sweep-c"))
+        } finally {
+            db.close()
+        }
+    }
+
+    /**
      * `sessions/share.ndjson`: the `share.create` verb (§4.13) on a live mount daemon whose provider declares
      * `Capability.Share`: `daemon.status` lists the `share.create` capability, then the verb answers the link for the
      * path asked. The refusal shapes (a share-less provider) are `share.create.ndjson`, replayed against the default
@@ -1894,6 +1983,8 @@ class IpcContractCorpusTest {
         // gkrost/unidrive-cli#631: held open while a test connects its subscriber, so the start fill's list lands after
         // the subscription exists and the push is deterministic.
         private val listViewGate: CompletableDeferred<Unit>? = null,
+        // gkrost/unidrive-cli#851: when true the stub's deletes land, so the sweep session's marked unlinks answer ok.
+        private val deletesLand: Boolean = false,
     ) : CloudProvider {
         override val id: String = "stub"
         override val displayName: String = "Stub"
@@ -1945,7 +2036,9 @@ class IpcContractCorpusTest {
             onProgress: ((Long, Long) -> Unit)?,
         ): CloudItem = error("not used")
 
-        override suspend fun delete(remotePath: String, ifMatchETag: String?) = error("not used")
+        override suspend fun delete(remotePath: String, ifMatchETag: String?) {
+            if (!deletesLand) error("not used")
+        }
 
         override suspend fun createFolder(path: String): CloudItem = error("not used")
 

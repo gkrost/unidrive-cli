@@ -8,6 +8,7 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import org.krost.unidrive.RemoteChangeChannelStatus
 import org.krost.unidrive.engine.ViewNamespaces
+import org.krost.unidrive.hydration.DeleteSweepProgress
 import org.krost.unidrive.engine.ViewStatus
 import org.krost.unidrive.hydration.HydrationImpl
 import org.krost.unidrive.hydration.PauseGate
@@ -48,6 +49,21 @@ internal fun HydrationImpl.UploadHealth.toJson(): JsonObject =
 
 /** The `daemon.status` capability that says `uploads` names the uploads under way (`uploads.running`, archive#1200). */
 internal const val RUNNING_UPLOADS_CAPABILITY = "uploads.running"
+
+/**
+ * `delete_sweep` (gkrost/unidrive-cli#851): the whole-sweep progress of a released delete hold, present only while the
+ * sweep is under way (the last item landed, or no marked delete reached the engine within its quiet window). Counts
+ * only, no paths, like every shared record of the held deletes: `total` is the size the sweep started with,
+ * `remaining` decreases with every marked delete that lands, `started_at_ms` is when the first one did, and
+ * `sweep_id` changes with every sweep so a client keeps two consecutive bars apart.
+ */
+internal fun DeleteSweepProgress.Snapshot.toJson(): JsonObject =
+    buildJsonObject {
+        put("sweep_id", sweepId)
+        put("total", total)
+        put("remaining", remaining)
+        put("started_at_ms", startedAtMs)
+    }
 
 /** The `daemon.status` capability that says the daemon answers `hydration.matches_local` (archive#1219). */
 internal const val MATCHES_LOCAL_CAPABILITY = "hydration.matches_local"
@@ -99,6 +115,13 @@ internal const val OPEN_READ_ETAG_CAPABILITY = "hydration.open_read_etag"
 
 /** gkrost/unidrive-cli#717: a rmdir refused with not_empty names its `reason` and one `child` in the reply. */
 internal const val RMDIR_NOT_EMPTY_REASON_CAPABILITY = "hydration.rmdir_not_empty_reason"
+
+/**
+ * gkrost/unidrive-cli#851: `hydration.unlink` and `hydration.rmdir` take `sweep_total`, and while a released hold's
+ * sweep is under way daemon.status carries the `delete_sweep` object (the sweep's id, total, remaining and start time;
+ * counts only, no paths). A client's removal card shows "remaining of total" with an ETA and keeps two sweeps apart.
+ */
+internal const val SWEEP_PROGRESS_CAPABILITY = "hydration.sweep_progress"
 
 /** The `daemon.status` capability that says `ignore.explain` answers a batch of `paths` (gkrost/unidrive-cli#445). */
 internal const val IGNORE_EXPLAIN_BATCH_CAPABILITY = "ignore.explain_batch"
@@ -403,6 +426,7 @@ internal fun ipcStatusJson(requestCounts: Map<String, Long>): JsonObject =
  * says whether a folder is listed whole, rmdir takes discard_local, ignore.explain takes paths.
  * `hydration.open_read_etag` (gkrost/unidrive-cli#707): open_read names the etag of the version it served, where it is the row's.
  * `hydration.rmdir_not_empty_reason` (gkrost/unidrive-cli#717): a rmdir refused with not_empty names its reason and one child.
+ * `hydration.sweep_progress` (gkrost/unidrive-cli#851): unlink/rmdir take `sweep_total` and daemon.status carries `delete_sweep` while a released hold's sweep is under way.
  */
 internal fun daemonCapabilitiesJson(
     profileMode: ProfileMode,
@@ -415,7 +439,7 @@ internal fun daemonCapabilitiesJson(
 ): String =
     (
         profileMode.capabilities + NOTIFICATIONS_STATUS_CAPABILITY +
-            (if (hydration) listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY, HYDRATION_STAT_CAPABILITY, CANCEL_READ_CAPABILITY, HANDLE_STATUS_CAPABILITY, HYDRATION_LOCATE_CAPABILITY, SUBSCRIBE_REPLAY_CAPABILITY, LIST_COMPLETE_CAPABILITY, RMDIR_DISCARD_LOCAL_CAPABILITY, OPEN_READ_ETAG_CAPABILITY, RMDIR_NOT_EMPTY_REASON_CAPABILITY) else emptyList()) +
+            (if (hydration) listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY, HYDRATION_STAT_CAPABILITY, CANCEL_READ_CAPABILITY, HANDLE_STATUS_CAPABILITY, HYDRATION_LOCATE_CAPABILITY, SUBSCRIBE_REPLAY_CAPABILITY, LIST_COMPLETE_CAPABILITY, RMDIR_DISCARD_LOCAL_CAPABILITY, OPEN_READ_ETAG_CAPABILITY, RMDIR_NOT_EMPTY_REASON_CAPABILITY, SWEEP_PROGRESS_CAPABILITY) else emptyList()) +
             (if (uploadIgnore) listOf(IGNORE_EXPLAIN_BATCH_CAPABILITY) else emptyList()) +
             (if (viewNamespaces.isEmpty()) emptyList() else listOf("views", "view_page")) +
             (if (shareCapable) listOf(SHARE_CREATE_CAPABILITY) else emptyList()) +

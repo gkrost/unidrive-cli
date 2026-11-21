@@ -135,6 +135,10 @@ class IpcContractLevelTest {
                 // 6 (issue#796): the vault verbs (vault.unlock / vault.lock, ADMIN class) and the
                 // capability that names them on a daemon whose vault.enc exists.
                 setOf("verb:vault.unlock", "verb:vault.lock", "capability:vault-unlock:v1"),
+                // 7 (gkrost/unidrive-cli#851): a released hold's drain marks its deletes with `sweep_total`, and while
+                // the sweep is under way daemon.status carries the `delete_sweep` object (sweep_id, total, remaining,
+                // started_at_ms). Present only then, so the idle corpus reply pins the capability alone.
+                setOf("capability:hydration.sweep_progress"),
             )
     }
 }

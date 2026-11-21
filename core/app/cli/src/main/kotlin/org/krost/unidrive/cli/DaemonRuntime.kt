@@ -21,6 +21,7 @@ import org.krost.unidrive.engine.ViewCache
 import org.krost.unidrive.engine.ViewNamespaces
 import org.krost.unidrive.engine.ViewSpec
 import org.krost.unidrive.engine.throttleObservingSink
+import org.krost.unidrive.hydration.DeleteSweepProgress
 import org.krost.unidrive.hydration.HydrationEvent
 import org.krost.unidrive.hydration.HydrationImpl
 import org.krost.unidrive.hydration.HydrationIpcHandler
@@ -457,10 +458,15 @@ class DaemonRuntime(
                 if (hydration != null) {
                     log.info(hydrationLimitsLine(mount.transferBudgetSize, uploadQueueDepth, cacheAccessGraceMs))
                 }
+                // gkrost/unidrive-cli#851: the released-hold sweep progress the client's removal card reads. The
+                // hydration verbs feed it (a delete marked `sweep_total` declares the sweep, its ok counts one),
+                // daemon.status reads it; counts only, no paths.
+                val deleteSweep = DeleteSweepProgress()
                 val hydrationIpc: HydrationIpcHandler? =
                     // gkrost/unidrive-cli#24: the name_clash guard's first spellings persist in state.db, so a restart keeps them.
                     hydration?.let { h ->
-                        HydrationIpcHandler(h, spellingsStore = db?.let { StateDbNameSpellingStore(it) }).also { hydrationLink.bind(h, it) }
+                        HydrationIpcHandler(h, spellingsStore = db?.let { StateDbNameSpellingStore(it) }, deleteSweep = deleteSweep)
+                            .also { hydrationLink.bind(h, it) }
                     }
 
                 // The construction order from here on is explicit: every handler and the poller exist
@@ -902,6 +908,10 @@ class DaemonRuntime(
                         .put("views", hydration?.viewStatuses()?.takeIf { it.isNotEmpty() }?.let { viewsStatusJson(it).toString() })
                         // remote_incomplete: present only while a truncated cloud object is remembered (count only, no names).
                         .put("remote_incomplete", mount.remoteIncompleteCount().takeIf { it > 0 }?.let { remoteIncompleteJson(it).toString() })
+                        // delete_sweep (gkrost/unidrive-cli#851): present only while a released hold's sweep is under way —
+                        // the sweep's total, its decreasing remaining and its start time beside the sweep id, so a client's
+                        // removal card shows "remaining of total" with an ETA and keeps two consecutive sweeps apart.
+                        .put("delete_sweep", deleteSweep.snapshot()?.toJson()?.toString())
                         // paused (archive#778): present only while the daemon is paused; uploads and quota above keep reporting.
                         .put("paused", pause.current?.toJson()?.toString())
                         // locked (issue#796): present only while the vault data is unavailable — the
@@ -1238,7 +1248,7 @@ class DaemonRuntime(
         // verb, capability or field), so a client orders engine builds by what they answer; protocol_version moves only
         // on a breaking change and engine_version does not order dev builds. IpcContractLevelTest pins the IPC surface
         // of each level and fails when the surface changes without a raise.
-        const val IPC_CONTRACT_LEVEL: Int = 6
+        const val IPC_CONTRACT_LEVEL: Int = 7
 
         /**
          * Whether a successful `hydration.subscribe` is followed by the one guarded enumerate: only for a

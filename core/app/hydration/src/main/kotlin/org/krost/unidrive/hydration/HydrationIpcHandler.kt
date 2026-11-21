@@ -116,13 +116,19 @@ import java.util.concurrent.atomic.AtomicLong
  *                         {"ok":false,"error":"outside_scope"}      path outside the profile's sync_path set
  *                         {"ok":false,"error":"<msg>"}              EIO
  *
- *   unlink      request:  {"verb":"hydration.unlink","path":"/foo.txt"}
+ *   unlink      request:  {"verb":"hydration.unlink","path":"/foo.txt"[,"sweep_total":N]}
+ *                         sweep_total (gkrost/unidrive-cli#851, "hydration.sweep_progress" in capabilities): a released
+ *                         hold's drain marks each delete it sends with the hold's size, and the daemon reports the
+ *                         sweep's progress in daemon.status `delete_sweep`. Absent, the delete is an ordinary one and
+ *                         the sweep, if any, is untouched; a value past DeleteSweepProgress.SWEEP_TOTAL_MAX reads as
+ *                         absent.
  *               reply:    {"ok":true}
  *                         {"ok":false,"error":"busy"}               the upload is in flight (archive#87)
  *                         {"ok":false,"error":"path_is_folder"}     EISDIR
  *                         {"ok":false,"error":"<msg>"}              EIO
  *
- *   rmdir       request:  {"verb":"hydration.rmdir","path":"/foo"[,"recursive":true[,"discard_local":true]]}
+ *   rmdir       request:  {"verb":"hydration.rmdir","path":"/foo"[,"recursive":true[,"discard_local":true][,"sweep_total":N]]}
+ *                         sweep_total as unlink's: one rmdir, recursive or not, is one item, like the client counts it.
  *               reply:    {"ok":true}
  *                         {"ok":false,"error":"path_is_file"}       ENOTDIR
  *                         {"ok":false,"error":"not_empty"[,"reason":"..."][,"child":"..."]}
@@ -240,6 +246,9 @@ class HydrationIpcHandler(
     handleIdRun: String = randomHandleIdRun(),
     // gkrost/unidrive-cli#24: where the first spellings persist across a daemon restart; null = in memory only (tests).
     spellingsStore: NameSpellingStore? = null,
+    // gkrost/unidrive-cli#851: the released-hold sweep progress daemon.status reports; null = untracked (tests, a
+    // mirror daemon), so a marked delete still answers exactly as before.
+    private val deleteSweep: DeleteSweepProgress? = null,
     // gkrost/unidrive-cli#437: the clock of the outcome table; a seam for tests.
     private val nowMs: () -> Long = System::currentTimeMillis,
 ) {
@@ -720,10 +729,14 @@ class HydrationIpcHandler(
                 val path = pluckPath(request, "path") ?: return reply(ok = false, error = "missing_path")
                 // archive#1178: "permanent":true deletes for good (rm --permanent); the provider must be able to.
                 val permanent = request.bool("permanent") == true
+                // gkrost/unidrive-cli#851: the mark of a released hold's drain. Declared before the delete runs, so a
+                // sweep is under way while its first op may still fail and stay owed; counted when the delete landed.
+                val sweepMarked = sweepMark(request)
                 nameClash(rawPath(request, "path"))?.let { return it }
                 when (val r = hydration.unlink(path, permanent)) {
                     is UnlinkResult.Ok -> {
                         spellings.forget(rawPath(request, "path"))
+                        if (sweepMarked) deleteSweep?.completed()
                         reply(ok = true)
                     }
                     UnlinkResult.PathIsFolder -> reply(ok = false, error = "path_is_folder")
@@ -736,10 +749,13 @@ class HydrationIpcHandler(
                 // archive#1035: plain rmdir is strict; "recursive":true is the client meaning the whole tree.
                 val recursive = request.bool("recursive") == true
                 val permanent = request.bool("permanent") == true
+                // gkrost/unidrive-cli#851: one rmdir, recursive or not, is one item of the sweep, like the client counts it.
+                val sweepMarked = sweepMark(request)
                 nameClash(rawPath(request, "path"))?.let { return it }
                 when (val r = if (recursive && request.bool("discard_local") == true) hydration.rmdirDiscardingLocal(path, permanent) else hydration.rmdir(path, recursive, permanent)) {
                     is RmdirResult.Ok -> {
                         spellings.forget(rawPath(request, "path"))
+                        if (sweepMarked) deleteSweep?.completed()
                         reply(ok = true)
                     }
                     RmdirResult.PathIsFile -> reply(ok = false, error = "path_is_file")
@@ -901,6 +917,15 @@ class HydrationIpcHandler(
     private val spellings = NameSpellings(spellingsStore)
 
     private fun rawPath(request: HydrationRequest, key: String): String = request.string(key).orEmpty()
+
+    // gkrost/unidrive-cli#851: true when the request marks its delete as part of a released hold's sweep. The mark
+    // declares the sweep (or keeps it, or starts the next one) in [DeleteSweepProgress.declared] before the verb runs.
+    private fun sweepMark(request: HydrationRequest): Boolean {
+        val total = request.count("sweep_total", 0, 1..DeleteSweepProgress.SWEEP_TOTAL_MAX) ?: 0
+        if (total <= 0) return false
+        deleteSweep?.declared(total)
+        return true
+    }
 
     // The name_clash answer for a verb that names a name by another spelling than the one a client used for it first.
     private fun nameClash(vararg raws: String): String? =
