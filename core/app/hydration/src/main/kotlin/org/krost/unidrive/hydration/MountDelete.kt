@@ -1,9 +1,11 @@
 package org.krost.unidrive.hydration
 
+import org.krost.unidrive.BatchDeleteProvider
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.DeleteRequest
-import org.krost.unidrive.deleteManyOrEach
+import org.krost.unidrive.TypedDeleteProvider
+import org.krost.unidrive.engine.ReadOnlyTrashProvider
 import org.krost.unidrive.engine.RemoteGather
 import org.krost.unidrive.sync.PathNormalizer
 import org.krost.unidrive.sync.StateDatabase
@@ -25,9 +27,9 @@ internal class MountDelete(
     private val neverOnDrive: (String) -> Boolean,
     private val lastWholeListing: (String) -> Instant?,
 ) {
-    // The deletes by id of this mount, one window per provider (see [DeleteCoalescer]); a provider without batches is asked
-    // item by item, as before.
-    private val window = DeleteCoalescer({ items -> provider.deleteManyOrEach(items) })
+    private val window = (provider as? BatchDeleteProvider)
+        ?.takeUnless { it is ReadOnlyTrashProvider && !it.supportsNativeBatchDelete }
+        ?.let { DeleteCoalescer(it::deleteMany) }
 
     /**
      * Delete a path on the remote provider and update state.db.
@@ -59,6 +61,7 @@ internal class MountDelete(
         // gkrost/unidrive-cli#746 finding 3: for a folder, the rows below that the caller did not vet for this delete (made
         // or written while the provider delete ran). They stay alive; the paths of those kept are returned.
         keepBelow: ((SyncEntry) -> Boolean)? = null,
+        onFileDeleted: (suspend () -> Unit)? = null,
     ): Set<String> {
         // Read before the delete: the folder check below needs the row, and once the
         // row is tombstoned the alive view no longer answers for it.
@@ -70,18 +73,26 @@ internal class MountDelete(
             entryBefore != null && entryBefore.remoteId == null && entryBefore.isFolder &&
                 neverOnDrive(path)
         if (!neverOnDrive) {
+            // archive#402/#403: a row with a cloud id is deleted by that id: a lookup by path could reach a duplicate twin.
+            // archive#1178: that also holds for a delete for good, where the wrong twin would be unrecoverable.
+            val remoteId = entryBefore?.remoteId?.takeUnless { it.startsWith("local:") }
+            val remotePath = remotePathOf(path, entryBefore)
+            val fileWindow = window?.takeIf { !permanent && entryBefore?.isFolder == false }
+            if (remoteId != null && fileWindow != null) {
+                fileWindow.delete(DeleteRequest(remoteId, remotePath, isFolder = false)) { error ->
+                    if (error != null && !isAlreadyGone(error)) throw error
+                    finishFileDelete(path, onFileDeleted)
+                }
+                return emptySet()
+            }
+            // Send a folder delete directly after its guard so unrelated file batches cannot age the snapshot.
             if (entryBefore?.isFolder == true) checkFolderDeleteSnapshot(entryBefore)
             try {
-                // archive#402/#403: a row with a cloud id is deleted by that id: the twin of a duplicate remote name shares its
-                // remote path with the item that holds the name, and a lookup by path could reach either. archive#1178: the same
-                // holds for a delete for good, where the wrong twin would be unrecoverable.
-                val remoteId = entryBefore?.remoteId?.takeUnless { it.startsWith("local:") }
-                val remotePath = remotePathOf(path, entryBefore)
                 when {
                     permanent && remoteId != null -> provider.deletePermanentlyById(remoteId, remotePath)
                     permanent -> provider.deletePermanently(remotePath)
-                    // gkrost/unidrive-cli#634 B, #831: by id through the coalescing window, where concurrent deletes share a call.
-                    remoteId != null -> window.delete(DeleteRequest(remoteId, remotePath, entryBefore.isFolder))
+                    remoteId != null && provider is TypedDeleteProvider -> provider.deleteById(remoteId, remotePath, entryBefore.isFolder)
+                    remoteId != null -> provider.deleteById(remoteId, remotePath)
                     else -> provider.delete(remotePath)
                 }
             } catch (e: Exception) {
@@ -93,7 +104,7 @@ internal class MountDelete(
             }
         }
         if (entryBefore?.isFolder != true) {
-            db.markDeleted(path, mountDelete = true)
+            finishFileDelete(path, onFileDeleted)
             return emptySet()
         }
         // One transaction: no row is written below the folder between the read of the rows to keep and the tombstones.
@@ -106,6 +117,11 @@ internal class MountDelete(
             kept.forEach { db.upsertEntry(it) }
             kept.mapTo(HashSet()) { it.path }
         }
+    }
+
+    private suspend fun finishFileDelete(path: String, onFileDeleted: (suspend () -> Unit)?) {
+        db.markDeleted(path, mountDelete = true)
+        onFileDeleted?.invoke()
     }
 
     // A poll can lag another device's writes. A cascading delete must not erase a child the mount has never seen,

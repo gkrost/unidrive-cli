@@ -46,6 +46,12 @@ class ReadOnlyTrashProvider(
 
     override val strictNameMode: Boolean? get() = inner.strictNameMode
 
+    val supportsNativeBatchDelete: Boolean
+        get() = when (inner) {
+            is ReadOnlyTrashProvider -> inner.supportsNativeBatchDelete
+            else -> inner is BatchDeleteProvider
+        }
+
     // A path in a namespace, then [remoteId] of an item placed in one (null names none): the first one that holds refuses.
     private fun refuse(
         path: String,

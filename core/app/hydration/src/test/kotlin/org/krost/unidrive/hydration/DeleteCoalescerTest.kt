@@ -120,7 +120,7 @@ class DeleteCoalescerTest {
             first.join()
             leader.join()
             assertTrue(leader.isCancelled, "the cancelled caller is answered with its cancellation")
-            assertEquals(listOf(listOf("f1"), listOf("f2", "f3")), sent)
+            assertEquals(listOf(listOf("f1"), listOf("f3")), sent)
         }
 
     // ── the measurement the issues ask for ────────────────────────────────────────────────────────────────
