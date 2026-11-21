@@ -30,7 +30,7 @@ class HydrationUploadScopeMdcTest {
     @Test
     fun `hydration_upload_scope_carries_the_profile_mdc_across_suspensions`() =
         runBlocking {
-            val scope = DaemonRuntime.hydrationUploadScope("qwprofile")
+            val scope = hydrationUploadScope("qwprofile")
             try {
                 val seen =
                     scope
@@ -49,7 +49,7 @@ class HydrationUploadScopeMdcTest {
     @Test
     fun `hydration_upload_scope_carries_the_build_mdc`() =
         runBlocking {
-            val scope = DaemonRuntime.hydrationUploadScope("qwprofile")
+            val scope = hydrationUploadScope("qwprofile")
             try {
                 assertEquals(BuildInfo.COMMIT, scope.async { MDC.get("build") }.await())
             } finally {
@@ -60,7 +60,7 @@ class HydrationUploadScopeMdcTest {
     @Test
     fun `hydration_upload_scope_does_not_leak_the_profile_mdc_onto_the_caller`() =
         runBlocking {
-            val scope = DaemonRuntime.hydrationUploadScope("qwprofile")
+            val scope = hydrationUploadScope("qwprofile")
             try {
                 scope.async { delay(1) }.await()
                 assertNull(MDC.get("profile"))

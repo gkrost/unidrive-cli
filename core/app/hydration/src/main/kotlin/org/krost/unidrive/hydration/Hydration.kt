@@ -208,6 +208,29 @@ interface Hydration {
      * ([cancelDownload]); it may come while a request of that connection still runs.
      */
     fun onConnectionClosed(connectionId: String)
+
+    /**
+     * `history.retry` (gkrost/unidrive-cli#848): the admission checks of an upload round for [path] — the
+     * row still waits, nothing else is uploading the path, the cache copy is there, the bytes were not
+     * refused, no conflict and no cloud-version move — run now, and, when every one holds, the round itself,
+     * in place of the pending one, with the outcome recorded durably under [requestId] before the submission
+     * is queued ([payloadOperationId] is the failed row the request named: the idempotency payload).
+     * Acceptance means queued, not completed; the execution re-runs the checks, like any round's.
+     */
+    fun retryUpload(
+        path: String,
+        payloadOperationId: String,
+        requestId: String,
+    ): HistoryRetryOutcome = HistoryRetryOutcome.Refused("retry_unavailable")
+}
+
+/** The answer of [Hydration.retryUpload]; [Refused] carries one of the verb's error tokens verbatim. */
+sealed class HistoryRetryOutcome {
+    /** The round is queued in the place of the pending one; the new row carries this operation id. */
+    data class Admitted(val newOperationId: String) : HistoryRetryOutcome()
+
+    /** The admission refused; the token goes on the wire as the verb's `error` member. */
+    data class Refused(val token: String) : HistoryRetryOutcome()
 }
 
 sealed class OpenResult {
