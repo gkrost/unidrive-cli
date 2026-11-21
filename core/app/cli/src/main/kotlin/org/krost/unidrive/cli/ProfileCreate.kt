@@ -158,6 +158,8 @@ internal object ProfileCreator {
             put("mode", mode.wireName)
             put("label", label)
             put("sync_root", syncRoot)
+            // #65 P9: the same folder under its mount name; sync_root stays for one contract version, then goes for mount.
+            if (mode == ProfileMode.MOUNT) put("mount_root", syncRoot)
             put("default_profile", defaultProfile?.takeIf { it.isNotBlank() })
             put("warnings", JsonArray(warnings.map(::JsonPrimitive)))
             put(

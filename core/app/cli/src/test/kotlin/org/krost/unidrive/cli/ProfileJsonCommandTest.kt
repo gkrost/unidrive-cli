@@ -142,6 +142,16 @@ class ProfileJsonCommandTest {
         password = "hunter2-secret"
         """.trimIndent() + "\n"
 
+    @Test
+    fun `a mount profile in the list also carries mount_root, a modeless one does not`() {
+        writeConfig(twoProfiles)
+
+        val work = listed("work")
+        assertEquals("/tmp/work-root", work.getValue("sync_root").jsonPrimitive.content)
+        assertEquals("/tmp/work-root", work.getValue("mount_root").jsonPrimitive.content)
+        assertFalse("mount_root" in listed("old"))
+    }
+
     // -- profile default -------------------------------------------------------------
 
     private val oddConfig =

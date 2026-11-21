@@ -508,7 +508,10 @@ class ProfileListCommand : Callable<Int> {
                             put("type", type)
                             // Absent stays absent: a modeless profile is reported as such, never defaulted.
                             put("mode", rp.mode)
-                            put("sync_root", rp.sync_root ?: SyncConfig.defaultSyncRoot(type).toString())
+                            val root = rp.sync_root ?: SyncConfig.defaultSyncRoot(type).toString()
+                            put("sync_root", root)
+                            // #65 P9: a mount profile's root under its mount name; sync_root stays for one contract version.
+                            if (rp.mode == "mount") put("mount_root", root)
                             for (spec in ProfileSettings.SPECS) put(spec.key, spec.read(rp))
                             val auth = authState(main, name, rp, useVault = false)
                             put("auth", auth)

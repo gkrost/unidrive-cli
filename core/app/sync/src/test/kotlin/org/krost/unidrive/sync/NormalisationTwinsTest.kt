@@ -151,6 +151,53 @@ class NormalisationTwinsTest {
         }
 
     @Test
+    fun `renaming a decorated twin locally moves that twin and never the member at the name`() =
+        runTest {
+            seedTwins()
+            engine().syncOnce()
+            val renamed = "$TWINS/café renamed.txt"
+            val oldLocal = syncRoot.resolve(localPathOf(CAFE_NFD).removePrefix("/"))
+            Files.move(oldLocal, syncRoot.resolve(renamed.removePrefix("/")))
+            engine().syncOnce()
+
+            assertEquals(listOf(CAFE_NFD to renamed), provider.moves, "exactly the twin moved, by its own path")
+            assertEquals(contentOf(CAFE_NFD), provider.contentAt(renamed), "the twin's bytes are at the new name")
+            assertEquals(null, provider.contentAt(CAFE_NFD), "nothing is left at the old twin name")
+            assertEquals(contentOf(CAFE_NFC), provider.contentAt(CAFE_NFC), "the NFC member is untouched")
+            assertEquals(renamed, db.getEntry(renamed)?.remoteId, "the twin's row follows the rename")
+            assertEquals(CAFE_NFC, db.getEntry(CAFE_NFC)?.remoteId, "the member keeps its row and its name")
+            assertEquals(contentOf(CAFE_NFC), localBytes(CAFE_NFC), "the member's local file is untouched")
+
+            val rows = db.getAllEntries().associate { it.path to it.remoteId }
+            engine().syncOnce()
+            assertEquals(rows, db.getAllEntries().associate { it.path to it.remoteId }, "a second pass changes nothing")
+            assertEquals(1, provider.moves.size, "no second move")
+            assertTrue(provider.deleted.isEmpty(), "nothing is deleted: ${provider.deleted.map(::esc)}")
+        }
+
+    @Test
+    fun `renaming the member at the name remotely leaves its decorated twin its own bytes and name`() =
+        runTest {
+            seedTwins()
+            engine().syncOnce()
+            val renamed = "$TWINS/café renamed.txt"
+            provider.rename(CAFE_NFC, renamed)
+            engine().syncOnce()
+
+            assertEquals(contentOf(CAFE_NFD), provider.contentAt(CAFE_NFD), "the twin is untouched remotely")
+            assertEquals(contentOf(CAFE_NFC), provider.contentAt(renamed), "the renamed member keeps its bytes")
+            assertEquals(contentOf(CAFE_NFD), localBytes(localPathOf(CAFE_NFD)), "the twin's local copy holds its own bytes")
+            assertEquals(contentOf(CAFE_NFC), localBytes(localPathOf(renamed)), "the renamed member's local copy holds its bytes")
+            val files = db.getAllEntries().filter { !it.isFolder }
+            assertEquals(files.size, files.mapNotNull { it.remoteId }.toSet().size, "never one row for two cloud items")
+            assertTrue(provider.deleted.isEmpty(), "nothing is deleted remotely: ${provider.deleted.map(::esc)}")
+
+            val rows = db.getAllEntries().associate { it.path to it.remoteId }
+            engine().syncOnce()
+            assertEquals(rows, db.getAllEntries().associate { it.path to it.remoteId }, "a second pass changes nothing")
+        }
+
+    @Test
     fun `a second pass changes nothing`() =
         runTest {
             seedTwins()
@@ -219,6 +266,7 @@ class NormalisationTwinsTest {
         private val folders = LinkedHashSet<String>()
         val uploads = mutableListOf<String>()
         val deleted = mutableListOf<String>()
+        val moves = mutableListOf<Pair<String, String>>()
 
         fun folder(path: String) {
             folders += path
@@ -297,7 +345,19 @@ class NormalisationTwinsTest {
         override suspend fun move(
             fromPath: String,
             toPath: String,
-        ): CloudItem = error("not expected in this test")
+        ): CloudItem {
+            moves += fromPath to toPath
+            files[toPath] = files.remove(fromPath) ?: throw org.krost.unidrive.ProviderException("Item not found: $fromPath")
+            return item(toPath, false)
+        }
+
+        /** The by-path move a rename on this drive is: the item keeps its bytes and changes its path (and so its id). */
+        fun rename(
+            fromPath: String,
+            toPath: String,
+        ) {
+            files[toPath] = files.remove(fromPath) ?: error("no item at $fromPath")
+        }
 
         override suspend fun delta(
             cursor: String?,

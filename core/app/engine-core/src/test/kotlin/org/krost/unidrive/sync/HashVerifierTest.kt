@@ -67,6 +67,17 @@ class HashVerifierTest {
         }
     }
 
+    // A generated input, so no binary is vendored (#190): 10 000 000 bytes = two full 4 MiB blocks plus a partial last one.
+    // The answer comes from an independent Python hashlib implementation of Dropbox's documented algorithm, not from
+    // this code. It is not a vector Dropbox itself published.
+    @Test
+    fun `dropbox content hash of a generated three-block input with a partial last block`() {
+        val file = tempDir.resolve("generated-10m.bin")
+        Files.write(file, ByteArray(10_000_000) { (it % 251).toByte() })
+
+        assertEquals("adcedd7b0933aef0bdf54a73c43b77526b6ff90b1a303d2cd235f44161b65177", HashVerifier.computeDropboxContentHash(file))
+    }
+
     @Test
     fun `MD5 and SHA-256 known answers`() {
         assertEquals("d41d8cd98f00b204e9800998ecf8427e", HashVerifier.computeMd5Hex(createFile("empty.txt", "")))
