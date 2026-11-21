@@ -98,6 +98,12 @@
             "minimum": 0,
             "maximum": 3600000
           },
+          "tombstone_retention_days": {
+            "description": "How many days a deleted entry's record (a DELETED row of state.db) is kept before the daemon's start purges it and shrinks the file. A record that a rename, a replace or an upload still under way names is kept at any age. 0 = keep every record. Default 90.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3650
+          },
           "honor_gitignore": {
             "description": "Also read `.gitignore` files as ignore rules for uploads, beside `.unidrive.ignore`. Default false.",
             "type": "boolean"

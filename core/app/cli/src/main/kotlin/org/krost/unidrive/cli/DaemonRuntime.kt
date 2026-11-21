@@ -105,6 +105,8 @@ class DaemonRuntime(
     private val uploadQueueDepth: Int = HydrationImpl.DEFAULT_UPLOAD_QUEUE_DEPTH,
     // issue#72: how long a hydration-cache file stays un-evictable after its last use (profile key `cache_access_grace_ms`).
     private val cacheAccessGraceMs: Long = HydrationImpl.CACHE_ACCESS_GRACE_MS,
+    // issue#863: the DELETED rows older than this go with the compaction at start (key `tombstone_retention_days`; zero keeps all).
+    private val tombstoneRetention: java.time.Duration = java.time.Duration.ZERO,
     private val deleteGuards: DeleteGuards = DeleteGuards(),
     // archive#603 (U4): the profile's hosting mode, resolved and gated by `daemon run` before this runtime is
     // constructed. A mount daemon serves the hydration verbs, sync.enumerate and the poller, and routes
@@ -284,7 +286,7 @@ class DaemonRuntime(
 
             db = openStateDatabase()
             // Before anything is served: the one rewrite of a fragmented file holds it alone (seconds on a large drive).
-            runCatching { db!!.compactOnce() }.onFailure { log.warn("compacting state.db at start failed", it) }
+            runCatching { db!!.compactOnce(tombstoneRetention = tombstoneRetention) }.onFailure { log.warn("compacting state.db at start failed", it) }
 
             // archive#655: seed the quota snapshot from the sync_state cache (the same tuple
             // `quota` persists), so the very first status already shows the last known

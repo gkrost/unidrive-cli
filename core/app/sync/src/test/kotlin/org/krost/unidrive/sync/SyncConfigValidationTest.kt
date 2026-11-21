@@ -83,6 +83,19 @@ class SyncConfigValidationTest {
     }
 
     @Test
+    fun `tombstone_retention_days defaults to ninety days, takes zero to keep all, and refuses a value out of range`() {
+        val bare = "[providers.p]" + "\n"
+        assertEquals(DEFAULT_TOMBSTONE_RETENTION_DAYS, SyncConfig.parse(bare, "p").tombstoneRetentionDays("p"))
+        assertEquals(90, DEFAULT_TOMBSTONE_RETENTION_DAYS)
+        assertEquals(0, SyncConfig.parse(bare + "tombstone_retention_days = 0" + "\n", "p").tombstoneRetentionDays("p"))
+        assertEquals(30, SyncConfig.parse(bare + "tombstone_retention_days = 30" + "\n", "p").tombstoneRetentionDays("p"))
+        for (value in listOf(-1, 3651)) {
+            val message = refusal(bare + "tombstone_retention_days = $value" + "\n")
+            assertTrue("tombstone_retention_days" in message, "the message names the key: $message")
+        }
+    }
+
+    @Test
     fun `a profile without the daemon limit keys gets the current constants`() {
         val config = SyncConfig.parse("[providers.p]\ntype = \"internxt\"\n", "p")
         assertNull(config.maxConcurrentTransfersOverride("p"), "null = the provider's audited cap stays in force")

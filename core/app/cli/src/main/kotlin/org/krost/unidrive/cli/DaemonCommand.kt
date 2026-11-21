@@ -15,6 +15,7 @@ import org.krost.unidrive.sync.lookupProcess
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.SyncEngine
 import org.krost.unidrive.sync.cacheAccessGraceMs
+import org.krost.unidrive.sync.tombstoneRetentionDays
 import org.krost.unidrive.sync.maxConcurrentTransfersOverride
 import org.krost.unidrive.sync.uploadQueueDepth
 import picocli.CommandLine.Command
@@ -170,7 +171,6 @@ class DaemonRunCommand : Runnable {
         )
         val pollIntervalMs = EnumeratePoller.effectiveIntervalMs(pollInterval, config.daemonPollSeconds(profile.name))
         val backups = config.backups(profile.name)
-
         // archive#578: refuse an out-of-range override here, before a daemon starts with it.
         uploadConcurrency?.let { n ->
             if (n !in 1..org.krost.unidrive.internxt.InternxtConfig.MAX_UPLOAD_CONCURRENCY) {
@@ -205,6 +205,7 @@ class DaemonRunCommand : Runnable {
             maxConcurrentTransfersOverride = config.maxConcurrentTransfersOverride(profile.name),
             uploadQueueDepth = config.uploadQueueDepth(profile.name),
             cacheAccessGraceMs = config.cacheAccessGraceMs(profile.name),
+            tombstoneRetention = java.time.Duration.ofDays(config.tombstoneRetentionDays(profile.name).toLong()),
             deleteGuards = deleteGuardsFor(config, profile.name),
             profileMode = mode,
             // archive#655: the quota snapshot's TTL (profile config quota_refresh_minutes, default 15

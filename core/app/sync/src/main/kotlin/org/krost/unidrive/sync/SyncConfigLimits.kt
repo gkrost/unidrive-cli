@@ -65,3 +65,18 @@ internal fun validateDaemonLimit(
         throw ConfigValueException("[providers.$profile] $key = $value: must be a whole number from $min to $max.")
     }
 }
+
+/**
+ * issue#863: the days a DELETED row is kept before the daemon's start-up compaction purges it, for a profile without
+ * `tombstone_retention_days`. Ninety, not thirty: the folder-delete guard passes over a listed ghost while its row is
+ * DELETED (gkrost/unidrive-cli#853), and Internxt listed such ghosts for days after the delete; a purged row brings the
+ * guard's `remote_unobserved` refusal back for a ghost still listed.
+ */
+const val DEFAULT_TOMBSTONE_RETENTION_DAYS: Int = 90
+
+/** The ceiling of `tombstone_retention_days` (ten years). */
+const val MAX_TOMBSTONE_RETENTION_DAYS: Int = 3650
+
+/** issue#863: this profile's tombstone retention in days; 0 keeps every DELETED row. */
+fun SyncConfig.tombstoneRetentionDays(profileName: String): Int =
+    providers[profileName]?.tombstoneRetentionDays ?: DEFAULT_TOMBSTONE_RETENTION_DAYS
