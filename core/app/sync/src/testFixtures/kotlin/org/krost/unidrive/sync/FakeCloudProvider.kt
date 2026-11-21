@@ -600,6 +600,10 @@ class FakeCloudProvider : CloudProvider {
     // server, but with no place in the tree because a folder above them is gone for good.
     var deltaUnreachableIds: Set<String> = emptySet()
 
+    // Of those, the ones below a folder outside the drive root (DeltaPage.outsideRootIds), and those top-level folders.
+    var deltaOutsideRootIds: Set<String> = emptySet()
+    var deltaOutsideRootFolders: Set<String> = emptySet()
+
     // The entries delta() could not read (DeltaPage.skippedPaths, archive#1234): named in the page, so a
     // test can pin that the engine persists them for the status.
     var deltaSkippedPaths: List<String> = emptyList()
@@ -672,6 +676,8 @@ class FakeCloudProvider : CloudProvider {
                 hasMore = idx < deltaPages.size - 1,
                 complete = deltaComplete,
                 unreachableIds = deltaUnreachableIds,
+                outsideRootIds = deltaOutsideRootIds,
+                outsideRootFolders = deltaOutsideRootFolders,
                 skippedPaths = deltaSkippedPaths,
             )
         }
@@ -681,6 +687,8 @@ class FakeCloudProvider : CloudProvider {
             hasMore = false,
             complete = deltaComplete,
             unreachableIds = deltaUnreachableIds,
+            outsideRootIds = deltaOutsideRootIds,
+            outsideRootFolders = deltaOutsideRootFolders,
             skippedPaths = deltaSkippedPaths,
         )
     }

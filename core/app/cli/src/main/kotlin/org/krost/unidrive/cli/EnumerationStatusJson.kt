@@ -34,6 +34,10 @@ internal fun EnumerationStatus.toJson(): JsonObject =
         lastScanComplete?.let { put("last_scan_complete", it) }
         // Absent when none: the items of the last full listing below a folder that is gone for good.
         unreachableItems?.let { put("unreachable_items", it) }
+        // Absent when none: the items of the last full listing below a folder outside the drive root (a device backup),
+        // and how many such top-level folders; listed and held, not part of the drive, not counted as unreachable.
+        outsideRootItems?.let { put("outside_root_items", it) }
+        outsideRootFolders?.let { put("outside_root_folders", it) }
         // Absent when none: the tracked items the last full listing did not return because it ended incomplete.
         droppedItems?.let { put("dropped_items", it) }
         // Absent when none: the remote items kept under a decorated local name, because another item has their path.

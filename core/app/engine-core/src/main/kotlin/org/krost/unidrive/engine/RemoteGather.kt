@@ -105,6 +105,9 @@ class RemoteGather(
     @Volatile
     var fastBootstrapActive = false
 
+    /** The trees below a folder outside the drive root that the last full listing found ([OutsideRoot]). */
+    val outsideRoot = OutsideRoot(db)
+
     /** True when state.db tracks [remotePath] (see [RemoteOperationGuard.isTracked]). */
     fun isTracked(remotePath: String): Boolean = guard.isTracked(remotePath)
 
@@ -135,7 +138,8 @@ class RemoteGather(
     private fun withoutBackups(page: DeltaPage): DeltaPage {
         if (page.items.none { it.backup }) return page
         val (backups, rest) = page.items.partition { it.backup }
-        return page.copy(items = rest, unreachableIds = page.unreachableIds + backups.map { it.id })
+        val ids = backups.map { it.id }
+        return page.copy(items = rest, unreachableIds = page.unreachableIds + ids, outsideRootIds = page.outsideRootIds + ids)
     }
 
     // The names of the top-level items state.db holds alive, except the roots of [except]: a collision with one of them is
@@ -765,7 +769,7 @@ class RemoteGather(
         // The remote ids the provider listed but could not place because a folder above them is
         // permanently gone (DeltaPage.unreachableIds). The pass is complete without them; the
         // absence sweep must not read their silence as a deletion.
-        val unreachable = HashSet<String>()
+        val unreachable = GatheredUnreachable()
 
         // The entries the provider could not read (DeltaPage.skippedPaths): persisted with the
         // completeness flag so the status can name the blocked folder (archive#1234).
@@ -861,7 +865,7 @@ class RemoteGather(
                     allComplete = false
                 }
                 val placed = placeTrashed(page)
-                unreachable.addAll(placed.unreachableIds)
+                unreachable.add(placed)
                 skippedPaths.addAll(page.skippedPaths)
                 return placed
             }
@@ -958,7 +962,7 @@ class RemoteGather(
         val collisionLoserIds = reportCollisions(collisions, readOnly)
 
         if (isFullSync && allComplete) {
-            detectMissingAfterFullSync(changes, collisionLoserIds, listingStartedAt(gatherStartedAt, activeScan), unreachable)
+            detectMissingAfterFullSync(changes, collisionLoserIds, listingStartedAt(gatherStartedAt, activeScan), unreachable.ids)
         } else if (isFullSync) {
             val msg =
                 "UD-360: at least one delta page returned complete=false; " +
@@ -1119,17 +1123,14 @@ class RemoteGather(
 
     /**
      * How many items the last FULL listing could not place because a folder above them is permanently gone (see
-     * [DeltaPage.unreachableIds]); what `daemon.status` reports. An incremental pass sees only what changed, so it
-     * leaves the figure of the last full listing alone.
+     * [DeltaPage.unreachableIds]), and how many hang below a folder outside the drive root ([OutsideRoot]); what
+     * `daemon.status` reports. An incremental pass sees only what changed, so it leaves the figures of the last full
+     * listing alone.
      */
     fun recordUnreachable(
-        unreachableIds: Set<String>,
+        unreachable: GatheredUnreachable,
         fullListing: Boolean,
-    ) {
-        if (!fullListing) return
-        val value = unreachableIds.size.toString()
-        if (db.getSyncState(UNREACHABLE_ITEMS_KEY) != value) db.setSyncState(UNREACHABLE_ITEMS_KEY, value)
-    }
+    ) = outsideRoot.record(unreachable, fullListing)
 
     // Adds the folders above [path] to [into]: the tree in state.db stays whole. The folder a held row (one of the
     // unreachable items) hangs below is held with it, even if the provider reports that very folder as gone (it is what the

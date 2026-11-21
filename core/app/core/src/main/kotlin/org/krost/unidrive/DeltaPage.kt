@@ -24,10 +24,15 @@ package org.krost.unidrive
  * answer) is not this: its items are left out and the page is not [complete].
  * The same set names the items of a tree that is not part of the drive at all (Internxt: a device folder of the
  * desktop app's backups, which has no parent): the provider leaves them out of [items] and keeps them out of
- * writes, and the engine treats their rows as it does those above.
+ * writes, and the engine treats their rows as it does those above. Those ids are named in [outsideRootIds] as well.
  * It also names the items a listing returned but could not read (OneDrive: an item whose JSON does not decode): they
  * are left out of [items] and their rows are held the same way.
  * Providers that always place every item leave the default empty set.
+ *
+ * [outsideRootIds] are the ids of [unreachableIds] that hang below a folder outside the drive root (a tree of its own,
+ * such as a device backup): listed and in place, only not part of the drive. The engine holds their rows as it holds
+ * the other unreachable ones, and counts them apart, so a client can say what they are. [outsideRootFolders] are the
+ * top-level folders of those trees. Neither says anything about whether the pass is [complete].
  *
  * [skippedPaths] name, in the provider's own path spelling, the entries the listing could not *read* —
  * a directory or file whose listing or stat failed, so items under it are not in [items] and the page is
@@ -41,5 +46,7 @@ data class DeltaPage(
     val hasMore: Boolean,
     val complete: Boolean = true,
     val unreachableIds: Set<String> = emptySet(),
+    val outsideRootIds: Set<String> = emptySet(),
+    val outsideRootFolders: Set<String> = emptySet(),
     val skippedPaths: List<String> = emptyList(),
 )
