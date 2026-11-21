@@ -108,4 +108,22 @@ class IdAddressedDefaultsTest {
             assertEquals(true, e.message?.contains("deleteById"), e.message)
             assertEquals(true, e.message?.contains("/a.txt"), e.message)
         }
+
+    // gkrost/unidrive-cli#831: a provider without batched deletes is asked item by item, and each item gets its own answer.
+    @Test
+    fun `the batched delete of a provider without batches is the per-item loop, one answer per item`() =
+        runBlocking {
+            val unique = PathOnlyProvider(allowsDuplicateNames = false)
+            val items = listOf(DeleteRequest("id-1", "/a.txt", isFolder = false), DeleteRequest("id-2", "/b", isFolder = true))
+
+            assertEquals(listOf(null, null), unique.deleteManyOrEach(items))
+            assertEquals(listOf("delete /a.txt", "delete /b"), unique.calls)
+
+            val twins = PathOnlyProvider(allowsDuplicateNames = true)
+            val answers = twins.deleteManyOrEach(items)
+            assertEquals(2, answers.size, "a refusal of the first item does not stop the second")
+            assertEquals(true, answers.all { it is UnsupportedOperationException }, answers.toString())
+            assertEquals(emptyList(), twins.calls)
+            assertEquals(emptyList(), unique.deleteManyOrEach(emptyList()))
+        }
 }

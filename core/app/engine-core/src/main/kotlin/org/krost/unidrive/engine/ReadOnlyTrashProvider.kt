@@ -1,9 +1,12 @@
 package org.krost.unidrive.engine
 
 import org.krost.unidrive.CloudItem
+import org.krost.unidrive.BatchDeleteProvider
 import org.krost.unidrive.CloudProvider
+import org.krost.unidrive.DeleteRequest
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.TypedDeleteProvider
+import org.krost.unidrive.deleteManyOrEach
 import java.nio.file.Path
 
 /** A write was addressed to the trash namespace, which the engine never writes to. */
@@ -36,30 +39,23 @@ class ReadOnlyTrashProvider(
     private val trash: TrashNamespace,
     private val views: ViewNamespaces = ViewNamespaces.NONE,
     private val backups: BackupsNamespace = BackupsNamespace(),
-) : CloudProvider by inner, TypedDeleteProvider {
+) : CloudProvider by inner, TypedDeleteProvider, BatchDeleteProvider {
     override fun newNameIssue(path: String): String? = inner.newNameIssue(path)
 
     override fun existingNameIssue(path: String): String? = inner.existingNameIssue(path)
 
     override val strictNameMode: Boolean? get() = inner.strictNameMode
 
-    private fun refuse(path: String) {
+    // A path in a namespace, then [remoteId] of an item placed in one (null names none): the first one that holds refuses.
+    private fun refuse(
+        path: String,
+        remoteId: String? = null,
+    ) {
         val refusal =
             when {
                 trash.contains(path) -> TrashReadOnlyException(path)
                 backups.contains(path) -> BackupsReadOnlyException(path)
                 views.contains(path) -> ViewReadOnlyException(path)
-                else -> null
-            }
-        if (refusal != null) throw refusal
-    }
-
-    private fun refuseId(
-        remoteId: String?,
-        path: String,
-    ) {
-        val refusal =
-            when {
                 trash.holdsId(remoteId) -> TrashReadOnlyException(path)
                 backups.holdsId(remoteId) -> BackupsReadOnlyException(path)
                 views.holdsId(remoteId) -> ViewReadOnlyException(path)
@@ -75,8 +71,7 @@ class ReadOnlyTrashProvider(
         ifMatchETag: String?,
         onProgress: ((Long, Long) -> Unit)?,
     ): CloudItem {
-        refuse(remotePath)
-        refuseId(existingRemoteId, remotePath)
+        refuse(remotePath, existingRemoteId)
         return inner.upload(localPath, remotePath, existingRemoteId, ifMatchETag, onProgress)
     }
 
@@ -92,8 +87,7 @@ class ReadOnlyTrashProvider(
         remoteId: String,
         remotePath: String,
     ) {
-        refuse(remotePath)
-        refuseId(remoteId, remotePath)
+        refuse(remotePath, remoteId)
         inner.deleteById(remoteId, remotePath)
     }
 
@@ -102,10 +96,25 @@ class ReadOnlyTrashProvider(
         remotePath: String,
         isFolder: Boolean,
     ) {
-        refuse(remotePath)
-        refuseId(remoteId, remotePath)
+        refuse(remotePath, remoteId)
         if (inner is TypedDeleteProvider) inner.deleteById(remoteId, remotePath, isFolder)
         else inner.deleteById(remoteId, remotePath)
+    }
+
+    // gkrost/unidrive-cli#831: each guarded item is refused on its own (its answer); the others go on as one batch.
+    override suspend fun deleteMany(items: List<DeleteRequest>): List<Throwable?> {
+        val answers = arrayOfNulls<Throwable>(items.size)
+        val passed = items.indices.filter { i ->
+            try {
+                refuse(items[i].remotePath, items[i].remoteId)
+                true
+            } catch (e: ProviderException) {
+                answers[i] = e
+                false
+            }
+        }
+        inner.deleteManyOrEach(passed.map { items[it] }).forEachIndexed { k, answer -> answers[passed[k]] = answer }
+        return answers.toList()
     }
 
     // archive#1178: a delete for good is a delete; `CloudProvider by inner` would hand it past the guard.
@@ -118,8 +127,7 @@ class ReadOnlyTrashProvider(
         remoteId: String,
         remotePath: String,
     ) {
-        refuse(remotePath)
-        refuseId(remoteId, remotePath)
+        refuse(remotePath, remoteId)
         inner.deletePermanentlyById(remoteId, remotePath)
     }
 
@@ -149,7 +157,7 @@ class ReadOnlyTrashProvider(
     ): CloudItem {
         refuse(fromPath)
         refuse(toPath)
-        refuseId(remoteId, fromPath)
+        refuse(fromPath, remoteId)
         return inner.moveById(remoteId, fromPath, toPath)
     }
 }

@@ -8,11 +8,15 @@ import org.krost.unidrive.DeltaPage
 import org.krost.unidrive.QuotaInfo
 import org.krost.unidrive.ScanContext
 import org.krost.unidrive.TypedDeleteProvider
+import org.krost.unidrive.BatchDeleteProvider
+import org.krost.unidrive.DeleteRequest
+import org.krost.unidrive.deleteManyOrEach
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 import org.krost.unidrive.testing.TestScratch
 
 /**
@@ -88,6 +92,50 @@ class ReadOnlyTrashProviderTest {
             assertEquals(listOf("live /Live.txt true"), calls)
             provider.deleteById("live", "/Live.txt", true)
             assertEquals(listOf("deleteById live /Live.txt"), inner.calls)
+        }
+
+    @Test
+    fun `a batched delete refuses each guarded item on its own and forwards the others as one batch`() =
+        runTest {
+            val batches = mutableListOf<List<String>>()
+            val batching =
+                object : CloudProvider by inner, BatchDeleteProvider {
+                    override suspend fun deleteMany(items: List<DeleteRequest>): List<Throwable?> {
+                        batches += items.map { it.remoteId }
+                        return items.map { null }
+                    }
+                }
+            val guarded = ReadOnlyTrashProvider(batching, trash)
+            enterTrash()
+
+            val answers =
+                guarded.deleteManyOrEach(
+                    listOf(
+                        DeleteRequest("live", "/Live.txt", isFolder = false),
+                        DeleteRequest("f-in-trash", "/Old/a.txt", isFolder = false),
+                        DeleteRequest("other", "/Papierkorb/x.txt", isFolder = false),
+                        DeleteRequest("b", "/B.txt", isFolder = false),
+                    ),
+                )
+
+            assertEquals(listOf(listOf("live", "b")), batches, "only the unguarded items reach the provider, in one batch")
+            assertEquals(null, answers[0])
+            assertTrue(answers[1] is TrashReadOnlyException)
+            assertTrue(answers[2] is TrashReadOnlyException)
+            assertEquals(null, answers[3])
+        }
+
+    @Test
+    fun `a batched delete over a provider without batches is the per-item loop behind the guard`() =
+        runTest {
+            enterTrash()
+            val answers =
+                provider.deleteManyOrEach(
+                    listOf(DeleteRequest("live", "/Live.txt", isFolder = false), DeleteRequest("f-in-trash", "/Old/a.txt", isFolder = false)),
+                )
+            assertEquals(listOf("deleteById live /Live.txt"), inner.calls)
+            assertEquals(null, answers[0])
+            assertTrue(answers[1] is TrashReadOnlyException)
         }
 
     @Test

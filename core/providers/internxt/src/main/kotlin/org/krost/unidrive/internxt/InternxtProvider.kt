@@ -44,7 +44,7 @@ class InternxtProvider(
     credentials: InternxtCredentials? = null,
     // Tests hand in a crypto that counts its seed derivations; production uses the default one.
     private val crypto: InternxtCrypto = InternxtCrypto(),
-) : CloudProvider, TypedDeleteProvider,
+) : CloudProvider, TypedDeleteProvider, BatchDeleteProvider,
     org.krost.unidrive.RequestStatusReporting {
     override val id = "internxt"
     override val displayName = "Internxt Drive"
@@ -2727,6 +2727,18 @@ class InternxtProvider(
 
     override suspend fun deleteById(remoteId: String, remotePath: String, isFolder: Boolean) =
         deleteByIdWithHint(remoteId, remotePath, isFolder)
+
+    // gkrost/unidrive-cli#831: the listed items up to 50 per trash call, every other item by its single delete ([trashInBatches]).
+    override suspend fun deleteMany(items: List<DeleteRequest>): List<Throwable?> =
+        trashInBatches(items, ::listedTrashKind, api::trashItems, listedParents::forget, single = { deleteByIdWithHint(it.remoteId, it.remotePath, it.isFolder) })
+
+    // The wire kind of an item a listing named, once the refusals the listing settles passed (as the single fast path runs them).
+    private suspend fun listedTrashKind(item: DeleteRequest): String? {
+        refuseBackupDevice(item.remoteId, item.remotePath)
+        val listed = listedParents[item.remoteId] ?: return null
+        refuseOutsideDrive(item.remoteId, listed.parentUuid, listed.isFolder, item.remotePath)
+        return if (listed.isFolder) "folder" else "file"
+    }
 
     private suspend fun deleteByIdWithHint(remoteId: String, remotePath: String, isFolder: Boolean) {
         refuseBackupDevice(remoteId, remotePath)

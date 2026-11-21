@@ -136,7 +136,10 @@ internal class FakeDrive(
     // Answers both sync listings with this HTTP status on every request (404: the server does not serve
     // them, and a gather — a poll included, archive#312 — falls back to the offset listing).
     val syncStatus: Int? = null,
+    val trashStatus: (List<String>) -> HttpStatusCode = { HttpStatusCode.OK },
 ) {
+    // The items of each `POST /storage/trash/add`, as the request body named them, in order.
+    val trashCalls = CopyOnWriteArrayList<List<String>>()
     val metaRequests = CopyOnWriteArrayList<String>()
     val deviceRequests = AtomicInteger()
 
@@ -251,6 +254,12 @@ internal class FakeDrive(
                 // Anything that would change the drive is recorded and answered, so a test can say that none was sent.
                 request.method != HttpMethod.Get -> {
                     writes += "${request.method.value} $path"
+                    if (path.endsWith("/storage/trash/add")) {
+                        val body = (request.body as? io.ktor.http.content.TextContent)?.text.orEmpty()
+                        val ids = Regex("\"uuid\":\"([^\"]+)\"").findAll(body).map { it.groupValues[1] }.toList()
+                        trashCalls += ids
+                        return@MockEngine respond("{}", trashStatus(ids), fakeJsonHeaders)
+                    }
                     respondJson("{}")
                 }
                 path.endsWith("/meta") -> {
