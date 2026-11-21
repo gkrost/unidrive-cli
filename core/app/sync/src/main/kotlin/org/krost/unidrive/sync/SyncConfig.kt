@@ -517,6 +517,13 @@ data class RawProvider(
     val upload_concurrency: Int? = null,
     val upload_chunk_mb: Int? = null,
     val upload_cutoff_mb: Int? = null,
+    // issue#72: the daemon's transfer budget (sync pass + mount uploads together); absent = the provider's audited
+    // cap, clamped to it at the engine's guard, never past the audit. `unidrive sync` keeps the audited cap.
+    val max_concurrent_transfers: Int? = null,
+    // issue#72: mount uploads waiting before open_write back-pressures; absent = 256. A mount profile only.
+    val upload_queue_depth: Int? = null,
+    // issue#72: how long a hydration-cache file stays un-evictable after its last use, in ms; absent = 60000. Mount only.
+    val cache_access_grace_ms: Long? = null,
 )
 
 @Serializable
@@ -555,6 +562,7 @@ class NoDefaultProfileException(message: String) : IllegalStateException(message
 /** A config value the schema refuses (out of range, not one of the enum spellings); the message names the key. The CLI exits 78. */
 class ConfigValueException(message: String) : IllegalArgumentException(message)
 
+@Suppress("TooManyFunctions") // one accessor per documented profile-key family; the count is the config surface's, not complexity
 data class SyncConfig(
     val syncRoot: Path,
     val pollInterval: Int,
@@ -662,6 +670,9 @@ data class SyncConfig(
         val conflictOverrides: Map<String, ConflictPolicy> = emptyMap(),
         val excludePatterns: List<String> = emptyList(),
         val hydrationCacheMaxBytes: Long? = null,
+        val maxConcurrentTransfersOverride: Int? = null,
+        val uploadQueueDepth: Int? = null,
+        val cacheAccessGraceMs: Long? = null,
         val bulkReapGuard: Boolean = true,
         val topLevelGuard: Boolean = true,
         val daemonPollSeconds: Int? = null,
@@ -1143,7 +1154,10 @@ data class SyncConfig(
                     ?: defaultSyncRoot(providerType)
             val logFile = general.log_file?.let { Paths.get(expandTilde(it)) }
             val providerConfigs =
-                providers.mapValues { (_, rp) ->
+                providers.mapValues { (name, rp) ->
+                    validateDaemonLimit(name, "max_concurrent_transfers", rp.max_concurrent_transfers?.toLong(), 1, MAX_CONCURRENT_TRANSFERS.toLong())
+                    validateDaemonLimit(name, "upload_queue_depth", rp.upload_queue_depth?.toLong(), 1, MAX_UPLOAD_QUEUE_DEPTH.toLong())
+                    validateDaemonLimit(name, "cache_access_grace_ms", rp.cache_access_grace_ms, 0, MAX_CACHE_ACCESS_GRACE_MS)
                     ProviderConfig(
                         pinIncludes = rp.pin_patterns?.include ?: emptyList(),
                         pinExcludes = rp.pin_patterns?.exclude ?: emptyList(),
@@ -1153,6 +1167,9 @@ data class SyncConfig(
                                 .mapValues { (_, v) -> parsePolicy(v) },
                         excludePatterns = rp.exclude_patterns ?: emptyList(),
                         hydrationCacheMaxBytes = rp.hydration_cache_max_bytes,
+                        maxConcurrentTransfersOverride = rp.max_concurrent_transfers,
+                        uploadQueueDepth = rp.upload_queue_depth,
+                        cacheAccessGraceMs = rp.cache_access_grace_ms,
                         bulkReapGuard = rp.bulk_reap_guard ?: true,
                         topLevelGuard = rp.top_level_guard ?: true,
                         daemonPollSeconds = rp.daemon_poll_seconds,

@@ -6,7 +6,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.slf4j.MDCContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import org.krost.unidrive.AccountOwner
@@ -99,6 +98,13 @@ class DaemonRuntime(
     // below 0 = no content cache (#404). `daemon run` passes the config's resolution; a profile without the key
     // gets the config default (disabled). Tests that build a runtime without it get [HydrationImpl.DEFAULT_CACHE_MAX_BYTES].
     private val hydrationCacheMaxBytes: Long = HydrationImpl.DEFAULT_CACHE_MAX_BYTES,
+    // issue#72: the profile's configured transfer budget (key `max_concurrent_transfers`); null = the provider's audited
+    // cap, clamped at the engine's guard (daemon.status `transfer_budget`, the download width, is unaffected).
+    private val maxConcurrentTransfersOverride: Int? = null,
+    // issue#72: the mount uploads' waiting-queue bound before open_write back-pressures (profile key `upload_queue_depth`).
+    private val uploadQueueDepth: Int = HydrationImpl.DEFAULT_UPLOAD_QUEUE_DEPTH,
+    // issue#72: how long a hydration-cache file stays un-evictable after its last use (profile key `cache_access_grace_ms`).
+    private val cacheAccessGraceMs: Long = HydrationImpl.CACHE_ACCESS_GRACE_MS,
     private val deleteGuards: DeleteGuards = DeleteGuards(),
     // archive#603 (U4): the profile's hosting mode, resolved and gated by `daemon run` before this runtime is
     // constructed. A mount daemon serves the hydration verbs, sync.enumerate and the poller, and routes
@@ -363,6 +369,7 @@ class DaemonRuntime(
                     // download budget). Left blank before, every daemon ran at the fallback of 4 whatever the provider.
                     providerId = cloud.id,
                     maxBandwidthKbps = maxBandwidthKib,
+                    maxConcurrentTransfersOverride = maxConcurrentTransfersOverride,
                     standingScope = syncPaths, excludePatterns = excludePatterns, trashNamespace = trash, viewNamespaces = viewNamespaces,
                     backupsNamespace = backups,
                     mountIgnore = ignoreSettings.takeIf { profileMode == ProfileMode.MOUNT },
@@ -440,13 +447,15 @@ class DaemonRuntime(
                             db!!,
                             recoveryUploadScope = hydrationUploadScope(profileName),
                             cacheMaxBytes = hydrationCacheMaxBytes,
+                            uploadQueueDepth = uploadQueueDepth,
+                            cacheAccessGraceMs = cacheAccessGraceMs,
                             history = transferHistory,
                         )
                     } else {
                         null
                     }
                 if (hydration != null) {
-                    log.info(hydrationLimitsLine(mount.transferBudgetSize, HydrationImpl.DEFAULT_UPLOAD_QUEUE_DEPTH, HydrationImpl.CACHE_ACCESS_GRACE_MS))
+                    log.info(hydrationLimitsLine(mount.transferBudgetSize, uploadQueueDepth, cacheAccessGraceMs))
                 }
                 val hydrationIpc: HydrationIpcHandler? =
                     // gkrost/unidrive-cli#24: the name_clash guard's first spellings persist in state.db, so a restart keeps them.
@@ -1190,21 +1199,6 @@ class DaemonRuntime(
 
         /** archive#652: the transfer history's file, in the profile's state folder next to state.db. */
         const val HISTORY_FILE_NAME = "telemetry.db"
-
-        /**
-         * The log context of everything a daemon runs: the `profile` and `build` MDC keys the log pattern prints, kept across
-         * suspensions and thread hops by [MDCContext]. Two daemons write one unidrive.log; a line without them reads `[*]` and
-         * cannot be told apart (gkrost/unidrive-cli#225). A child coroutine inherits it; a thread the daemon's code starts
-         * itself carries it with [org.krost.unidrive.MdcSnapshot].
-         */
-        /** The constants that bound a mount daemon's transfers, for one INFO line at start (gkrost/unidrive-cli#72). Numbers only. */
-        internal fun hydrationLimitsLine(
-            transfers: Int,
-            uploadQueueDepth: Int,
-            cacheAccessGraceMs: Long,
-        ): String = "hydration limits: $transfers concurrent transfers, upload queue depth $uploadQueueDepth, cache access grace ${cacheAccessGraceMs / 1000} s"
-
-        internal fun logContext(profileName: String): MDCContext = MDCContext(mapOf("build" to BuildInfo.COMMIT, "profile" to profileName))
 
         /**
          * The serve scope: the daemon's launches (enumerations, event writers, pollers) run on [kotlinx.coroutines.Dispatchers.Default],

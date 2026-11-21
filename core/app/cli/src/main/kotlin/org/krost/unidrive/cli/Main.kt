@@ -453,6 +453,9 @@ open class Main : Runnable {
             "upload_concurrency" to rp.upload_concurrency?.toString(),
             "upload_chunk_mb" to rp.upload_chunk_mb?.toString(),
             "upload_cutoff_mb" to rp.upload_cutoff_mb?.toString(),
+            "max_concurrent_transfers" to rp.max_concurrent_transfers?.toString(),
+            "upload_queue_depth" to rp.upload_queue_depth?.toString(),
+            "cache_access_grace_ms" to rp.cache_access_grace_ms?.toString(),
         )
     }
 

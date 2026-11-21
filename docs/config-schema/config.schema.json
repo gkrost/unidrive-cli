@@ -80,6 +80,24 @@
             "type": "integer",
             "minimum": 0
           },
+          "max_concurrent_transfers": {
+            "description": "How many transfers the daemon runs at once: one budget shared by the sync pass and the mount's uploads. Default: the provider's audited cap (Internxt 2, Dropbox 4, OneDrive, S3 and localfs 8; 4 for a provider that declares none); a value above the cap is clamped to it, and `unidrive sync` always runs at the cap. The line the daemon logs at start shows the effective value.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16
+          },
+          "upload_queue_depth": {
+            "description": "How many mount uploads may wait to run before an open_write is held back until a slot frees (back-pressure towards the client). Mount profiles only. Default 256.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4096
+          },
+          "cache_access_grace_ms": {
+            "description": "How long a hydration-cache file stays un-evictable after its last use, in ms, so a client that is about to open it is not handed a path that has just been evicted. Mount profiles only. Default 60000 (60 s).",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3600000
+          },
           "honor_gitignore": {
             "description": "Also read `.gitignore` files as ignore rules for uploads, beside `.unidrive.ignore`. Default false.",
             "type": "boolean"

@@ -95,7 +95,7 @@ class DaemonRuntimeTest {
     fun `the start line names the transfer budget, the upload queue depth and the cache grace`() {
         assertEquals(
             "hydration limits: 4 concurrent transfers, upload queue depth 256, cache access grace 60 s",
-            DaemonRuntime.hydrationLimitsLine(4, 256, 60_000),
+            hydrationLimitsLine(4, 256, 60_000),
         )
     }
 
