@@ -131,6 +131,33 @@ public abstract class BatchingWriter<T>(
         }
     }
 
+    /**
+     * The synchronous-op form with an answer: the writer thread completes [op]'s future and the caller gets
+     * it, null when the writer is gone, did not take the request in time, or the op ended on a failure. An
+     * answer of null from the op itself is indistinguishable from "not taken", so an op whose answer can be
+     * null carries its "written" bit inside the answer (the retry outcome's record does).
+     */
+    protected fun <R> controlWithResult(
+        timeoutMs: Long,
+        op: (CompletableFuture<R>) -> Op<T>,
+    ): R? {
+        if (!thread.isAlive) return null
+        val done = CompletableFuture<R>()
+        if (!queue.offer(op(done), timeoutMs, TimeUnit.MILLISECONDS)) return null
+        return try {
+            done.get(timeoutMs, TimeUnit.MILLISECONDS)
+        } catch (e: TimeoutException) {
+            log.warn("{} for {} did not answer within {} ms: {}", logLabel, profile, timeoutMs, e.javaClass.simpleName)
+            null
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            null
+        } catch (e: java.util.concurrent.ExecutionException) {
+            log.warn("{} for {} could not answer the op: {}", logLabel, profile, e.message ?: e.javaClass.simpleName)
+            null
+        }
+    }
+
     /** The writer still takes ops (close and abandon set this false, and nothing is counted then). */
     protected val acceptingOps: Boolean get() = accepting.get()
 

@@ -38,7 +38,7 @@ class ServeScopeResponsivenessTest {
         // could not run the launch below.
         runBlocking {
             val job = SupervisorJob()
-            val scope = DaemonRuntime.serveScopeOf(coroutineContext, job)
+            val scope = serveScopeOf(coroutineContext, job)
             val ran = CountDownLatch(1)
             scope.launch { ran.countDown() }
             assertTrue(ran.await(10, TimeUnit.SECONDS), "a launch on the serve scope needs the caller's loop")
