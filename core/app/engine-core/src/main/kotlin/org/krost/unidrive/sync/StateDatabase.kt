@@ -517,8 +517,7 @@ class StateDatabase(
                 stampSchemaVersion()
                 aliveCount = 0
             }
-        }
-        scanStaging.reclaimSpace() // outside the monitor: the staging's rewrite syncs to disk (#531, #865)
+        }.also { scanStaging.reclaimSpace() } // outside the monitor: the staging's rewrite syncs to disk (#531, #865)
     }
 
     /**
@@ -3265,8 +3264,7 @@ class StateDatabase(
                 stmt.setString(1, "last_full_scan")
                 stmt.executeUpdate()
             }
-        }
-        scanStaging.reclaimSpace() // outside the monitor, as in resetAll
+        }.also { scanStaging.reclaimSpace() } // outside the monitor, as in resetAll
     }
 
     fun addPinRule(
