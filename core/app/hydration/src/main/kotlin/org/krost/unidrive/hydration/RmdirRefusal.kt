@@ -2,6 +2,8 @@ package org.krost.unidrive.hydration
 
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.FolderNotEmptyException
+import org.krost.unidrive.sync.StateDatabase
+import org.krost.unidrive.sync.model.EntryStatus
 import org.krost.unidrive.sync.model.SyncEntry
 import org.slf4j.Logger
 import java.time.Instant
@@ -69,6 +71,43 @@ internal fun refuseIndexedAfterWholeListing(
         .filter { !it.isFolder && !it.isHydrated && it.localMtime == null && it.lastSynced.isAfter(listedAt) }
         .minWithOrNull(compareBy<SyncEntry>({ it.lastSynced }, { it.path }))
         ?.let { throw UnobservedChildException(UnobservedChildException.UNOBSERVED, it.path) }
+}
+
+// gkrost/unidrive-cli#853: the window's refusal tells the client how to clear it. The window is keyed by the folder
+// alone: a fresh whole listing of the folder itself re-arms it (hydration.list of the path the rmdir names, answered
+// complete), a listing of the child's parent never does. The wire token stays remote_unobserved.
+internal fun refuseIndexedAfterWholeListing(
+    rowsBelow: List<SyncEntry>,
+    listedAt: Instant?,
+    folderPath: String,
+    log: Logger,
+) {
+    try {
+        refuseIndexedAfterWholeListing(rowsBelow, listedAt)
+    } catch (e: UnobservedChildException) {
+        log.info(
+            "#853: {} was indexed after the folder's last whole listing; a fresh whole listing of {} itself is what lets the same rmdir through, a listing of the child's parent does not",
+            e.childPath,
+            folderPath,
+        )
+        throw e
+    }
+}
+
+// gkrost/unidrive-cli#853: the snapshot guard passes over a listed child with no alive row when this mount deleted
+// that cloud id recently (archive#1199's receipt), and now also when a tombstoned row holds the id: the cloud's own
+// delta said the item is gone, and the tombstone outlives the provider listing's lag (an enumeration reap stamps no
+// mount_deleted_at, so the receipt never covers it — rows DELETED for days were refused forever). An alive row
+// holding the id again is compared, not passed over: a restore.
+internal fun listedChildPassesOver(
+    childId: String,
+    observedAliveRow: SyncEntry?,
+    ownDeletes: Set<String>,
+    db: StateDatabase,
+): Boolean {
+    if (observedAliveRow != null) return false
+    if (db.getEntryByRemoteId(childId) != null) return false
+    return childId in ownDeletes || db.recovery.getEntryByRemoteIdAnyStatus(childId)?.status == EntryStatus.DELETED
 }
 
 /**
