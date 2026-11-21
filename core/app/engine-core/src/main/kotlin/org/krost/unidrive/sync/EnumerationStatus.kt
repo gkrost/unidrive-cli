@@ -50,6 +50,13 @@ data class EnumerationStatus(
      */
     val unreachableItems: Int? = null,
     /**
+     * The items of the last full listing that hang below a folder outside the drive root (a tree of its own, such as a
+     * device backup), and the number of those top-level folders: listed, not part of the drive, held as they are. Not
+     * counted in [unreachableItems]. Null when there are none; set by the engine from sync_state, never by the tracker.
+     */
+    val outsideRootItems: Int? = null,
+    val outsideRootFolders: Int? = null,
+    /**
      * True while the running attempt lists the drive again because the previous scan ended incomplete, or held back a bulk
      * deletion that needs a second full listing (the recovery latch was set when it started). False otherwise, and always false when no attempt runs; set by the tracker.
      */

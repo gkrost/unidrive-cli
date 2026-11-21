@@ -1310,7 +1310,7 @@ open class SyncEngine(
         val remoteShrinkWarning =
             if (actualFullEnumeration && runScope.isEmpty() && !skipRemoteGather) {
                 val observedAlive = allRemoteChanges.values.count { !it.deleted }
-                remoteShrinkWarningOrNull(observedAlive, preGatherTrackedRows)
+                remoteShrinkWarningOrNull(observedAlive, remoteGather.outsideRoot.baseline(preGatherTrackedRows))
             } else {
                 null
             }
@@ -2465,7 +2465,7 @@ open class SyncEngine(
         var allComplete = true
         // Items the provider listed but could not place below a permanently gone folder
         // (DeltaPage.unreachableIds): the absence sweep treats them as present.
-        val unreachable = HashSet<String>()
+        val unreachable = org.krost.unidrive.engine.GatheredUnreachable()
         // The entries the provider could not read (DeltaPage.skippedPaths): persisted with the
         // completeness flag so the status can name the blocked folder (archive#1234).
         val skippedPaths = LinkedHashSet<String>()
@@ -2509,7 +2509,7 @@ open class SyncEngine(
                 allComplete = false
             }
             val placed = remoteGather.placeTrashed(page)
-            unreachable.addAll(placed.unreachableIds)
+            unreachable.add(placed)
             skippedPaths.addAll(page.skippedPaths)
             return placed
         }
@@ -2756,7 +2756,7 @@ open class SyncEngine(
                             // unreachable item). The cloud copy is left alone.
                             val surrogateIssue = loneSurrogatePathIssue(item.resolved.path)
                             if (surrogateIssue != null) {
-                                unreachable.add(item.originalId)
+                                unreachable.ids.add(item.originalId)
                                 if (loneSurrogateWarned.add(item.resolved.path)) log.warn("Skipping cloud item {}: {}", item.resolved.path, surrogateIssue)
                                 continue
                             }
@@ -2885,7 +2885,7 @@ open class SyncEngine(
 
         if (isFullSync && allComplete) {
             val listedKeys = HashSet(changes.keys)
-            detectMissingAfterFullSync(changes, collisionLoserIds, remoteGather.listingStartedAt(gatherStartedAt, activeScan), unreachable)
+            detectMissingAfterFullSync(changes, collisionLoserIds, remoteGather.listingStartedAt(gatherStartedAt, activeScan), unreachable.ids)
             // The absence sweep adds tombstones for rows no listing page carried, so no page slice reconciled them.
             // Plan them here with the same resolution the pages get (a deferred DeleteLocal, an edited or hydrated
             // file kept), or a streamed pass would never apply a remote deletion that only a full listing shows.

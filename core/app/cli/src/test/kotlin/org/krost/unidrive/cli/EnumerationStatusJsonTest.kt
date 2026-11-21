@@ -146,6 +146,25 @@ class EnumerationStatusJsonTest {
         assertFalse("unreachable_items" in none.keys, "none means absent: $none")
     }
 
+    // gkrost/unidrive-cli#862: the items below a folder outside the drive root and their top-level folders, apart from the
+    // unreachable ones; absent when there are none.
+    @Test
+    fun `outside_root_items and outside_root_folders are named apart from unreachable_items`() {
+        val some =
+            wire(
+                EnumerationStatus(
+                    state = EnumerationStatus.State.IDLE, first = false, attempt = 0, lastScanComplete = true,
+                    outsideRootItems = 102_611, outsideRootFolders = 1,
+                ),
+            )
+        val none = wire(EnumerationStatus(state = EnumerationStatus.State.IDLE, first = false, attempt = 0, lastScanComplete = true))
+
+        assertEquals(102_611, some.getValue("outside_root_items").jsonPrimitive.int)
+        assertEquals(1, some.getValue("outside_root_folders").jsonPrimitive.int)
+        assertFalse("unreachable_items" in some.keys, "they are not unreachable: $some")
+        assertFalse("outside_root_items" in none.keys || "outside_root_folders" in none.keys, "none means absent: $none")
+    }
+
     // archive#926: a running attempt that lists again because the last scan was incomplete or needs a second full listing says so; the items the last full
     // listing did not return stay as a count after it. Both are absent (never false or 0) otherwise.
     @Test

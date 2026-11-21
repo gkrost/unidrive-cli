@@ -234,6 +234,22 @@ class RemoteEnumerationBackupsTest {
             assertNull(db.getEntry("/Laptop"))
         }
 
+    // The backup items a listing carries while the backups are off are a tree outside the drive root like any other: the
+    // status counts them apart from the unreachable ones, with the device folders they hang below.
+    @Test
+    fun `with the backups off the items left out count as outside the root with their device folders`() =
+        runTest {
+            provider.items = drive() + devices()
+            val enumeration = enumeration(BackupsNamespace(enabled = false, ignoreCase = false))
+
+            enumeration.enumerate(reset = false)
+
+            val status = enumeration.status()
+            assertEquals(5, status.outsideRootItems, "two devices, a folder and two files")
+            assertEquals(2, status.outsideRootFolders, "the two device folders, not the folder below one")
+            assertNull(status.unreachableItems)
+        }
+
     @Test
     fun `a live top-level folder named Backups keeps its name and the root takes the next free one`() =
         runTest {

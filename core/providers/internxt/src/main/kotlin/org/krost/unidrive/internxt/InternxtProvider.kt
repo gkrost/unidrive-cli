@@ -3938,7 +3938,7 @@ class InternxtProvider(
         private val unreachable = UnreachableItems()
         private var filesDropped = 0
         private var foldersDropped = 0
-        private val outsideIds = HashSet<String>()
+        private val outsideItems = OutsideDriveItems()
 
         // The items outside the drive that belong to a backup device, and those devices. The device list is asked once per
         // full gather, and only once a tree of its own is met ([devices]).
@@ -4046,8 +4046,10 @@ class InternxtProvider(
         }
 
         // One more item below a tree of its own, counted under the top of that tree.
+        private fun topOf(item: CloudItem): String? = if (item.id in treeTops) item.id else treeTopOf(item.parentId, folderMap, rootUuid, treeTops)
+
         private fun count(item: CloudItem) {
-            val top = if (item.id in treeTops) item.id else treeTopOf(item.parentId, folderMap, rootUuid, treeTops) ?: return
+            val top = topOf(item) ?: return
             (if (item.isFolder) censusFolders else censusFiles).merge(top, 1, Int::plus)
         }
 
@@ -4070,7 +4072,7 @@ class InternxtProvider(
                 log.info(
                     "Internxt delta gather: {} item(s) sit below {} folder(s) outside the drive (trees of their own, such as device backups), " +
                         "{} of them in {} backup device(s); {} are listed as read-only backups, the rest are left out, and none is written to",
-                    outsideIds.size,
+                    outsideItems.size,
                     treeTops.size,
                     backupIds.size,
                     backupDevicesMet.size,
@@ -4123,12 +4125,15 @@ class InternxtProvider(
                     unreachable.goneFolders.size,
                 )
             }
+            val (outsideIds, outsideTops) = outsideItems.without(listedIds)
             return DeltaPage(
                 items = items,
                 cursor = cursor,
                 hasMore = false,
                 complete = skipped == 0 && ancestorDrops == 0,
-                unreachableIds = if (outsideIds.isEmpty()) unreachable.ids else unreachable.ids + (outsideIds - listedIds),
+                unreachableIds = if (outsideIds.isEmpty()) unreachable.ids else unreachable.ids + outsideIds,
+                outsideRootIds = outsideIds,
+                outsideRootFolders = outsideTops,
             )
         }
 
@@ -4141,12 +4146,12 @@ class InternxtProvider(
             val outside = outsideDriveItems(placed, treeTops, folderMap, rootUuid)
             val listed = ArrayList<CloudItem>()
             if (outside.isNotEmpty()) {
-                outsideIds.addAll(outside)
-                val outsideItems = placed.filter { it.id in outside }
-                if (fullGather) outsideItems.forEach(::count)
+                val outsidePlaced = placed.filter { it.id in outside }
+                outsidePlaced.forEach { outsideItems.add(it.id, topOf(it)) }
+                if (fullGather) outsidePlaced.forEach(::count)
                 val trees = BackupTrees(confirmedDevices(), folderMap, rootUuid)
                 val shown = if (listBackups) shownDevices() else emptySet()
-                for (item in trees.mark(outsideItems)) {
+                for (item in trees.mark(outsidePlaced)) {
                     if (!item.backup) continue
                     backupIds.add(item.id)
                     val device = trees.deviceOf(item) ?: continue
@@ -4257,27 +4262,6 @@ class InternxtProvider(
         } catch (e: Exception) {
             DeviceListing.Failed((e as? InternxtApiException)?.statusCode?.let { "HTTP $it" } ?: e.javaClass.simpleName)
         }
-
-    // The items of a pass that sit below a folder which is gone for good: their remote ids, how many of them are files
-    // and folders, and the distinct gone folders they hang below.
-    private class UnreachableItems {
-        val ids = HashSet<String>()
-        val goneFolders = HashSet<String>()
-        var files = 0
-        var folders = 0
-        val count: Int get() = files + folders
-
-        fun add(
-            uuid: String,
-            goneFolder: String,
-            isFolder: Boolean,
-        ) {
-            if (ids.add(uuid)) {
-                if (isFolder) folders++ else files++
-            }
-            goneFolders.add(goneFolder)
-        }
-    }
 
     // A live item whose parent folder is in the trash (see [TrashChains]) keeps the path of the provider's own tree and is
     // marked as trashed; the engine puts it under the trash namespace. A tombstone stays one: a deleted item is gone, not
