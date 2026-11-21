@@ -1,5 +1,6 @@
 package org.krost.unidrive.hydration
 
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.*
 import org.krost.unidrive.sync.FakeCloudProvider
@@ -97,6 +98,40 @@ class MountEngineOperationsTest {
         }
         assertTrue(provider.deletedPaths.isEmpty())
         assertNotNull(db.getEntry("/dir"), "refusal must not tombstone the folder")
+    }
+
+    // gkrost/unidrive-cli#634 B, #831: concurrent mount deletes by id share batched provider calls, each caller keeps its answer.
+    @Test
+    fun `concurrent file deletes share batched calls and each row follows its own answer`() = kotlinx.coroutines.runBlocking {
+        val batches = java.util.concurrent.CopyOnWriteArrayList<List<String>>()
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val batching =
+            object : CloudProvider by provider, BatchDeleteProvider {
+                override suspend fun deleteMany(items: List<DeleteRequest>): List<Throwable?> {
+                    batches += items.map { it.remoteId }
+                    gate.await()
+                    return items.map { if (it.remotePath == "/f3.txt") ProviderException("server refused /f3.txt") else null }
+                }
+            }
+        val mount = MountEngine.over(SyncEngine(provider = batching, db = db, syncRoot = syncRoot, reporter = ProgressReporter.Silent))
+        val paths = (1..12).map { "/f$it.txt" }
+        paths.forEach { db.upsertEntry(trackedRow(it, isFolder = false)) }
+
+        val results =
+            kotlinx.coroutines.coroutineScope {
+                val calls = paths.map { p -> async { runCatching { mount.deleteRemote(p) } } }
+                // Real time: the first calls hold the gate while the others reach the window.
+                kotlinx.coroutines.delay(500)
+                gate.complete(Unit)
+                calls.map { it.await() }
+            }
+
+        assertEquals(paths.map { "id-$it" }.toSet(), batches.flatten().toSet())
+        assertEquals(12, batches.sumOf { it.size }, "every row's id sent once")
+        assertTrue(batches.size < 12, "batched: ${batches.map { it.size }}")
+        assertTrue(results[2].exceptionOrNull() is ProviderException, "the refused item's caller gets its error")
+        assertNotNull(db.getEntry("/f3.txt"), "a refused delete leaves its row alive")
+        for (p in paths - "/f3.txt") assertNull(db.getEntry(p), "$p tombstoned after its delete")
     }
 
     @Test

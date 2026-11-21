@@ -2,7 +2,8 @@ package org.krost.unidrive.hydration
 
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
-import org.krost.unidrive.TypedDeleteProvider
+import org.krost.unidrive.DeleteRequest
+import org.krost.unidrive.deleteManyOrEach
 import org.krost.unidrive.engine.RemoteGather
 import org.krost.unidrive.sync.PathNormalizer
 import org.krost.unidrive.sync.StateDatabase
@@ -24,6 +25,10 @@ internal class MountDelete(
     private val neverOnDrive: (String) -> Boolean,
     private val lastWholeListing: (String) -> Instant?,
 ) {
+    // The deletes by id of this mount, one window per provider (see [DeleteCoalescer]); a provider without batches is asked
+    // item by item, as before.
+    private val window = DeleteCoalescer({ items -> provider.deleteManyOrEach(items) })
+
     /**
      * Delete a path on the remote provider and update state.db.
      * Handles both files and folders — provider distinguishes by
@@ -75,8 +80,8 @@ internal class MountDelete(
                 when {
                     permanent && remoteId != null -> provider.deletePermanentlyById(remoteId, remotePath)
                     permanent -> provider.deletePermanently(remotePath)
-                    remoteId != null && provider is TypedDeleteProvider -> provider.deleteById(remoteId, remotePath, entryBefore.isFolder)
-                    remoteId != null -> provider.deleteById(remoteId, remotePath)
+                    // gkrost/unidrive-cli#634 B, #831: by id through the coalescing window, where concurrent deletes share a call.
+                    remoteId != null -> window.delete(DeleteRequest(remoteId, remotePath, entryBefore.isFolder))
                     else -> provider.delete(remotePath)
                 }
             } catch (e: Exception) {
