@@ -65,6 +65,7 @@ class StateDatabase(
 ) {
     /** True when this database can be discarded without losing real state (in-memory shadow or snapshot copy). */
     val isDisposable: Boolean get() = inMemory || disposableFile != null
+    internal val isWritable: Boolean get() = !readOnly
 
     /** Path of the backing file (for a snapshot: the copy, not the source it was taken from). */
     val file: Path get() = dbPath
@@ -463,8 +464,22 @@ class StateDatabase(
      */
     fun compactOnce(usableSpace: (Path) -> Long = { Files.getFileStore(it).usableSpace }): Boolean =
         locked("compactOnce") {
-            if (readOnly || isDisposable || batchOwner != null) return@locked false
             if (getSyncState(COMPACTED_KEY) != null) return@locked false
+            if (!rewriteIfFragmented(usableSpace, "once")) return@locked false
+            setSyncState(COMPACTED_KEY, Instant.now().toString())
+            true
+        }
+
+    /**
+     * [compactOnce] without its once-per-file rule, for callers that have just freed many rows (a reset, a purge of
+     * tombstones). Logged as "Rewrote ... [whenText]". Returns whether the file was rewritten.
+     */
+    internal fun rewriteIfFragmented(
+        usableSpace: (Path) -> Long = { Files.getFileStore(it).usableSpace },
+        whenText: String = "after a bulk removal",
+    ): Boolean =
+        locked("rewriteIfFragmented") {
+            if (readOnly || isDisposable || batchOwner != null) return@locked false
             val pages = pragma("page_count").toLong()
             val free = pragma("freelist_count").toLong()
             if (pages == 0L || free <= pages * COMPACT_FREE_SHARE) return@locked false
@@ -486,10 +501,10 @@ class StateDatabase(
                 log.warn("Rewriting {} failed ({}); it stays as it was", dbPath, e.message)
                 return@locked false
             }
-            setSyncState(COMPACTED_KEY, Instant.now().toString())
             log.info(
-                "Rewrote {} once ({} of {} pages were free): {} MB now, in {} ms",
+                "Rewrote {} {} ({} of {} pages were free): {} MB now, in {} ms",
                 dbPath,
+                whenText,
                 free,
                 pages,
                 Files.size(dbPath) / 1_048_576,
@@ -497,6 +512,12 @@ class StateDatabase(
             )
             true
         }
+
+    /** Runs [body] on the writer connection inside one transaction, with the monitor held (the purge of tombstones, see TombstonePurge.kt). */
+    internal fun <T> withWriter(
+        method: String,
+        body: (Connection) -> T,
+    ): T = locked(method) { batch { body(conn) } }
 
     private var snapshotShutdownHook: Thread? = null
 

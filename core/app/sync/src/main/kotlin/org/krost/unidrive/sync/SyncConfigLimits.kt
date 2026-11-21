@@ -53,6 +53,16 @@ fun SyncConfig.uploadQueueDepth(profileName: String): Int =
 fun SyncConfig.cacheAccessGraceMs(profileName: String): Long =
     providers[profileName]?.cacheAccessGraceMs ?: DEFAULT_CACHE_ACCESS_GRACE_MS
 
+/** The ceiling of `tombstone_retention_days` (ten years). The default itself is [DEFAULT_TOMBSTONE_RETENTION_DAYS] in :app:engine-core. */
+const val MAX_TOMBSTONE_RETENTION_DAYS: Int = 3650
+
+/**
+ * gkrost/unidrive-cli#863: how many days this profile's state.db keeps a `DELETED` tombstone row before the daemon's start
+ * purges it (key `tombstone_retention_days`); [DEFAULT_TOMBSTONE_RETENTION_DAYS] (30) when unset, 0 = keep every one.
+ */
+fun SyncConfig.tombstoneRetentionDays(profileName: String): Int =
+    providers[profileName]?.tombstoneRetentionDays ?: DEFAULT_TOMBSTONE_RETENTION_DAYS
+
 /** issue#72: an out-of-range daemon-limit key is refused naming the section, key and range (the CLI exits 78). */
 internal fun validateDaemonLimit(
     profile: String,

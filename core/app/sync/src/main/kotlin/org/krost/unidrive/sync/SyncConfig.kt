@@ -524,6 +524,8 @@ data class RawProvider(
     val upload_queue_depth: Int? = null,
     // issue#72: how long a hydration-cache file stays un-evictable after its last use, in ms; absent = 60000. Mount only.
     val cache_access_grace_ms: Long? = null,
+    // gkrost/unidrive-cli#863: days a DELETED tombstone row is kept in state.db before the daemon's start purges it; absent = 30, 0 = keep.
+    val tombstone_retention_days: Int? = null,
 )
 
 @Serializable
@@ -673,6 +675,7 @@ data class SyncConfig(
         val maxConcurrentTransfersOverride: Int? = null,
         val uploadQueueDepth: Int? = null,
         val cacheAccessGraceMs: Long? = null,
+        val tombstoneRetentionDays: Int? = null,
         val bulkReapGuard: Boolean = true,
         val topLevelGuard: Boolean = true,
         val daemonPollSeconds: Int? = null,
@@ -1158,6 +1161,7 @@ data class SyncConfig(
                     validateDaemonLimit(name, "max_concurrent_transfers", rp.max_concurrent_transfers?.toLong(), 1, MAX_CONCURRENT_TRANSFERS.toLong())
                     validateDaemonLimit(name, "upload_queue_depth", rp.upload_queue_depth?.toLong(), 1, MAX_UPLOAD_QUEUE_DEPTH.toLong())
                     validateDaemonLimit(name, "cache_access_grace_ms", rp.cache_access_grace_ms, 0, MAX_CACHE_ACCESS_GRACE_MS)
+                    validateDaemonLimit(name, "tombstone_retention_days", rp.tombstone_retention_days?.toLong(), 0, MAX_TOMBSTONE_RETENTION_DAYS.toLong())
                     ProviderConfig(
                         pinIncludes = rp.pin_patterns?.include ?: emptyList(),
                         pinExcludes = rp.pin_patterns?.exclude ?: emptyList(),
@@ -1170,6 +1174,7 @@ data class SyncConfig(
                         maxConcurrentTransfersOverride = rp.max_concurrent_transfers,
                         uploadQueueDepth = rp.upload_queue_depth,
                         cacheAccessGraceMs = rp.cache_access_grace_ms,
+                        tombstoneRetentionDays = rp.tombstone_retention_days,
                         bulkReapGuard = rp.bulk_reap_guard ?: true,
                         topLevelGuard = rp.top_level_guard ?: true,
                         daemonPollSeconds = rp.daemon_poll_seconds,

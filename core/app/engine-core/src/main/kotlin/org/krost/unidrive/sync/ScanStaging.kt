@@ -391,7 +391,10 @@ internal class ScanStaging(
                 }
                 onlyThisScan
             }
-        if (emptied) return
+        if (emptied) {
+            reclaim()
+            return
+        }
         while (true) {
             val removed =
                 transaction { c ->
@@ -417,6 +420,31 @@ internal class ScanStaging(
                 stmt.executeUpdate("DELETE FROM scan_staging")
                 stmt.executeUpdate("DELETE FROM scan_meta")
             }
+        }
+        reclaim()
+    }
+
+    /**
+     * Gives the free pages back (`VACUUM`) when the file is big enough to matter and more than a quarter of it is free: a DELETE
+     * leaves its pages in the file, which kept a 251 MB scan-staging.db for a scan long done (gkrost/unidrive-cli#863). Called
+     * after the table was emptied, so the rewrite has next to nothing to copy. Best effort: a rewrite that fails (another
+     * connection holds the file) leaves it as it was, and the next scan's end asks again.
+     */
+    @Synchronized
+    private fun reclaim() {
+        if (readOnly) return
+        val c = connection() ?: return
+        try {
+            c.createStatement().use { stmt ->
+                fun pragma(name: String) = stmt.executeQuery("PRAGMA $name").use { it.next(); it.getLong(1) }
+                val pages = pragma("page_count")
+                if (pages < RECLAIM_MIN_PAGES || pragma("freelist_count") * RECLAIM_FREE_SHARE_DIVISOR <= pages) return
+                statements.clear()
+                stmt.execute("VACUUM")
+                stmt.executeQuery("PRAGMA wal_checkpoint(TRUNCATE)").use { it.next() }
+            }
+        } catch (e: java.sql.SQLException) {
+            log.info("Rewriting {} failed ({}); it stays as it was", file, e.message)
         }
     }
 
@@ -469,6 +497,10 @@ internal class ScanStaging(
             )
 
         private const val STATEMENT_CACHE_LIMIT = 8
+
+        // [reclaim] rewrites a file of at least this many pages (256 KiB at 4 KiB) of which more than 1 / this divisor is free.
+        private const val RECLAIM_MIN_PAGES = 64L
+        private const val RECLAIM_FREE_SHARE_DIVISOR = 4L
 
         // The pause before each try to open the file (see [openWritableRetrying]): about 1.7 s in all before it is given up.
         private val OPEN_RETRY_PAUSES_MS = longArrayOf(0, 200, 500, 1_000)

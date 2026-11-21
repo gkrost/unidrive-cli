@@ -105,4 +105,23 @@ class SyncConfigValidationTest {
         assertEquals(DEFAULT_UPLOAD_QUEUE_DEPTH, config.uploadQueueDepth("b"))
         assertEquals(DEFAULT_CACHE_ACCESS_GRACE_MS, config.cacheAccessGraceMs("b"))
     }
+
+    @Test
+    fun `tombstone_retention_days defaults to 30, takes 0 for keep and is per profile`() {
+        val toml = "[providers.a]\ntombstone_retention_days = 0\n[providers.b]\ntombstone_retention_days = 7\n[providers.c]\n"
+        val config = SyncConfig.parse(toml, "a")
+        assertEquals(30, DEFAULT_TOMBSTONE_RETENTION_DAYS)
+        assertEquals(0, config.tombstoneRetentionDays("a"))
+        assertEquals(7, config.tombstoneRetentionDays("b"))
+        assertEquals(30, config.tombstoneRetentionDays("c"))
+        assertEquals(30, config.tombstoneRetentionDays("unknown"))
+    }
+
+    @Test
+    fun `an out-of-range tombstone_retention_days is refused naming the key`() {
+        for (value in listOf(-1, 3651)) {
+            val message = refusal("[providers.p]\ntombstone_retention_days = $value\n")
+            assertTrue("tombstone_retention_days" in message, "the message names the key: $message")
+        }
+    }
 }

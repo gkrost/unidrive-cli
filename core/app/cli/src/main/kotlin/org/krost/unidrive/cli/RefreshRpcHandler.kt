@@ -8,9 +8,13 @@ import org.krost.unidrive.engine.RemoteEnumeration
 import org.krost.unidrive.http.UrlRedaction
 import org.krost.unidrive.io.isTrue
 import org.krost.unidrive.io.ndjsonString
+import org.krost.unidrive.sync.EnumerateResult
 import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncEngine
+import org.krost.unidrive.sync.purgeTombstones
+import org.krost.unidrive.sync.resetKeepingPendingReporting
+import java.time.Instant
 import org.slf4j.LoggerFactory
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
@@ -108,7 +112,7 @@ class RefreshRpcHandler(
                             // the in-flight slot. A reset is not served by another pass: it stays skipped (busy below).
                             val result =
                                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                    if (reset) engine.enumerateRemoteIntoState(true) else engine.enumerateOrJoin(false)
+                                    if (reset) resetEnumerate(jobId) else engine.enumerateOrJoin(false)
                                 }
                             if (result.ok && result.skipped && reset) {
                                 // archive#1037: another pass held the single-flight flag, so the cursor reset never ran. A plain
@@ -134,14 +138,14 @@ class RefreshRpcHandler(
                                     // Rows that still await upload, and rows whose local copy holds an edit the cloud has
                                     // not seen, are not part of what a reset rebuilds from the cloud: keep them. A write
                                     // can precede open_write and its upload/error bookkeeping, even on a never-read row.
-                                    val kept =
-                                        db.resetKeepingPending { row ->
+                                    val report =
+                                        db.resetKeepingPendingReporting { row ->
                                             keepGuards.holdsUnsyncedEdit(row.path, row)
                                         }
                                     log.info(
-                                        "refresh.run reset=true: cleared state.db (kept {} row(s) holding unsynced content) " +
+                                        "refresh.run reset=true: cleared state.db ({}; the kept rows hold unsynced content) " +
                                             "before re-enumerating: job_id={}",
-                                        kept,
+                                        report.summary(),
                                         jobId,
                                     )
                                 }
@@ -189,6 +193,13 @@ class RefreshRpcHandler(
         // A job that ends without reaching the line above (cancelled, or failed with an Error) still frees its slot.
         launched.invokeOnCompletion { inFlight.updateAndGet { if (it?.id == jobId) null else it } }
         return """{"ok":true,"job_id":"$jobId"}"""
+    }
+
+    // #863: a reset on a mounted profile also drops the tombstones no pending operation names (never an alive row, so the view
+    // stays); the pages they freed are rewritten at the next start, not while the mount is served.
+    private suspend fun resetEnumerate(jobId: String): EnumerateResult {
+        log.info("refresh.run reset=true: purged {} tombstone(s): job_id={}", db.purgeTombstones(Instant.now()), jobId)
+        return engine.enumerateRemoteIntoState(true)
     }
 
     fun isInFlight(): Boolean = inFlight.get() != null
