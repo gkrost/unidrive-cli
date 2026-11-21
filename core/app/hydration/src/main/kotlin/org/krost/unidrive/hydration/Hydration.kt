@@ -350,6 +350,12 @@ sealed class ListResult {
         // For an entry in a view: the logical path of the real item it stands for (reads of the entry are resolved to it).
         // Null for the view's root folder and for every other row; only serialized on the wire when set.
         val viewTarget: String? = null,
+        // gkrost/unidrive-cli#849: who last changed the row, as the engine saw it — `remote` (a delta item or an
+        // enumeration delivered it) or `local` (the engine uploaded it) — and with [changedAtMs] (epoch ms) when.
+        // Null when the engine does not know (a row from before the columns, or one no delivery or upload has touched
+        // since they existed); only serialized on the wire when set, so an older client parses unchanged.
+        val changedBy: String? = null,
+        val changedAtMs: Long? = null,
     )
 }
 

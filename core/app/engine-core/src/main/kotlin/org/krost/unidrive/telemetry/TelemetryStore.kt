@@ -3,6 +3,7 @@ package org.krost.unidrive.telemetry
 import org.krost.unidrive.http.RequestAttempt
 import org.krost.unidrive.io.OwnerOnly
 import org.krost.unidrive.sync.JdbcStateDatabaseConnector
+import org.krost.unidrive.sync.RewriteRoom
 import org.krost.unidrive.sync.SqliteConnections
 import org.krost.unidrive.sync.StateDatabaseConnector
 import org.slf4j.LoggerFactory
@@ -32,6 +33,10 @@ internal class TelemetryStore private constructor(
 ) {
     private var conn: Connection? = null
     private var closed = false
+
+    /** What a rewrite asks for its disk space; a test seam. */
+    @Volatile
+    internal var rewriteRoom = RewriteRoom()
 
     @Synchronized
     private fun connection(): Connection {
@@ -248,7 +253,7 @@ internal class TelemetryStore private constructor(
             removed += n
             if (n == 0) break
         }
-        if (removed > 0) shrinkFile(c, maxBytes)
+        if (removed > 0 || mostlyFree(c)) shrinkFile(c, maxBytes)
         return removed
     }
 
@@ -298,7 +303,7 @@ internal class TelemetryStore private constructor(
             if (shed == 0) break
             removed += shed
         }
-        if (removed > 0) shrinkFile(c, maxBytes)
+        if (removed > 0 || mostlyFree(c)) shrinkFile(c, maxBytes)
         return removed
     }
 
@@ -318,19 +323,39 @@ internal class TelemetryStore private constructor(
         }
     }
 
-    // Deleted rows leave free pages inside the file; a VACUUM gives them back when the file is still too big.
+    // Deleted rows leave free pages inside the file; a VACUUM gives them back when the file is still over the budget, or
+    // when more than a quarter of its pages are free (retention that stays under the cap used to keep the file's size for
+    // ever, gkrost/unidrive-cli#863). Skipped when the disk has too little space for the rewrite ([RewriteRoom]: the folder
+    // and SQLite's temp directory, where the copy of the live pages is built).
     private fun shrinkFile(
         c: Connection,
         maxBytes: Long,
     ) {
         c.createStatement().use { st ->
             st.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            if (fileBytes() > maxBytes) {
+            if ((fileBytes() > maxBytes || mostlyFree(c)) && hasRoomToRewrite(c)) {
                 st.execute("VACUUM")
                 st.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             }
         }
     }
+
+    // A space read that fails says nothing: the rewrite goes ahead, as it did before the check (a file over its budget
+    // must still shrink).
+    private fun hasRoomToRewrite(c: Connection): Boolean {
+        if (rewriteRoom.check(dbPath, fileBytes(), liveBytes(c)) != false) return true
+        log.info("{} cannot be rewritten: the disk has too little space", dbPath)
+        return false
+    }
+
+    /** At least [MIN_RECLAIM_BYTES] of the file are free pages, and they are more than a quarter of all pages. */
+    private fun mostlyFree(c: Connection): Boolean =
+        c.createStatement().use { st ->
+            fun pragma(name: String) = st.executeQuery("PRAGMA $name").use { it.next(); it.getLong(1) }
+            val pages = pragma("page_count")
+            val free = pragma("freelist_count")
+            pages > 0 && free * pragma("page_size") >= MIN_RECLAIM_BYTES && free > pages * FREE_SHARE
+        }
 
     private fun liveBytes(c: Connection): Long =
         c.createStatement().use { st ->
@@ -358,6 +383,8 @@ internal class TelemetryStore private constructor(
         const val SORT_TIME = "COALESCE(finished_at, queued_at)"
         private const val MAX_PRUNE_ROUNDS = 64
         private const val PRUNE_FRACTION = 10
+        private const val MIN_RECLAIM_BYTES = 1L shl 20
+        private const val FREE_SHARE = 0.25
         private val log = LoggerFactory.getLogger(TelemetryStore::class.java)
 
         // History that can be rebuilt: synchronous=NORMAL.
