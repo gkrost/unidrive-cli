@@ -155,24 +155,33 @@ data class ResetReport(
     }
 }
 
-/** [StateDatabase.resetKeepingPending], then the files are rewritten and the removal is reported. */
-fun StateDatabase.resetKeepingPendingReporting(alsoKeep: (org.krost.unidrive.sync.model.SyncEntry) -> Boolean = { false }): ResetReport =
-    reportingReset { resetKeepingPending(alsoKeep) }
+/**
+ * [StateDatabase.resetKeepingPending], then the removal is reported, and state.db is rewritten when [rewrite] is true. A daemon
+ * that serves passes false: the rewrite holds the database's monitor for as long as it takes (#531), and the reset dropped the
+ * `compacted_at` record, so the next start's compaction gives the pages back.
+ */
+fun StateDatabase.resetKeepingPendingReporting(
+    rewrite: Boolean = true,
+    alsoKeep: (org.krost.unidrive.sync.model.SyncEntry) -> Boolean = { false },
+): ResetReport = reportingReset(rewrite) { resetKeepingPending(alsoKeep) }
 
 /** [StateDatabase.resetAll], then the files are rewritten and the removal is reported. */
 fun StateDatabase.resetAllReporting(): ResetReport =
-    reportingReset {
+    reportingReset(rewrite = true) {
         resetAll()
         0
     }
 
-private fun StateDatabase.reportingReset(reset: () -> Int): ResetReport {
+private fun StateDatabase.reportingReset(
+    rewrite: Boolean,
+    reset: () -> Int,
+): ResetReport {
     val rowsBefore = allRowCount()
     val tombstonesBefore = tombstoneCount()
     val stateBefore = stateBytes(file)
     val stagingBefore = stagingBytes(file)
     val kept = reset()
-    rewriteIfFragmented(whenText = "after the reset")
+    if (rewrite) rewriteIfFragmented(whenText = "after the reset")
     val stagingAfter = stagingBytes(file)
     return ResetReport(
         keptRows = kept,

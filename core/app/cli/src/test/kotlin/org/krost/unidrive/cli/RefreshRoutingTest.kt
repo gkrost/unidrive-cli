@@ -111,6 +111,41 @@ class RefreshRoutingTest {
         }
     }
 
+    // gkrost/unidrive-cli#863 (review of #869): the daemon serves while it resets. A VACUUM of state.db there holds the database's
+    // monitor for the whole rewrite (#531), so the daemon's reset leaves the rewrite to the next start (the reset drops the
+    // compacted_at record, so that start asks again).
+    @Test
+    fun refresh_reset_without_a_mount_client_does_not_rewrite_state_db_while_the_daemon_serves(): Unit = runBlocking {
+        val old = java.time.Instant.parse("2026-01-01T00:00:00Z")
+        db.batch {
+            for (i in 0 until 6_000) {
+                db.upsertEntry(
+                    org.krost.unidrive.sync.model.SyncEntry(
+                        path = "/emptied/account/folder/f$i.txt", remoteId = "id-$i", remoteHash = "h", remoteSize = 1, remoteModified = old,
+                        localMtime = 1, localSize = 1, isFolder = false, isPinned = false, isHydrated = false, lastSynced = old,
+                        status = org.krost.unidrive.sync.model.EntryStatus.DELETED,
+                    ),
+                )
+            }
+        }
+        val logger = org.slf4j.LoggerFactory.getLogger(StateDatabase::class.java) as ch.qos.logback.classic.Logger
+        val appender = ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>().apply { start() }
+        logger.addAppender(appender)
+        try {
+            val scope = CoroutineScope(coroutineContext + SupervisorJob())
+            val handler = RefreshRpcHandler(server, RecordingEngine(enumerateResult = EnumerateResult(ok = true)), db, scope, mountClientConnected = { false }, emit = {})
+
+            handler.handle("conn-1", """{"verb":"refresh.run","reset":true}""")
+            handler.awaitInFlight()
+
+            assertEquals(emptyList(), db.recovery.allEntriesAnyStatus(), "the reset cleared the rows")
+            assertTrue(appender.list.none { it.formattedMessage.startsWith("Rewrote") }, "no VACUUM under the live daemon: ${appender.list.map { it.formattedMessage }}")
+            assertTrue(db.compactOnce(), "the next start's compaction still gives the pages back")
+        } finally {
+            logger.detachAppender(appender)
+        }
+    }
+
     // archive#778: refresh.run enumerates the cloud on either path, so a paused daemon refuses it.
     @Test
     fun refresh_is_refused_while_paused_on_both_paths(): Unit = runBlocking {

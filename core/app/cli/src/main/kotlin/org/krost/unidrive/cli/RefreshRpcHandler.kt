@@ -139,7 +139,7 @@ class RefreshRpcHandler(
                                     // not seen, are not part of what a reset rebuilds from the cloud: keep them. A write
                                     // can precede open_write and its upload/error bookkeeping, even on a never-read row.
                                     val report =
-                                        db.resetKeepingPendingReporting { row ->
+                                        db.resetKeepingPendingReporting(rewrite = false) { row ->
                                             keepGuards.holdsUnsyncedEdit(row.path, row)
                                         }
                                     log.info(
