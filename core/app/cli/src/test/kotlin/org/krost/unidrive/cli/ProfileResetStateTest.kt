@@ -327,6 +327,32 @@ class ProfileResetStateTest {
         assertEquals("precious", Files.readString(root.resolve("my-document.txt")))
     }
 
+    // review of #871: an alive row with edit_base is a file edited locally (hydration cache) that the cloud has not seen; --all would
+    // drop its row, and nothing would ever upload the edit.
+    @Test
+    fun `all refuses while an alive row holds an unsynced edit and nothing changes`() {
+        val (s, g, t) =
+            seedAll { db ->
+                db.upsertEntry(entry("/edited.txt", "cloud-edited"))
+                assertTrue(db.markEdited("/edited.txt", "base-token"))
+            }
+        assertEquals(1, resetJson("--all"))
+        assertEquals("unsynced_edits", refusalToken())
+        assertUntouched(s, g, t)
+        assertEquals(1, rowCount("SELECT COUNT(*) FROM sync_entries WHERE remote_id='cloud-edited' AND edit_base IS NOT NULL"))
+    }
+
+    // review of #871: the default mode only drops tombstones, and the row that is unsynced stays alive with it.
+    @Test
+    fun `the default mode keeps an alive row that holds an unsynced edit`() {
+        seedAll { db ->
+            db.upsertEntry(entry("/edited.txt", "cloud-edited"))
+            assertTrue(db.markEdited("/edited.txt", "base-token"))
+        }
+        assertEquals(0, resetJson())
+        assertEquals(1, rowCount("SELECT COUNT(*) FROM sync_entries WHERE remote_id='cloud-edited' AND edit_base IS NOT NULL"))
+    }
+
     // review of #871: the Reconciler's un-trash reads TRASHED rows (Reconciler: db.recovery.trashedEntries()); an item restored from the
     // provider's trash must meet its row, not arrive as a new remote file beside a local file that has none.
     @Test

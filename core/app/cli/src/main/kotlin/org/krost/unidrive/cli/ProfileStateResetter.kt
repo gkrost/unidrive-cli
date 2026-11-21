@@ -26,7 +26,8 @@ import java.time.temporal.ChronoUnit
  * mount root.
  *
  * It refuses while a process holds the profile (the process lock, or a socket that answers), while uploads that never
- * reached the cloud are pending, and while a rename intent, a replace intent or an upload handle is on record. The
+ * reached the cloud are pending (with `all`, also while an alive file row holds an edit the cloud has not seen), and while a
+ * rename intent, a replace intent or an upload handle is on record. The
  * profile lock is held from the first look to the last file, so no daemon can start in between.
  *
  * What goes: every DELETED row of `state.db` (TRASHED rows stay: the un-trash reads them) (a tombstone a delete through the mount stamped within the lagging-listing window
@@ -187,6 +188,17 @@ internal object ProfileStateResetter {
                 "uploads_pending",
                 "profile '$name' still has ${split.waiting.size} upload(s) that never reached the cloud (failed ones included); " +
                     "--all would drop their rows; nothing was reset",
+            )
+        }
+        // A file edited in the hydration cache and not yet uploaded is an alive row with edit_base: --all drops the row, and
+        // nothing would ever upload the edit (`refresh --reset` keeps such rows for the same reason).
+        val edits = if (all) SqliteFiles.scalar(stateDb, "SELECT COUNT(*) FROM sync_entries WHERE status = 'EXISTS' AND is_folder = 0 AND edit_base IS NOT NULL") ?: 0L else 0L
+        if (edits > 0) {
+            throw LifecycleError(
+                "unsynced_edits",
+                "profile '$name' still has $edits file(s) edited locally that the cloud has not seen; --all would drop their rows " +
+                    "and the edits would never upload; let the daemon upload them first; nothing was reset",
+                details = buildJsonObject { put("edits", edits) },
             )
         }
         val operations = operationsOnRecord(stateDb, name)
