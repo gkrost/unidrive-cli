@@ -135,8 +135,10 @@ class IpcContractLevelTest {
                 // 6 (issue#796): the vault verbs (vault.unlock / vault.lock, ADMIN class) and the
                 // capability that names them on a daemon whose vault.enc exists.
                 setOf("verb:vault.unlock", "verb:vault.lock", "capability:vault-unlock:v1"),
-                // 7 here, level 8 at merge (the sweep's contract PRs renumber at merge; #864's 7 lands first;
-                // gkrost/unidrive-cli#848): history.list takes an `order` member (the reply echoes it and says
+                // 7 (gkrost/unidrive-cli#849): a hydration.list file entry names who last changed the row
+                // (`changed_by`) and when the engine saw it (`changed_at_ms`), where the row knows.
+                setOf("capability:hydration.list_changed_by"),
+                // 8 (gkrost/unidrive-cli#848): history.list takes an `order` member (the reply echoes it and says
                 // live_keyset), and history.retry queues one failed upload row again; the capabilities name both.
                 setOf("verb:history.retry", "capability:history.order.v1", "capability:history.retry.v1"),
             )
