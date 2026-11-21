@@ -125,6 +125,7 @@ internal suspend fun listedChildPassesOver(
 // when the provider answers not-found, or an item it marks deleted or trashed; a live answer refuses, and so does a
 // probe that fails any other way (an outage is no proof of absence: the refusal is the one the guard gave before the
 // tombstone counted at all).
+@Suppress("TooGenericExceptionCaught") // only a not-found answer proves the item gone; every other failure refuses
 internal suspend fun listedGhostIsGone(
     provider: CloudProvider,
     child: CloudItem,
