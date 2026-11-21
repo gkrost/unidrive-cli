@@ -848,27 +848,21 @@ class StateDatabase(
             // Hydration stores the content stamp, retry deadline and reason. Same additive pattern, no schema_version bump:
             // NULL = not refused, which is every older row. Any upsert of the row clears it, a successful upload included.
             if (!columnExists("sync_entries", "upload_refused")) {
-                stmt.executeUpdate(
-                    "ALTER TABLE sync_entries ADD COLUMN upload_refused TEXT",
-                )
+                stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN upload_refused TEXT")
             }
             // The drive refuses this entry by its NAME (it compares the name as equal to a sibling's), as
             // `<reason>|<sibling name or empty>`: see [markNameBlocked]. Same additive pattern, no schema_version bump:
             // NULL = not blocked, which is every older row. Any upsert of the row (INSERT OR REPLACE) clears it, a
             // successful upload or a folder created at last included.
             if (!columnExists("sync_entries", "name_block")) {
-                stmt.executeUpdate(
-                    "ALTER TABLE sync_entries ADD COLUMN name_block TEXT",
-                )
+                stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN name_block TEXT")
             }
             // archive#1070/#1069: the cloud version an unsynced edit in the mount's cache copy started from (see
             // SyncEntry.editBase). Same additive pattern, no schema_version bump: NULL = no unsynced edit is known,
             // which is every older row. Unlike the two columns above it is carried by SyncEntry, so a merge's
             // copy() keeps it and only the upload that lands (or a download that replaces the copy) clears it.
             if (!columnExists("sync_entries", "edit_base")) {
-                stmt.executeUpdate(
-                    "ALTER TABLE sync_entries ADD COLUMN edit_base TEXT",
-                )
+                stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN edit_base TEXT")
             }
             // The provider's write token of the recorded version, apart from the content hash (see
             // SyncEntry.remoteVersion). Same additive pattern, no schema_version bump, no backfill: NULL = none known,
@@ -902,16 +896,9 @@ class StateDatabase(
             if (!columnExists("sync_entries", "pending_local")) {
                 stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN pending_local TEXT")
             }
-            // gkrost/unidrive-cli#849: who last changed the row (`remote`: a delivery; `local`: an upload the engine sent)
-            // and when the engine saw that change (epoch ms; see SyncEntry.changedBy). Same additive pattern, no
-            // schema_version bump, no backfill: NULL = unknown, which is every row from before the columns — a client
-            // shows neither field, never a wrong one.
-            if (!columnExists("sync_entries", "changed_by")) {
-                stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN changed_by TEXT")
-            }
-            if (!columnExists("sync_entries", "changed_at_ms")) {
-                stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN changed_at_ms INTEGER")
-            }
+            // gkrost/unidrive-cli#849: who last changed the row and when the engine saw it (SyncEntry.changedBy). Additive, no
+            // schema_version bump, no backfill: NULL = unknown, which is every older row; an older build's upsert resets them to it.
+            for (col in listOf("changed_by TEXT", "changed_at_ms INTEGER")) if (!columnExists("sync_entries", col.substringBefore(' '))) stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN $col")
             // gkrost/unidrive-cli#414: the download hint the row carries (SyncEntry.storedObject): the stored object of
             // the version the row records, so a download after a daemon restart seeds the provider's in-memory hint from
             // the row and skips the metadata call it would otherwise pay per file. Unlike the additive columns above,
@@ -1248,11 +1235,7 @@ class StateDatabase(
                         stmt.setString(27, hint.updatedAt?.toString())
                     }
                 }
-                // gkrost/unidrive-cli#849: the last change's provenance rides on the row (SyncEntry.changedBy), so a
-                // writer that carries a row along (copy()) keeps its stamp and only the delivery or upload that IS a
-                // change writes a new one.
-                stmt.setString(28, entry.changedBy)
-                entry.changedAtMs?.let { stmt.setLong(29, it) } ?: stmt.setNull(29, java.sql.Types.BIGINT)
+                stmt.bindChangeStamp(entry) // gkrost/unidrive-cli#849: parameters 28 and 29, carried by every writer's copy()
                 // pending_local is carried by every upsert and cleared only when the action lands or the row is
                 // trashed. A touch or a same-path merge must not forget a remote change the next delta will not send.
                 // The sub-select misses a path change, so that row stays unmarked until the failure path writes it.
@@ -1826,8 +1809,8 @@ class StateDatabase(
      *
      * The [mtime] argument is the provider-reported creation time
      * (CloudItem.modified) stored in the remote_modified column. The caller says who the
-     * change came from ([changedBy], with [changedAtMs]; gkrost/unidrive-cli#849): the mount's
-     * own mkdir (`local`) or a cloud item the drive adopted (`remote`); null leaves the row unstamped.
+     * change came from ([changedBy], stamped now; gkrost/unidrive-cli#849): the mount's own mkdir (`local`) or a
+     * cloud item the drive adopted (`remote`); null leaves the row unstamped.
      */
     fun insertFolder(
         path: String,
@@ -1835,7 +1818,6 @@ class StateDatabase(
         mtime: java.time.Instant,
         remotePath: String? = null,
         changedBy: String? = null,
-        changedAtMs: Long? = null,
     ) {
         locked("insertFolder") {
             val existing = getEntry(path)
@@ -1855,7 +1837,7 @@ class StateDatabase(
                     isHydrated = false,
                     lastSynced = java.time.Instant.now(),
                     changedBy = changedBy,
-                    changedAtMs = changedAtMs,
+                    changedAtMs = changedBy?.let { Instant.now().toEpochMilli() },
                 ),
             )
         }
@@ -3616,6 +3598,13 @@ class StateDatabase(
         val last = prefix.lastOrNull() ?: return null
         if (last in '\uD7FF'..'\uDFFF' || last == '\uFFFF') return null
         return prefix.dropLast(1) + (last + 1)
+    }
+
+    // gkrost/unidrive-cli#849: who last changed the row and when (SyncEntry.changedBy) rides on the row, so a writer that carries
+    // it along through copy() keeps the stamp and only the writer that IS the change sets a new one. NULL both = unknown.
+    private fun java.sql.PreparedStatement.bindChangeStamp(entry: SyncEntry) {
+        setString(28, entry.changedBy)
+        entry.changedAtMs?.let { setLong(29, it) } ?: setNull(29, java.sql.Types.BIGINT)
     }
 
     private fun ResultSet.toSyncEntry(): SyncEntry {

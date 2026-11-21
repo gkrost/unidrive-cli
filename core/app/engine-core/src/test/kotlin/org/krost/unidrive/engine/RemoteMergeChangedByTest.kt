@@ -2,6 +2,7 @@ package org.krost.unidrive.engine
 
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.sync.StateDatabase
+import org.krost.unidrive.sync.model.SyncEntry
 import org.krost.unidrive.testing.TestScratch
 import org.slf4j.LoggerFactory
 import java.nio.file.Path
@@ -60,28 +61,30 @@ class RemoteMergeChangedByTest {
         path: String,
         size: Long = 5,
         hash: String? = "h1",
+        modified: Instant? = null,
     ) = CloudItem(
         id = id,
         name = path.substringAfterLast('/'),
         path = path,
         size = size,
         isFolder = false,
-        modified = null,
+        modified = modified,
         created = null,
         hash = hash,
         mimeType = null,
     )
 
     /** The stamp of the alive row at [path], read outside StateDatabase so the assertion sees what is stored. */
-    private fun stamp(path: String): Pair<String?, Long?> =
-        DriverManager.getConnection("jdbc:sqlite:$dbPath").use { c ->
-            c.createStatement().use { s ->
-                s.executeQuery("SELECT changed_by, changed_at_ms FROM sync_entries WHERE path='$path' AND status='EXISTS'").use { rs ->
-                    check(rs.next()) { "no alive row at $path" }
-                    rs.getLong(2).let { if (rs.wasNull()) null else it }.let { ms -> rs.getString(1) to ms }
-                }
-            }
+    private fun stamp(path: String): Pair<String?, Long?> {
+        val c = DriverManager.getConnection("jdbc:sqlite:$dbPath")
+        c.use {
+            val rs = c.createStatement().executeQuery("SELECT changed_by, changed_at_ms FROM sync_entries WHERE path='$path' AND status='EXISTS'")
+            check(rs.next()) { "no alive row at $path" }
+            val by = rs.getString(1)
+            val ms = rs.getLong(2)
+            return by to ms.takeUnless { rs.wasNull() }
         }
+    }
 
     /** A stamp written from outside, as an uploader other than the merge would have left it. */
     private fun writeStamp(
@@ -160,4 +163,70 @@ class RemoteMergeChangedByTest {
         assertEquals("remote", by)
         assertTrue(secondMs!! > firstMs!!, "the token the row records changed")
     }
+
+    @Test
+    fun `the echo of the engine's own upload keeps the local stamp when only the modified time differs`() {
+        // The row as the engine's upload left it. The provider then delivers the same item (same id, bytes, size and token)
+        // with another modified time, as Internxt does after an upload: that is the echo of the engine's own change.
+        gather().updateRemoteEntries(mapOf("/a.txt" to item("id-a", "/a.txt", modified = Instant.parse("2026-11-01T10:00:00Z"))))
+        writeStamp("/a.txt", by = "local", atMs = 1000)
+        gather().updateRemoteEntries(mapOf("/a.txt" to item("id-a", "/a.txt", modified = Instant.parse("2026-11-01T10:00:01Z"))))
+        assertEquals("local" to 1000L, stamp("/a.txt"), "the engine's own upload is not a change the cloud told it of")
+    }
+
+    @Test
+    fun `a remote touch of a row nobody stamped local re-stamps it remote`() {
+        gather().updateRemoteEntries(mapOf("/a.txt" to item("id-a", "/a.txt", modified = Instant.parse("2026-11-01T10:00:00Z"))))
+        val (_, firstMs) = stamp("/a.txt")
+        Thread.sleep(5)
+        gather().updateRemoteEntries(mapOf("/a.txt" to item("id-a", "/a.txt", modified = Instant.parse("2026-11-01T10:00:01Z"))))
+        val (by, secondMs) = stamp("/a.txt")
+        assertEquals("remote", by)
+        assertTrue(secondMs!! > firstMs!!, "the cloud moved the item's time: that is news")
+    }
+
+    @Test
+    fun `a delivery that leaves the row as it holds it stamps nothing, whether or not it is written`() {
+        val unstamped = row("/a.txt")
+        // The merge's own test is that the merged row equals the stored one; whatever else decides to write it (the upsert
+        // normalises a path or a local hash on the way in), the stamp of a row from before the columns stays none.
+        assertEquals(unstamped, stampedByDelivery(unstamped, unstamped.copy(), renamedFrom = null))
+        val stamped = unstamped.copy(changedBy = "local", changedAtMs = 7)
+        assertEquals(stamped, stampedByDelivery(stamped, stamped.copy(), renamedFrom = null))
+    }
+
+    @Test
+    fun `a delivery that brings something new stamps remote, a rename and a new row included`() {
+        val unstamped = row("/a.txt")
+        assertEquals("remote", stampedByDelivery(null, unstamped, renamedFrom = null).changedBy)
+        assertEquals("remote", stampedByDelivery(unstamped, unstamped.copy(path = "/b.txt"), renamedFrom = "/a.txt").changedBy)
+        assertEquals("remote", stampedByDelivery(unstamped, unstamped.copy(remoteHash = "h2"), renamedFrom = null).changedBy)
+    }
+
+    @Test
+    fun `an echo needs a hash or a token to vouch for the bytes, a hashless file is judged by what it says`() {
+        val own = row("/a.txt", hash = null).copy(changedBy = "local", changedAtMs = 7)
+        val later = own.copy(remoteModified = Instant.parse("2026-11-01T10:00:01Z"))
+        assertEquals("remote", stampedByDelivery(own, later, renamedFrom = null).changedBy, "size alone proves nothing")
+        val hashed = row("/a.txt").copy(changedBy = "local", changedAtMs = 7)
+        assertEquals("local", stampedByDelivery(hashed, hashed.copy(remoteModified = Instant.parse("2026-11-01T10:00:01Z")), renamedFrom = null).changedBy)
+        assertEquals("remote", stampedByDelivery(hashed, hashed.copy(remoteSize = 9, remoteModified = Instant.parse("2026-11-01T10:00:01Z")), renamedFrom = null).changedBy)
+    }
+
+    private fun row(
+        path: String,
+        hash: String? = "h1",
+    ) = SyncEntry(
+        path = path,
+        remoteId = "id-$path",
+        remoteHash = hash,
+        remoteSize = 5,
+        remoteModified = Instant.parse("2026-11-01T10:00:00Z"),
+        localMtime = null,
+        localSize = null,
+        isFolder = false,
+        isPinned = false,
+        isHydrated = false,
+        lastSynced = Instant.parse("2026-11-01T10:00:00Z"),
+    )
 }

@@ -104,6 +104,33 @@ data class SyncEntry(
     val downloadHint: StoredObject?
         get() = storedObject?.takeIf { status == EntryStatus.EXISTS && !isFolder }
 
+    /** The row as the engine's own change, seen now (gkrost/unidrive-cli#849): [changedBy] `local`. */
+    fun stampedLocal(): SyncEntry = copy(changedBy = "local", changedAtMs = Instant.now().toEpochMilli())
+
+    /** The row as a change the cloud told the engine of, seen now (gkrost/unidrive-cli#849): [changedBy] `remote`. */
+    fun stampedRemote(): SyncEntry = copy(changedBy = "remote", changedAtMs = Instant.now().toEpochMilli())
+
+    /**
+     * This row as a download wrote it: stamped `remote` (gkrost/unidrive-cli#849) when it records another version than
+     * [before] did — another item, size, hash or token, the cloud having moved on since the row was listed — and as it
+     * is otherwise: a download of the version the row already recorded changes nothing, and a hash or token the row
+     * did not know yet (null before) is learned, not changed.
+     */
+    fun stampedRemoteIfVersionMovedFrom(before: SyncEntry): SyncEntry = if (recordsOtherVersionThan(before)) stampedRemote() else this
+
+    private fun recordsOtherVersionThan(before: SyncEntry): Boolean {
+        if (remoteId != before.remoteId || remoteSize != before.remoteSize) return true
+        return differs(remoteHash, before.remoteHash) || differs(remoteVersion, before.remoteVersion)
+    }
+
+    /** [stampedLocal] when [changed], the row as it is otherwise: a writer that sent nothing changed nothing. */
+    fun stampedLocalIf(changed: Boolean): SyncEntry = if (changed) stampedLocal() else this
+
+    private fun differs(
+        now: String?,
+        was: String?,
+    ): Boolean = now != null && was != null && now != was
+
     /**
      * The token a write of this row's file is based on, the one rule for the whole engine: the provider's own
      * [remoteVersion] when the row has one, else [remoteHash]. `hydration.list` hands it out as `etag`, the edit

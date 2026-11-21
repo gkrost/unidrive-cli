@@ -6,7 +6,6 @@ import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
 import org.slf4j.Logger
-import java.time.Instant
 
 /**
  * What a row takes from the item its cloud move returned ([MountEngine.followRemoteMove]).
@@ -33,12 +32,7 @@ internal object MoveRecord {
     ) {
         if (before == null || moved.isFolder) return
         val row = db.getEntry(newPath) ?: return
-        // gkrost/unidrive-cli#849: every move this record follows is one the engine itself asked for (a mount rename,
-        // a rename whose cloud move was done when the daemon stopped, a repathed row's item moved by its id): the row
-        // it writes is the engine's own change, seen now.
-        recorded(before, row, moved, heldBefore)?.let {
-            db.upsertEntry(it.copy(changedBy = "local", changedAtMs = Instant.now().toEpochMilli()), keepMarks = true)
-        }
+        recorded(before, row, moved, heldBefore)?.let { db.upsertEntry(it.stampedLocal(), keepMarks = true) } // #849: every move followed here is the engine's own
     }
 
     // The row at the move's destination ([row]) with what it takes from [moved]; null when it takes nothing.

@@ -2957,10 +2957,7 @@ class HydrationImpl(
             readOnly = mount.isReadOnlyPath(e.path),
             trashRoot = mount.isTrashRoot(e.path),
             backupsRoot = mount.isBackupsRoot(e.path),
-            blocked = blocked,
-            // gkrost/unidrive-cli#849: the row's own record of its last change; absent while the engine knows none.
-            changedBy = e.changedBy,
-            changedAtMs = e.changedAtMs,
+            blocked = blocked, changedBy = e.changedBy, changedAtMs = e.changedAtMs, // #849: the row's own record of its last change, absent while none is known
         )
     }
 
@@ -3989,11 +3986,7 @@ class HydrationImpl(
                                 remoteContentId = ghost.contentId,
                                 // gkrost/unidrive-cli#414: the probe's item is the authority for the row's stored object.
                                 storedObject = ghost.storedObject,
-                                // gkrost/unidrive-cli#849: the ghost is the row's own earlier upload (archive#1040 M7): the
-                                // engine's own change, seen now through this adoption.
-                                changedBy = "local",
-                                changedAtMs = java.time.Instant.now().toEpochMilli(),
-                            ),
+                            ).stampedLocal(), // #849: the ghost is the row's own earlier upload (archive#1040 M7), adopted now
                         )
                     }
                     renames.finish(intent)
@@ -4089,11 +4082,7 @@ class HydrationImpl(
                         remoteModified = ghost.modified,
                         remoteContentId = ghost.contentId,
                         storedObject = ghost.storedObject,
-                        // gkrost/unidrive-cli#849: only an attempt that failed can have left a ghost — the row's own
-                        // upload, adopted now: the engine's own change, seen now.
-                        changedBy = "local",
-                        changedAtMs = java.time.Instant.now().toEpochMilli(),
-                    ),
+                    ).stampedLocal(), // #849: only a failed attempt leaves a ghost: the row's own upload, adopted now
                 )
                 log.info("rename of {}: {} had landed in the cloud before; its row adopts the item", oldFolder, child)
             }
