@@ -22,6 +22,10 @@ class TransferHandle internal constructor(
     private var startedNanos: Long? = null
     private var finished = false
 
+    /** The operation id the row carries (the `history.retry` reply names it before the transfer starts). */
+    val operationId: String
+        get() = base.operationId
+
     /** True once [started] was called: a row for this transfer exists and needs its [finish]. */
     val hasStarted: Boolean
         @Synchronized get() = startedNanos != null
@@ -283,6 +287,27 @@ class TransferHistory private constructor(
     /** The number of the last row snapshot committed to the file (0 before any); see [addTailListener]. */
     val tailSeq: Long
         get() = writer.tail.seq
+
+    /**
+     * The recorded outcome of a `history.retry` request id, or null when none is on file (also when what is
+     * on file is not a record this build wrote). Read on the history's own reader connection by the verb's
+     * idempotency check; the write side is [recordRetryOutcome].
+     */
+    fun retryOutcome(requestId: String): RetryOutcomeRecord? = openReader().use { it.retryOutcome(requestId) }
+
+    /**
+     * Records the outcome of a `history.retry` request durably, on the writer thread, before the caller
+     * replies (§4.8: a lost reply must not produce a second transfer). [RetryOutcomeWrite.Recorded] means
+     * this call wrote it; [RetryOutcomeWrite.Existing] means the request id was already answered — the
+     * caller replays the decoded record instead of acting again; [RetryOutcomeWrite.NotRecorded] means
+     * nothing is on file and the caller must not report an accepted retry. The mapping is pruned with the
+     * history's retention.
+     */
+    fun recordRetryOutcome(
+        requestId: String,
+        record: RetryOutcomeRecord,
+        timeoutMs: Long = HistoryWriter.DEFAULT_WAIT_MS,
+    ): RetryOutcomeWrite = writer.recordOutcome(RetryOutcomeRecord.keyOf(requestId), record.encode(), timeoutMs)
 
     /**
      * [listener] is called for every row snapshot committed to the file from now on, with the snapshot's number

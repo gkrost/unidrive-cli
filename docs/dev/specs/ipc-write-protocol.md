@@ -772,7 +772,8 @@ noticed at once, not when the download ends. Requests the client sends while one
   or a dirty overwrite that passes the same cloud-version check as the start-up replay), nothing else is uploading the
   path, the cache copy still exists and the provider has not refused these exact bytes. Terminal outcomes (`conflict`,
   a refused name, a permanent refusal such as `parent_gone`) get no rounds. A client's own `open_write` of the path
-  resets the count, a landed upload ends it. The timer lives in the daemon's memory: a restart drops it and replays the
+  resets the count, a landed upload ends it, and so does the daemon's `history.retry` verb, which starts a
+  round in the place of the pending one (unidrive-daemon-design.md section 4.8). The timer lives in the daemon's memory: a restart drops it and replays the
   row through the start-up replay below, as before. While a path waits for a round the daemon keeps no `retrying` or
   `next_try_at_ms` record (those describe the 2 s and 10 s backoff only): it is `pending` and, when never uploaded,
   `failed`. Each round runs the ladder of attempts again.
