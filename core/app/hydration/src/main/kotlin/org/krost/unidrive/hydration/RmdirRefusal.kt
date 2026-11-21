@@ -95,19 +95,27 @@ internal fun refuseIndexedAfterWholeListing(
 }
 
 // gkrost/unidrive-cli#853: the snapshot guard passes over a listed child with no alive row when this mount deleted
-// that cloud id recently (archive#1199's receipt), and now also when a tombstoned row holds the id: the cloud's own
-// delta said the item is gone, and the tombstone outlives the provider listing's lag (an enumeration reap stamps no
-// mount_deleted_at, so the receipt never covers it — rows DELETED for days were refused forever). An alive row
-// holding the id again is compared, not passed over: a restore.
-internal fun listedChildPassesOver(
-    childId: String,
+// that cloud id recently (archive#1199's receipt), and now also when the rows hold the id as a DELETED tombstone: the
+// cloud's own delta said the item is gone, and the tombstone outlives the provider listing's lag (an enumeration reap
+// stamps no mount_deleted_at, so the receipt never covers it — rows DELETED for days were refused forever). That
+// tombstone must not outweigh a listing that is right, so one that is not the mount's own recent delete is confirmed
+// once per ghost by [probeAbsent], a by-id probe of the cloud: the child passes over only when it answers not-found,
+// deleted or trashed, never when it answers a live item (a reap's corroboration went wrong, a delta raced a re-upload
+// under the same id). remote_id is sync_entries' PRIMARY KEY, so at most one row holds a cloud id and its status is
+// the whole answer: a TRASHED row (an un-trash the delta has not re-delivered) refuses. An alive row holding the id
+// again is compared, not passed over: a restore.
+internal suspend fun listedChildPassesOver(
+    child: CloudItem,
     observedAliveRow: SyncEntry?,
     ownDeletes: Set<String>,
     db: StateDatabase,
+    probeAbsent: suspend (CloudItem) -> Boolean,
 ): Boolean {
     if (observedAliveRow != null) return false
-    if (db.getEntryByRemoteId(childId) != null) return false
-    return childId in ownDeletes || db.recovery.getEntryByRemoteIdAnyStatus(childId)?.status == EntryStatus.DELETED
+    if (db.getEntryByRemoteId(child.id) != null) return false
+    if (child.id in ownDeletes) return true
+    if (db.recovery.getEntryByRemoteIdAnyStatus(child.id)?.status != EntryStatus.DELETED) return false
+    return probeAbsent(child)
 }
 
 /**
