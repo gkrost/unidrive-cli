@@ -27,8 +27,9 @@ updates:
       time: "06:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 10
-    labels:
-      - dependencies
+    # The repository keeps ten labels (owner decision 2026-11-21); an empty list stops Dependabot from creating `dependencies`,
+    # `java` or `github_actions` again.
+    labels: []
     commit-message:
       prefix: chore(deps)
       include: scope
@@ -41,8 +42,9 @@ updates:
       time: "06:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 5
-    labels:
-      - dependencies
+    # The repository keeps ten labels (owner decision 2026-11-21); an empty list stops Dependabot from creating `dependencies`,
+    # `java` or `github_actions` again.
+    labels: []
     commit-message:
       prefix: chore(ci)
       include: scope
@@ -64,8 +66,9 @@ updates:
       time: "06:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 5
-    labels:
-      - dependencies
+    # The repository keeps ten labels (owner decision 2026-11-21); an empty list stops Dependabot from creating `dependencies`,
+    # `java` or `github_actions` again.
+    labels: []
     commit-message:
       prefix: chore(ci)
       include: scope

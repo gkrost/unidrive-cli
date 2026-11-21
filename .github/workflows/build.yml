@@ -100,9 +100,9 @@ jobs:
   # In 74 runs neither caught anything `check` missed except one flaky test, and together they were 42 % of the runner
   # time, with check-windows alone setting an 18-minute wall clock on every pull request. They run on every push to main
   # and on a manual run (`gh workflow run build.yml --ref <branch>`), and on a pull request only when it changes the build
-  # itself (a build script, a lockfile, core/gradle/ — dependency bumps included — the wrapper, or this workflow) or carries
-  # the `ci:full` label. A label is read from the event, so it takes effect with the next push to the branch; `labeled` is
-  # not a trigger on purpose: a label added mid-run would cancel the running gate through the concurrency group.
+  # itself (a build script, a lockfile, core/gradle/ — dependency bumps included — the wrapper, or this workflow). The
+  # `ci:full` label that used to bring them to a pull request is gone (the repository keeps ten labels, owner decision
+  # 2026-11-21): run them by hand with `gh workflow run build.yml --ref <branch>`.
   changes:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -120,7 +120,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           PR: ${{ github.event.pull_request.number }}
-          FULL_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}
         run: |
           # Anything that is not Markdown or under docs/ is code, and so is a docs file a test reads. Pushes (main) and
           # manual runs always build, in full; if the file list cannot be read, build in full rather than skip.
@@ -138,7 +137,7 @@ jobs:
             echo "Docs-only change: Gradle jobs skipped."
           fi
           # gkrost/unidrive-cli#596: runtime-image, s3-minio and ignore-oracle run on a pull request only when a path they
-          # build or test changes (or the build itself, or the ci:full label); pushes to main and manual runs always run
+          # build or test changes (or the build itself); pushes to main and manual runs always run
           # them (the early exit above). Each list is what the job's Gradle task reads:
           #  - runtime-image: the shadow jar of :app:cli (every module of core/), the launcher templates it boots and the
           #    notices bundled into the jar.
@@ -151,27 +150,24 @@ jobs:
           build_files='(^|/)[^/]*\.gradle\.kts$|^core/gradle\.properties$|^core/[^/]*\.lockfile$|^core/gradle/|^core/gradlew|^\.github/workflows/build\.yml$'
           for leg in runtime_image:"$runtime_image_files" s3:"$s3_files" ignore_oracle:"$ignore_oracle_files"; do
             name=${leg%%:*}; pattern=${leg#*:}
-            if [ "$FULL_LABEL" = true ] || printf '%s\n' "$files" | grep -qE "$build_files|$pattern"; then
+            if printf '%s\n' "$files" | grep -qE "$build_files|$pattern"; then
               echo "$name=true" >> "$GITHUB_OUTPUT"
             else
               echo "$name=false" >> "$GITHUB_OUTPUT"
               echo "$name skipped: no path it builds or tests changed."
             fi
           done
-          if [ "$FULL_LABEL" = true ]; then
-            echo full=true >> "$GITHUB_OUTPUT"
-            echo "Label ci:full: check-windows and check-runtime-jdk run."
-          elif printf '%s\n' "$files" | grep -qE "$build_files"; then
+          if printf '%s\n' "$files" | grep -qE "$build_files"; then
             echo full=true >> "$GITHUB_OUTPUT"
             echo "The build changes: check-windows and check-runtime-jdk run."
           else
             echo full=false >> "$GITHUB_OUTPUT"
-            echo "check-windows and check-runtime-jdk skipped (main runs them; label ci:full or a manual run brings them to a PR)."
+            echo "check-windows and check-runtime-jdk skipped (main runs them; a manual run brings them to a PR)."
           fi
 
       # The switch of the secondary checks (a temporary measure, no end date): the repository variable SECONDARY_CHECKS
       # set to `off` skips check-windows, check-runtime-jdk, runtime-image, s3-minio and ignore-oracle on every event, pushes
-      # to main and the ci:full label included. The two required checks (`check`, `windows-security`) and the advisory scanners
+      # to main included. The two required checks (`check`, `windows-security`) and the advisory scanners
       # (gitleaks, semgrep, detekt, CodeQL) are not touched by it. Set it: `gh variable set SECONDARY_CHECKS --body off`;
       # switch back: `gh variable delete SECONDARY_CHECKS` (or any other value). Unset, nothing changes.
       - id: secondary
@@ -289,7 +285,7 @@ jobs:
   # a runtime regression surfaces here and not in a packaged build. Gradle
   # itself runs on the runtime JDK; the compile toolchain resolves from the
   # runner's pre-installed JDK. On a pull request only when `changes` says
-  # `full` (a build change or the ci:full label); main and manual runs always.
+  # `full` (a build change); main and manual runs always.
   check-runtime-jdk:
     needs: changes
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
@@ -477,8 +473,8 @@ jobs:
             --tests 'org.krost.unidrive.internxt.WindowsDpapiCredentialProtectorTest' \
             --tests 'org.krost.unidrive.internxt.InternxtUploadWritebackTest'
 
-  # The full suite on Windows, advisory. On a pull request only when `changes` says `full` (a build change or the
-  # ci:full label); main and manual runs always. windows-security above stays on every pull request.
+  # The full suite on Windows, advisory. On a pull request only when `changes` says `full` (a build change); main and
+  # manual runs always. windows-security above stays on every pull request.
   check-windows:
     needs: changes
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
