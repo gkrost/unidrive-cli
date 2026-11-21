@@ -14,6 +14,12 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.krost.unidrive.telemetry.HistoryOrderDirection.ASC
+import org.krost.unidrive.telemetry.HistoryOrderDirection.DESC
+import org.krost.unidrive.telemetry.HistoryOrderField.PATH
+import org.krost.unidrive.telemetry.HistoryOrderField.RESULT
+import org.krost.unidrive.telemetry.HistoryOrderField.SIZE
+import org.krost.unidrive.telemetry.HistoryOrderField.TIME
 import org.krost.unidrive.testing.TestScratch
 
 class HistoryReaderTest {
@@ -341,5 +347,221 @@ class HistoryReaderTest {
         assertTrue(history.flush())
         assertEquals(listOf("/a"), seen)
         assertEquals(1, reader(history).query(HistoryQuery()).rows.size)
+    }
+
+    // ── the non-default orders (gkrost/unidrive-cli#848) ─────────────────────────────────────────
+
+    // A finished transfer with its own size; the history's clock is set for each call.
+    private fun sized(
+        history: TransferHistory,
+        path: String,
+        bytesTotal: Long?,
+        result: TransferResult = TransferResult.SUCCESS,
+    ) {
+        wallMs.set(wallMs.get() + 1_000)
+        val handle = history.begin(TransferDirection.UPLOAD, path, bytesTotal = bytesTotal)
+        handle.started()
+        handle.finish(result, bytesDone = bytesTotal)
+    }
+
+    private fun ordered(
+        field: HistoryOrderField,
+        direction: HistoryOrderDirection,
+        limit: Int = HistoryQuery.DEFAULT_LIMIT,
+        after: HistoryOrderCursor? = null,
+        directions: Set<TransferDirection> = emptySet(),
+        results: Set<TransferResult> = emptySet(),
+    ) = HistoryQuery(
+        directions = directions,
+        results = results,
+        order = HistoryOrder(field, direction),
+        orderedAfter = after,
+        limit = limit,
+    )
+
+    private fun sizedOrderRows(): TransferHistory {
+        val history = open()
+        sized(history, "/a.txt", 100)
+        sized(history, "/b.txt", 20, result = TransferResult.FAILED)
+        sized(history, "/c.txt", null, result = TransferResult.CONFLICT)
+        sized(history, "/d.txt", 5, result = TransferResult.INTERRUPTED)
+        sized(history, "/e.txt", 50, result = TransferResult.SKIPPED)
+        assertTrue(history.flush())
+        return history
+    }
+
+    @Test
+    fun `the size order sorts by bytes with the unmeasured after every known value in both directions`() {
+        val history = sizedOrderRows()
+        val r = reader(history)
+        assertEquals(listOf("/d.txt", "/b.txt", "/e.txt", "/a.txt", "/c.txt"), r.query(ordered(SIZE, ASC)).rows.map { it.path }, "smallest first, null last")
+        assertEquals(listOf("/a.txt", "/e.txt", "/b.txt", "/d.txt", "/c.txt"), r.query(ordered(SIZE, DESC)).rows.map { it.path }, "largest first, null still last")
+    }
+
+    @Test
+    fun `the result order follows the fixed rank, not the string bytes`() {
+        val history = sizedOrderRows()
+        val r = reader(history)
+        // failed, conflict, interrupted, skipped, success — the contract's rank, never the result string's bytes.
+        assertEquals(
+            listOf("/b.txt", "/c.txt", "/d.txt", "/e.txt", "/a.txt"),
+            r.query(ordered(RESULT, ASC)).rows.map { it.path },
+        )
+        assertEquals(
+            listOf("/a.txt", "/e.txt", "/d.txt", "/c.txt", "/b.txt"),
+            r.query(ordered(RESULT, DESC)).rows.map { it.path },
+        )
+    }
+
+    @Test
+    fun `the path order is unsigned byte order, ties by operation id in the order's direction`() {
+        val history = open()
+        sized(history, "/Z.txt", 1)
+        sized(history, "/a.txt", 1)
+        // A real tie: the same path twice, so the operation id alone decides their order. Their ids are random
+        // UUIDs, so the assertion reads the ids the rows actually carry and compares against the sort of them.
+        sized(history, "/a.txt", 1)
+        sized(history, "/a.txt", 1)
+        assertTrue(history.flush())
+        val r = reader(history)
+        assertEquals(listOf("/Z.txt", "/a.txt", "/a.txt", "/a.txt"), r.query(ordered(PATH, ASC)).rows.map { it.path }, "'Z' before 'a'")
+        assertEquals(listOf("/a.txt", "/a.txt", "/a.txt", "/Z.txt"), r.query(ordered(PATH, DESC)).rows.map { it.path })
+        val tieIds = r.query(ordered(PATH, ASC)).rows.drop(1).map { it.operationId }
+        assertEquals(tieIds.sorted(), tieIds, "equal paths break by the operation id ascending under an ascending order")
+        val descTieIds = r.query(ordered(PATH, DESC)).rows.dropLast(1).map { it.operationId }
+        assertEquals(descTieIds.sortedDescending(), descTieIds, "and descending under a descending order")
+    }
+
+    @Test
+    fun `time ascending pages oldest first`() {
+        val history = open()
+        for (i in 1..5) finished(history, "/f$i", queuedAt = i * 1_000L, finishedAt = i * 1_000L + 10)
+        assertTrue(history.flush())
+        assertEquals(listOf("/f1", "/f2", "/f3", "/f4", "/f5"), reader(history).query(ordered(TIME, ASC)).rows.map { it.path })
+        assertEquals(listOf("/f5", "/f4", "/f3", "/f2", "/f1"), reader(history).query(ordered(TIME, DESC)).rows.map { it.path })
+    }
+
+    @Test
+    fun `the ordered queries return the same rows the default order does`() {
+        val history = sizedOrderRows()
+        val r = reader(history)
+        val every = r.query(HistoryQuery()).rows.map { it.path }.toSet()
+        for (field in listOf(TIME, PATH, SIZE, RESULT)) {
+            for (direction in listOf(ASC, DESC)) {
+                assertEquals(every, r.query(ordered(field, direction)).rows.map { it.path }.toSet(), "$field $direction covers the history once")
+            }
+        }
+    }
+
+    @Test
+    fun `an ordered cursor pages without gaps or repeats, sizes and nulls included`() {
+        val history = open()
+        for (i in 1..6) sized(history, "/f$i", i * 10L)
+        sized(history, "/g-null", null)
+        assertTrue(history.flush())
+        val r = reader(history)
+
+        val seen = ArrayList<String>()
+        var cursor: HistoryOrderCursor? = null
+        while (true) {
+            val page = r.query(ordered(SIZE, ASC, limit = 2, after = cursor))
+            seen += page.rows.map { it.path }
+            if (page.rows.size < 2) break
+            cursor =
+                HistoryOrderCursor.of(
+                    page.rows.last(),
+                    HistoryOrder(SIZE, ASC),
+                    HistoryOrderCursor.filterHash(emptySet(), emptySet(), null, null, null),
+                )
+        }
+        assertEquals(listOf("/f1", "/f2", "/f3", "/f4", "/f5", "/f6", "/g-null"), seen, "every row once, in order, the null last")
+    }
+
+    @Test
+    fun `size descending pages through the unmeasured rows after a cursor that sits on one`() {
+        val history = open()
+        sized(history, "/known-a", 30)
+        sized(history, "/known-b", 10)
+        for (i in 1..4) sized(history, "/null-$i", null)
+        assertTrue(history.flush())
+        val r = reader(history)
+
+        val hash = HistoryOrderCursor.filterHash(emptySet(), emptySet(), null, null, null)
+        for (direction in listOf(ASC, DESC)) {
+            val seen = ArrayList<String>()
+            var cursor: HistoryOrderCursor? = null
+            while (true) {
+                val page = r.query(ordered(SIZE, direction, limit = 1, after = cursor))
+                seen += page.rows.map { it.path }
+                if (!page.hasMore) break
+                cursor = HistoryOrderCursor.of(page.rows.last(), HistoryOrder(SIZE, direction), hash)
+            }
+            assertEquals(6, seen.size, "$direction: a one-row page that ends inside the null tail must carry on; saw $seen")
+            assertEquals(6, seen.toSet().size, "$direction: no row twice; saw $seen")
+        }
+    }
+
+    @Test
+    fun `an ordered cursor stays valid across a close and reopen`() {
+        val history = sizedOrderRows()
+        val r = reader(history)
+        val first = r.query(ordered(SIZE, ASC, limit = 2))
+        val cursor =
+            HistoryOrderCursor.of(first.rows.last(), HistoryOrder(SIZE, ASC), HistoryOrderCursor.filterHash(emptySet(), emptySet(), null, null, null))
+        r.close()
+        history.close()
+
+        val reopened = open()
+        assertEquals(
+            listOf("/e.txt", "/a.txt", "/c.txt"),
+            reader(reopened).query(ordered(SIZE, ASC, limit = 3, after = cursor)).rows.map { it.path },
+            "the restart left the pages where they were",
+        )
+    }
+
+    @Test
+    fun `the ordered queries respect the filters`() {
+        val history = sizedOrderRows()
+        val r = reader(history)
+        assertEquals(
+            listOf("/d.txt", "/b.txt"),
+            r.query(ordered(SIZE, ASC, results = setOf(TransferResult.FAILED, TransferResult.INTERRUPTED))).rows.map { it.path },
+            "the result filter narrows the ordered page",
+        )
+    }
+
+    @Test
+    fun `the paged path order seeks its index and the size order scans`() {
+        val history = sizedOrderRows()
+        val r = reader(history)
+        // The paging query seeks: its cursor turns the order into a (path, operation_id) range on the index.
+        val seeked = HistoryQuery(order = HistoryOrder(PATH, ASC), orderedAfter = HistoryOrderCursor.of(history.rows().first(), HistoryOrder(PATH, ASC), "0123456789abcdef"), limit = 5)
+        val pathPlans = r.explainEach(seeked)
+        assertTrue(pathPlans.single().contains("idx_transfers_path"), "the path order's page seeks its index: ${pathPlans.single()}")
+        val timePlans = r.explainEach(ordered(TIME, ASC))
+        assertTrue(timePlans.single().contains("idx_transfers_time"), "the time order seeks the time index: ${timePlans.single()}")
+        // The size order sorts by the nulls-last expression, which no plain column index serves: it scans, and
+        // what it scans is bounded by the retention (the path order's index exists because its key is a column).
+    }
+
+    @Test
+    fun `the row and later-row reads the retry admission asks for are exact`() {
+        val history = open()
+        wallMs.set(1_000)
+        val failed = history.begin(TransferDirection.UPLOAD, "/f.txt", maxAttempts = 3)
+        failed.started()
+        wallMs.set(2_000)
+        failed.finish(TransferResult.FAILED, errorClass = "network")
+        wallMs.set(3_000)
+        val later = history.begin(TransferDirection.UPLOAD, "/f.txt")
+        later.started()
+        later.finish(TransferResult.SUCCESS)
+        assertTrue(history.flush())
+        val r = reader(history)
+        assertEquals(failed.operationId, r.row(failed.operationId)?.operationId)
+        assertNull(r.row("no-such-row"))
+        assertTrue(r.hasLaterRow("/f.txt", 2_000, failed.operationId), "the later success supersedes")
+        assertFalse(r.hasLaterRow("/f.txt", 3_000, later.operationId), "nothing is later than the newest row")
+        assertFalse(r.hasLaterRow("/other.txt", 1, failed.operationId), "no row of another path counts")
     }
 }

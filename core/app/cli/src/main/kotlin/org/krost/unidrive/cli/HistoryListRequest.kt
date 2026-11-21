@@ -7,6 +7,10 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import org.krost.unidrive.telemetry.HistoryCursor
+import org.krost.unidrive.telemetry.HistoryOrder
+import org.krost.unidrive.telemetry.HistoryOrderCursor
+import org.krost.unidrive.telemetry.HistoryOrderDirection
+import org.krost.unidrive.telemetry.HistoryOrderField
 import org.krost.unidrive.telemetry.HistoryQuery
 import org.krost.unidrive.telemetry.TransferDirection
 import org.krost.unidrive.telemetry.TransferResult
@@ -14,10 +18,17 @@ import org.krost.unidrive.telemetry.TransferResult
 /**
  * A `history.list` request read into a [HistoryQuery], or the error token that refuses it (see the wire in
  * docs/dev/specs/unidrive-daemon-design.md §4.8). Unknown members are ignored. A refusal changes nothing.
+ *
+ * The `order` member is parsed strictly (it is new: there is no older client to spare): an object with
+ * exactly `field` and `direction`, each a known wire value, else `invalid_order`. The default order —
+ * time descending, named or omitted — keeps today's cursor; any other order pages with the versioned
+ * [HistoryOrderCursor] and refuses a cursor issued under another order or another normalised filter set.
  */
 internal sealed interface HistoryListRequest {
     class Ok(
         val query: HistoryQuery,
+        /** The order the request named, or null when it omitted `order` (today's reply shape, unchanged). */
+        val requestedOrder: HistoryOrder? = null,
     ) : HistoryListRequest
 
     class Refused(
@@ -42,13 +53,10 @@ internal sealed interface HistoryListRequest {
                         minOf(n, HistoryQuery.MAX_LIMIT.toLong()).toInt()
                     }
                 }
-            val after =
-                when (val element = body["cursor"]) {
+            val order =
+                when (val element = body["order"]) {
                     null, JsonNull -> null
-                    else -> {
-                        val token = (element as? JsonPrimitive)?.takeIf { it.isString }?.content
-                        HistoryCursor.decode(token ?: "") ?: return Refused("invalid_cursor")
-                    }
+                    else -> parseOrder(element) ?: return Refused("invalid_order")
                 }
 
             var directions = emptySet<TransferDirection>()
@@ -70,6 +78,25 @@ internal sealed interface HistoryListRequest {
                 to = instant(filters["to_ms"]) ?: return Refused("invalid_time_range")
                 if (from != ABSENT && to != ABSENT && from > to) return Refused("invalid_time_range")
             }
+
+            // The cursor a request may page with: under the default order the v1 time cursor, under any other
+            // order only one that carries exactly that order and the hash of this request's normalised filters.
+            // A cursor of the other kind, or one whose order or filters differ, is `invalid_cursor`.
+            val expectedHash = HistoryOrderCursor.filterHash(directions, results, prefix, from.takeIf { it != ABSENT }, to.takeIf { it != ABSENT })
+            val after: Any =
+                when (val element = body["cursor"]) {
+                    null, JsonNull -> NoCursor
+                    else -> {
+                        val token = (element as? JsonPrimitive)?.takeIf { it.isString }?.content ?: ""
+                        when {
+                            order == null || order.isDefault -> HistoryCursor.decode(token)
+                            else ->
+                                HistoryOrderCursor.decode(token)
+                                    ?.takeIf { it.field == order.field && it.direction == order.direction && it.filterHash == expectedHash }
+                        } ?: return Refused("invalid_cursor")
+                    }
+                }
+
             return Ok(
                 HistoryQuery(
                     directions = directions,
@@ -77,10 +104,26 @@ internal sealed interface HistoryListRequest {
                     pathPrefix = prefix,
                     fromMs = from.takeIf { it != ABSENT },
                     toMs = to.takeIf { it != ABSENT },
-                    after = after,
+                    after = (after as? HistoryCursor),
+                    order = order ?: HistoryOrder.DEFAULT,
+                    orderedAfter = (after as? HistoryOrderCursor),
                     limit = limit,
                 ),
+                order,
             )
+        }
+
+        /** The request carried no `cursor`; the sentinel keeps the two cursor kinds apart below. */
+        private object NoCursor
+
+        /** The `order` object as a [HistoryOrder]; anything else is null (refused). Both members are required. */
+        private fun parseOrder(element: JsonElement): HistoryOrder? {
+            if (element !is JsonObject || element.keys.toSet() != setOf("field", "direction")) return null
+            val field = (element["field"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+            val direction = (element["direction"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+            val f = field?.let { HistoryOrderField.ofWire(it) } ?: return null
+            val d = direction?.let { HistoryOrderDirection.ofWire(it) } ?: return null
+            return HistoryOrder(f, d)
         }
 
         // A string or an array of strings, each a known wire value; absent = no filter; null = refused.
