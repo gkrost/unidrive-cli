@@ -458,15 +458,12 @@ class DaemonRuntime(
                 if (hydration != null) {
                     log.info(hydrationLimitsLine(mount.transferBudgetSize, uploadQueueDepth, cacheAccessGraceMs))
                 }
-                // gkrost/unidrive-cli#851: the released-hold sweep progress the client's removal card reads. The
-                // hydration verbs feed it (a delete marked `sweep_total` declares the sweep, its ok counts one),
-                // daemon.status reads it; counts only, no paths.
+                // gkrost/unidrive-cli#851: the released-hold sweep progress — the hydration verbs feed it, daemon.status reads it.
                 val deleteSweep = DeleteSweepProgress()
                 val hydrationIpc: HydrationIpcHandler? =
                     // gkrost/unidrive-cli#24: the name_clash guard's first spellings persist in state.db, so a restart keeps them.
                     hydration?.let { h ->
-                        HydrationIpcHandler(h, spellingsStore = db?.let { StateDbNameSpellingStore(it) }, deleteSweep = deleteSweep)
-                            .also { hydrationLink.bind(h, it) }
+                        HydrationIpcHandler(h, spellingsStore = db?.let { StateDbNameSpellingStore(it) }, deleteSweep = deleteSweep).also { hydrationLink.bind(h, it) }
                     }
 
                 // The construction order from here on is explicit: every handler and the poller exist
@@ -908,9 +905,8 @@ class DaemonRuntime(
                         .put("views", hydration?.viewStatuses()?.takeIf { it.isNotEmpty() }?.let { viewsStatusJson(it).toString() })
                         // remote_incomplete: present only while a truncated cloud object is remembered (count only, no names).
                         .put("remote_incomplete", mount.remoteIncompleteCount().takeIf { it > 0 }?.let { remoteIncompleteJson(it).toString() })
-                        // delete_sweep (gkrost/unidrive-cli#851): present only while a released hold's sweep is under way —
-                        // the sweep's total, its decreasing remaining and its start time beside the sweep id, so a client's
-                        // removal card shows "remaining of total" with an ETA and keeps two consecutive sweeps apart.
+                        // delete_sweep (gkrost/unidrive-cli#851): present only while a released hold's sweep is under way
+                        // (the sweep's total, remaining, start time and id; counts only, no paths).
                         .put("delete_sweep", deleteSweep.snapshot()?.toJson()?.toString())
                         // paused (archive#778): present only while the daemon is paused; uploads and quota above keep reporting.
                         .put("paused", pause.current?.toJson()?.toString())

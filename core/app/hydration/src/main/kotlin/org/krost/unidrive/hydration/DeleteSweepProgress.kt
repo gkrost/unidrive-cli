@@ -1,5 +1,8 @@
 package org.krost.unidrive.hydration
 
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.util.UUID
 
 /**
@@ -19,13 +22,25 @@ import java.util.UUID
  * on different pools.
  */
 class DeleteSweepProgress(private val nowMs: () -> Long = System::currentTimeMillis) {
-    /** One sweep as the status reports it, present only while the sweep is under way. */
+    /**
+     * One sweep as the status reports it, present only while the sweep is under way. This is the `delete_sweep`
+     * object of `daemon.status`: counts only, no paths, like every shared record of the held deletes. It renders
+     * itself, rather than beside the cli status builders, to keep that file's function budget free.
+     */
     data class Snapshot(
         val sweepId: String,
         val total: Int,
         val remaining: Int,
         val startedAtMs: Long,
-    )
+    ) {
+        fun toJson(): JsonObject =
+            buildJsonObject {
+                put("sweep_id", sweepId)
+                put("total", total)
+                put("remaining", remaining)
+                put("started_at_ms", startedAtMs)
+            }
+    }
 
     private class Sweep(
         val sweepId: String,

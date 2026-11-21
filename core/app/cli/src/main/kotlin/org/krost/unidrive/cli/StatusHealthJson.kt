@@ -8,7 +8,6 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import org.krost.unidrive.RemoteChangeChannelStatus
 import org.krost.unidrive.engine.ViewNamespaces
-import org.krost.unidrive.hydration.DeleteSweepProgress
 import org.krost.unidrive.engine.ViewStatus
 import org.krost.unidrive.hydration.HydrationImpl
 import org.krost.unidrive.hydration.PauseGate
@@ -49,21 +48,6 @@ internal fun HydrationImpl.UploadHealth.toJson(): JsonObject =
 
 /** The `daemon.status` capability that says `uploads` names the uploads under way (`uploads.running`, archive#1200). */
 internal const val RUNNING_UPLOADS_CAPABILITY = "uploads.running"
-
-/**
- * `delete_sweep` (gkrost/unidrive-cli#851): the whole-sweep progress of a released delete hold, present only while the
- * sweep is under way (the last item landed, or no marked delete reached the engine within its quiet window). Counts
- * only, no paths, like every shared record of the held deletes: `total` is the size the sweep started with,
- * `remaining` decreases with every marked delete that lands, `started_at_ms` is when the first one did, and
- * `sweep_id` changes with every sweep so a client keeps two consecutive bars apart.
- */
-internal fun DeleteSweepProgress.Snapshot.toJson(): JsonObject =
-    buildJsonObject {
-        put("sweep_id", sweepId)
-        put("total", total)
-        put("remaining", remaining)
-        put("started_at_ms", startedAtMs)
-    }
 
 /** The `daemon.status` capability that says the daemon answers `hydration.matches_local` (archive#1219). */
 internal const val MATCHES_LOCAL_CAPABILITY = "hydration.matches_local"

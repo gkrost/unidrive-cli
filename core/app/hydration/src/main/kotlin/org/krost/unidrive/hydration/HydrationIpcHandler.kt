@@ -729,16 +729,11 @@ class HydrationIpcHandler(
                 val path = pluckPath(request, "path") ?: return reply(ok = false, error = "missing_path")
                 // archive#1178: "permanent":true deletes for good (rm --permanent); the provider must be able to.
                 val permanent = request.bool("permanent") == true
-                // gkrost/unidrive-cli#851: the mark of a released hold's drain. Declared before the delete runs, so a
-                // sweep is under way while its first op may still fail and stay owed; counted when the delete landed.
+                // gkrost/unidrive-cli#851: the mark is declared before the delete runs, so a failed first op stays owed.
                 val sweepMarked = sweepMark(request)
                 nameClash(rawPath(request, "path"))?.let { return it }
                 when (val r = hydration.unlink(path, permanent)) {
-                    is UnlinkResult.Ok -> {
-                        spellings.forget(rawPath(request, "path"))
-                        if (sweepMarked) deleteSweep?.completed()
-                        reply(ok = true)
-                    }
+                    is UnlinkResult.Ok -> deleteOk(rawPath(request, "path"), sweepMarked)
                     UnlinkResult.PathIsFolder -> reply(ok = false, error = "path_is_folder")
                     UnlinkResult.Busy -> reply(ok = false, error = "busy")
                     is UnlinkResult.Failed -> reply(ok = false, error = r.error.message)
@@ -753,11 +748,7 @@ class HydrationIpcHandler(
                 val sweepMarked = sweepMark(request)
                 nameClash(rawPath(request, "path"))?.let { return it }
                 when (val r = if (recursive && request.bool("discard_local") == true) hydration.rmdirDiscardingLocal(path, permanent) else hydration.rmdir(path, recursive, permanent)) {
-                    is RmdirResult.Ok -> {
-                        spellings.forget(rawPath(request, "path"))
-                        if (sweepMarked) deleteSweep?.completed()
-                        reply(ok = true)
-                    }
+                    is RmdirResult.Ok -> deleteOk(rawPath(request, "path"), sweepMarked)
                     RmdirResult.PathIsFile -> reply(ok = false, error = "path_is_file")
                     is RmdirResult.NotEmpty -> notEmptyReply(r)
                     RmdirResult.Busy -> reply(ok = false, error = "busy")
@@ -917,6 +908,14 @@ class HydrationIpcHandler(
     private val spellings = NameSpellings(spellingsStore)
 
     private fun rawPath(request: HydrationRequest, key: String): String = request.string(key).orEmpty()
+
+    // gkrost/unidrive-cli#851: the ok reply of a marked delete counts one item off the sweep; the first spelling is
+    // forgotten like before. One helper for unlink and rmdir, whose ok branches are otherwise identical.
+    private fun deleteOk(raw: String, marked: Boolean): String {
+        spellings.forget(raw)
+        if (marked) deleteSweep?.completed()
+        return reply(ok = true)
+    }
 
     // gkrost/unidrive-cli#851: true when the request marks its delete as part of a released hold's sweep. The mark
     // declares the sweep (or keeps it, or starts the next one) in [DeleteSweepProgress.declared] before the verb runs.
