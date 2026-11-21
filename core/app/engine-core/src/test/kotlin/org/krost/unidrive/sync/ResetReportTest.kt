@@ -58,7 +58,7 @@ class ResetReportTest {
         val scanId = db.beginScan(null)
         db.persistScanPage(
             scanId,
-            (0 until 4_000).map { i ->
+            (0 until 20_000).map { i ->
                 CloudItem(
                     id = "c-$i", name = "n$i.txt", path = "/n$i.txt", size = 1, isFolder = false, modified = null, created = null,
                     hash = "h".repeat(40), mimeType = null,

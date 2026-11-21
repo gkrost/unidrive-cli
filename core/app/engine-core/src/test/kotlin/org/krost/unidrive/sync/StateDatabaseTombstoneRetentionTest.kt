@@ -262,7 +262,7 @@ class StateDatabaseTombstoneRetentionTest {
     fun `a completed scan gives its staging file back`() {
         val scanId = db.beginScan(null)
         val items =
-            (0 until 4_000).map { i ->
+            (0 until 20_000).map { i ->
                 CloudItem(
                     id = "c-$i", name = "n$i.txt", path = "/n$i.txt", size = 1, isFolder = false, modified = old, created = old,
                     hash = "h".repeat(40), mimeType = null,
