@@ -142,6 +142,9 @@ class IpcContractLevelTest {
                 // the sweep is under way daemon.status carries the `delete_sweep` object (sweep_id, total, remaining,
                 // started_at_ms). Present only then, so the idle corpus reply pins the capability alone.
                 setOf("capability:hydration.sweep_progress"),
+                // 9 (gkrost/unidrive-cli#848): history.list takes an `order` member (the reply echoes it and says
+                // live_keyset), and history.retry queues one failed upload row again; the capabilities name both.
+                setOf("verb:history.retry", "capability:history.order.v1", "capability:history.retry.v1"),
             )
     }
 }

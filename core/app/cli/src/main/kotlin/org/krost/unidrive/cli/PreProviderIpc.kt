@@ -85,7 +85,7 @@ internal suspend fun servePreProviderIpc(
     // dedicated SupervisorJob that we cancel before the scope exits.
     // The scope inherits the daemon's logContext from start() (gkrost/unidrive-cli#225).
     val serveJob = SupervisorJob()
-    val serveScope = DaemonRuntime.serveScopeOf(kotlin.coroutines.coroutineContext, serveJob)
+    val serveScope = serveScopeOf(kotlin.coroutines.coroutineContext, serveJob)
     // The engine's two hooks into the hydration layer (see DaemonHydrationLink). Declared outside the
     // tail's try: its finally joins the hydration uploads through it.
     val hydrationLink = DaemonHydrationLink()

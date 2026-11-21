@@ -653,12 +653,14 @@ class DaemonRuntime(
                 // sync.subscribe — the same wiring as SyncCommand's (gkrost/unidrive-cli#442).
                 server.registerSyncSubscribeVerb()
 
-                // history.list / history.subscribe (archive#653): read verbs over the transfer history. A mirror daemon, or a mount
-                // daemon whose history did not open, answers history_unavailable (never an empty list).
+                // history.list / history.subscribe / history.retry (archive#653, gkrost/unidrive-cli#848): the verbs over
+                // the transfer history. A mirror daemon, or a mount daemon whose history did not open, answers
+                // history_unavailable (never an empty list) and retry_unavailable: there is nothing to retry from.
                 historyRpc =
                     HistoryRpcHandler(
                         transferHistory,
                         if (mountMode) HistoryRpcHandler.OPEN_FAILED else HistoryRpcHandler.MIRROR,
+                        retry = mountHistoryRetryEngine(hydration),
                     ).also { it.register(server, serveScope) }
 
                 // refresh.run verb (spec §4.2); the handler is constructed above.
@@ -746,8 +748,9 @@ class DaemonRuntime(
                 // hosting contract before it sends a verb the profile refuses (additive, read-only). Fixed for the run, so
                 // rendered once here, not at every status request (gkrost/unidrive-cli#442).
                 val modeJson = ndjsonString(profileMode.wireName)
+                // The history verbs' capabilities (gkrost/unidrive-cli#848) serve only where a history is open.
                 val capabilitiesJson =
-                    daemonCapabilitiesJson(profileMode, hydration != null, engine.uploadIgnore != null, viewNamespaces, shareCapable, vaultUnlockable = vault != null)
+                    daemonCapabilitiesJson(profileMode, hydration != null, engine.uploadIgnore != null, viewNamespaces, shareCapable, historyOpen = transferHistory != null, vaultUnlockable = vault != null)
 
                 // daemon.status verb (spec §4.3). protocol_version is the
                 // additive cross-repo handshake field (IPC_PROTOCOL_VERSION):
@@ -1176,30 +1179,6 @@ class DaemonRuntime(
         /** archive#652: the transfer history's file, in the profile's state folder next to state.db. */
         const val HISTORY_FILE_NAME = "telemetry.db"
 
-        /**
-         * The serve scope: the daemon's launches (enumerations, event writers, pollers) run on [kotlinx.coroutines.Dispatchers.Default],
-         * not on the event loop of the `runBlocking` that calls [start]. That loop is one thread, which the shutdown's
-         * `closeSignal.await()` also needs: a blocking span on it would stall every writer and the stop. The IPC handlers
-         * already run on their own pool, so no state here relied on that single thread. Blocking JDBC and file work still
-         * goes through `withContext(Dispatchers.IO)` at its call site, so it does not hold a Default thread.
-         */
-        internal fun serveScopeOf(
-            parent: kotlin.coroutines.CoroutineContext,
-            job: kotlinx.coroutines.Job,
-        ): kotlinx.coroutines.CoroutineScope =
-            kotlinx.coroutines.CoroutineScope(parent + job + kotlinx.coroutines.Dispatchers.Default)
-
-        /**
-         * The scope the mount's hydration uploads and replays run in: a scope of its own (the shutdown joins it apart from
-         * the serve scope), so it carries the daemon's [logContext] itself (archive#150, gkrost/unidrive-cli#225).
-         */
-        internal fun hydrationUploadScope(profileName: String): kotlinx.coroutines.CoroutineScope =
-            kotlinx.coroutines.CoroutineScope(
-                kotlinx.coroutines.SupervisorJob() +
-                    kotlinx.coroutines.Dispatchers.IO +
-                    logContext(profileName),
-            )
-
         // Cross-repo IPC wire-protocol version, surfaced as the additive
         // protocol_version field in the daemon.status reply so co-clients
         // (Rust FUSE crate, C# CfAPI client) can warn/refuse on mismatch
@@ -1213,8 +1192,9 @@ class DaemonRuntime(
         // contract_level (gkrost/unidrive-cli#445): an integer raised by one with every additive IPC change (a new
         // verb, capability or field), so a client orders engine builds by what they answer; protocol_version moves only
         // on a breaking change and engine_version does not order dev builds. IpcContractLevelTest pins the IPC surface
-        // of each level and fails when the surface changes without a raise.
-        const val IPC_CONTRACT_LEVEL: Int = 8
+        // of each level and fails when the surface changes without a raise. 8 (gkrost/unidrive-cli#851) shipped on main;
+        // the history verbs (gkrost/unidrive-cli#848, merged here at their own 8) are the raise to 9 on top of it.
+        const val IPC_CONTRACT_LEVEL: Int = 9
 
         /**
          * Whether a successful `hydration.subscribe` is followed by the one guarded enumerate: only for a

@@ -2,8 +2,10 @@ package org.krost.unidrive.telemetry
 
 import org.slf4j.LoggerFactory
 import java.sql.SQLException
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /** Why [thread] ended ([failure]), or its state and top frames: what a test that waits on a telemetry writer reports (#390). */
 internal fun writerThreadStatus(
@@ -39,6 +41,26 @@ internal class HistoryWriter(
         val row: TransferRow,
         val previousId: String,
     ) : Op<TransferRow>
+
+    /**
+     * The history's other extra op: the durable answer of a `history.retry` request id (§4.8), recorded
+     * synchronously — the reply must not go out before the mapping is on file. The future answers [FRESH]
+     * when this call wrote the record, or the value the file already held for the key (the stored form is
+     * never empty, so the sentinel is unambiguous, and `null` keeps meaning "not taken" to the control).
+     */
+    private class RecordOutcome(
+        val key: String,
+        val value: String,
+        val done: CompletableFuture<String>,
+    ) : Op<TransferRow> {
+        /**
+         * Who owns the op: the writer takes it ([STARTED]) before it writes, the caller that stops waiting
+         * abandons it ([ABANDONED]) first; whichever wins the compare-and-set decides, so an answer of "not
+         * recorded" is never followed by a record written later (a resend would replay an accepted answer for a
+         * submission that was never queued).
+         */
+        val state = AtomicInteger(PENDING)
+    }
 
     // Terminal snapshots a full queue could not take: the writer drains this every turn. A row that
     // lost its final snapshot stands `running` in the file for ever, and the retention skips running
@@ -97,6 +119,45 @@ internal class HistoryWriter(
         }
     }
 
+    /**
+     * Records a `history.retry` outcome on the writer thread and waits for it (§4.8: the reply never goes
+     * out before the mapping is durable). [RetryOutcomeWrite.Recorded] means this call wrote it,
+     * [RetryOutcomeWrite.Existing] means an outcome under this key was already on file (its stored value is
+     * carried for the caller to decode and replay), and [RetryOutcomeWrite.NotRecorded] means nothing was
+     * written (the writer is gone, the queue did not take the request in time, or the write failed).
+     */
+    fun recordOutcome(
+        key: String,
+        value: String,
+        timeoutMs: Long,
+    ): RetryOutcomeWrite {
+        var op: RecordOutcome? = null
+        val answer =
+            controlWithResult(timeoutMs) { done ->
+                RecordOutcome(key, value, done).also { op = it }
+            }
+        if (answer == null) {
+            val given = op ?: return RetryOutcomeWrite.NotRecorded
+            // The caller gives up unless the writer already took the op: then its result is the answer.
+            if (given.state.compareAndSet(PENDING, ABANDONED)) return RetryOutcomeWrite.NotRecorded
+            val late =
+                try {
+                    given.done.get(timeoutMs, TimeUnit.MILLISECONDS)
+                } catch (e: java.util.concurrent.TimeoutException) {
+                    log.warn("History for {}: the retry outcome write did not answer within {} ms ({})", profile, timeoutMs, e.javaClass.simpleName)
+                    return RetryOutcomeWrite.NotRecorded
+                } catch (e: java.util.concurrent.ExecutionException) {
+                    log.warn("History for {}: the retry outcome write failed ({})", profile, e.javaClass.simpleName)
+                    return RetryOutcomeWrite.NotRecorded
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return RetryOutcomeWrite.NotRecorded
+                }
+            return if (late == FRESH) RetryOutcomeWrite.Recorded else RetryOutcomeWrite.Existing(late)
+        }
+        return if (answer == FRESH) RetryOutcomeWrite.Recorded else RetryOutcomeWrite.Existing(answer)
+    }
+
     fun flush(timeoutMs: Long): Boolean = control(timeoutMs) { Op.Barrier(it) }
 
     fun pruneNow() {
@@ -130,6 +191,17 @@ internal class HistoryWriter(
         if (op is Replace) {
             writePending()
             replaceRow(op.row, op.previousId)
+        }
+        if (op is RecordOutcome && op.state.compareAndSet(PENDING, STARTED)) {
+            // The pending rows go first, so the record lands in the same turn as the snapshots before it.
+            writePending()
+            try {
+                val existing = store.recordRetryOutcomeIfAbsent(op.key, op.value)
+                op.done.complete(existing ?: FRESH)
+            } catch (e: SQLException) {
+                log.warn("History for {}: the retry outcome could not be recorded ({})", profile, HistorySanitizer.message(e.message))
+                op.done.completeExceptionally(e)
+            }
         }
     }
 
@@ -245,5 +317,12 @@ internal class HistoryWriter(
         private const val KEPT_TERMINALS = 256
 
         const val DEFAULT_WAIT_MS = BatchingWriter.DEFAULT_WAIT_MS
+
+        /** The [RecordOutcome] answer that says this call wrote the record (a stored form is never empty). */
+        private const val FRESH = ""
+
+        private const val PENDING = 0
+        private const val STARTED = 1
+        private const val ABANDONED = 2
     }
 }
