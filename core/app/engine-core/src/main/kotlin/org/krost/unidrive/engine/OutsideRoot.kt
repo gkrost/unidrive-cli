@@ -41,8 +41,12 @@ class OutsideRoot(
     var heldRows: Int = 0
         private set
 
-    /** The live items a full listing saw for the remote-shrink guard: [alive] placed ones and the held rows outside the root. */
-    fun observed(alive: Int): Int = alive + heldRows
+    /**
+     * The tracked rows the remote-shrink guard judges the placed listing against: [tracked] without the held rows of the
+     * trees outside the root. Those rows are neither among the placed live items nor missing, so they leave both sides of
+     * the comparison; counting them only as observed would let a large tree hide a listing that dropped the drive itself.
+     */
+    fun baseline(tracked: Int): Int = (tracked - heldRows).coerceAtLeast(0)
 
     /** The figures of a full listing ([fullListing]); an incremental pass sees only what changed and leaves them alone. */
     fun record(

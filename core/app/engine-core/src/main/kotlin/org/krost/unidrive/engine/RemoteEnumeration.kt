@@ -567,14 +567,15 @@ class RemoteEnumeration(
         reapsDeferred: Boolean,
     ) {
         val fullListing = gather.cursorState.lastGatherFull.strict == true
-        // The held rows of a tree outside the drive root count as seen: the listing returned them (gkrost/unidrive-cli#862).
-        val observedAlive = gather.outsideRoot.observed(remoteChanges.values.count { !it.deleted })
-        val shrinkWarning = if (fullListing) RemoteGather.remoteShrinkWarningOrNull(observedAlive, preGatherTrackedRows) else null
+        val observedAlive = remoteChanges.values.count { !it.deleted }
+        // The held rows of a tree outside the drive root are not judged: the listing returned them (gkrost/unidrive-cli#862).
+        val shrinkBaseline = gather.outsideRoot.baseline(preGatherTrackedRows)
+        val shrinkWarning = if (fullListing) RemoteGather.remoteShrinkWarningOrNull(observedAlive, shrinkBaseline) else null
         if (shrinkWarning != null && db.getSyncState(RemoteGather.INCOMPLETE_ENUMERATION_KEY)?.equals("true", ignoreCase = true) == true) {
             log.warn(
                 "enumerate: the full listing observed only {} live item(s) against {} tracked rows; keeping the recovery latch",
                 observedAlive,
-                preGatherTrackedRows,
+                shrinkBaseline,
             )
         }
         gather.settleRecoveryLatch(scoped = false, shrinkWarning = shrinkWarning, reapsDeferred = reapsDeferred)

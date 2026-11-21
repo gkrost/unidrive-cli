@@ -1309,8 +1309,8 @@ open class SyncEngine(
             cursorState.lastGatherFull.strict ?: fullEnumerationExpected
         val remoteShrinkWarning =
             if (actualFullEnumeration && runScope.isEmpty() && !skipRemoteGather) {
-                val observedAlive = remoteGather.outsideRoot.observed(allRemoteChanges.values.count { !it.deleted })
-                remoteShrinkWarningOrNull(observedAlive, preGatherTrackedRows)
+                val observedAlive = allRemoteChanges.values.count { !it.deleted }
+                remoteShrinkWarningOrNull(observedAlive, remoteGather.outsideRoot.baseline(preGatherTrackedRows))
             } else {
                 null
             }
