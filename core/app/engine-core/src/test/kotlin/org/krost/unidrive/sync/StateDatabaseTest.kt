@@ -723,6 +723,22 @@ class StateDatabaseTest {
     }
 
     @Test
+    fun `a cloud id is held by one row, so its status is the whole answer of the any-status lookup`() {
+        // remote_id is the table's PRIMARY KEY: moving or re-trashing an item rewrites its one row and never leaves a
+        // DELETED row at the old path beside a TRASHED one at the new path. The #853 snapshot guard reads that one row
+        // (getEntryByRemoteIdAnyStatus has no ORDER BY, and needs none).
+        db.upsertEntry(entry("/old/a.txt").copy(remoteId = "uuid-one"))
+        db.markDeleted("/old/a.txt")
+        db.upsertEntry(entry("/new/a.txt").copy(remoteId = "uuid-one"))
+        db.setStatusTrashed("uuid-one")
+
+        val rows = db.recovery.allEntriesAnyStatus().filter { it.remoteId == "uuid-one" }
+        assertEquals(1, rows.size, "the second upsert replaced the first row")
+        assertEquals("/new/a.txt", rows.single().path)
+        assertEquals(EntryStatus.TRASHED, db.recovery.getEntryByRemoteIdAnyStatus("uuid-one")?.status)
+    }
+
+    @Test
     fun `recovery scenario — 100-item mass-delete is one SELECT plus one batched untrash`() {
         // Synthesise a 100-item mass-delete: 100 rows trashed.
         for (i in 0 until 100) {

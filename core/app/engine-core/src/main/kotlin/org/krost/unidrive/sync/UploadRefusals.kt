@@ -24,15 +24,19 @@ object UploadRefusals {
         return nowMs < retryAt
     }
 
-    /** The reason [refusal] gives for the bytes `<mtime>|<size>` (without a plan refusal's deadline), or null when it is for other bytes. */
+    /** The reason [refusal] gives for the bytes `<mtime>|<size>` (without its `<retry at>|` deadline, for every refusal), or null when it is for other bytes. */
     fun reason(
         refusal: String?,
         mtime: Long?,
         size: Long?,
     ): String? {
         val rest = afterWatermark(refusal, mtime, size) ?: return null
-        return if (planLimitDeadline(rest) != null) rest.substringAfter('|') else rest
+        return withoutDeadline(rest)
     }
+
+    /** Whether [reason] is the provider's plan refusal ([PlanLimitException.REASON], bare or with its sentence) — the doctor's
+     * severity split reports such rows as information, not a warning (gkrost/unidrive-cli#852). */
+    fun isPlanLimit(reason: String): Boolean = isPlanLimitReason(reason)
 
     private fun afterWatermark(
         refusal: String?,
@@ -41,6 +45,12 @@ object UploadRefusals {
     ): String? {
         val watermark = "$mtime|$size|"
         return refusal?.takeIf { it.startsWith(watermark) }?.substring(watermark.length)
+    }
+
+    // Drops a leading all-digits `<retry at>|` segment, whatever the reason; the display text never carries the deadline.
+    private fun withoutDeadline(rest: String): String {
+        val sep = rest.indexOf('|')
+        return if (sep > 0 && rest.substring(0, sep).all { it.isDigit() }) rest.substring(sep + 1) else rest
     }
 
     // The deadline of a plan's refusal (`<retry at>|plan_limit[: <sentence>]`); null for any other refusal, which has none here.
