@@ -3,6 +3,7 @@ package org.krost.unidrive.telemetry
 import org.krost.unidrive.http.RequestAttempt
 import org.krost.unidrive.io.OwnerOnly
 import org.krost.unidrive.sync.JdbcStateDatabaseConnector
+import org.krost.unidrive.sync.RewriteRoom
 import org.krost.unidrive.sync.SqliteConnections
 import org.krost.unidrive.sync.StateDatabaseConnector
 import org.slf4j.LoggerFactory
@@ -29,10 +30,13 @@ internal class TelemetryStore private constructor(
     val dbPath: Path,
     private val afterOpen: (Connection) -> Unit,
     private val connector: StateDatabaseConnector,
-    private val usableSpace: (Path) -> Long = { Files.getFileStore(it).usableSpace },
 ) {
     private var conn: Connection? = null
     private var closed = false
+
+    /** What a rewrite asks for its disk space; a test seam. */
+    @Volatile
+    internal var rewriteRoom = RewriteRoom()
 
     @Synchronized
     private fun connection(): Connection {
@@ -321,24 +325,26 @@ internal class TelemetryStore private constructor(
 
     // Deleted rows leave free pages inside the file; a VACUUM gives them back when the file is still over the budget, or
     // when more than a quarter of its pages are free (retention that stays under the cap used to keep the file's size for
-    // ever, gkrost/unidrive-cli#863). Skipped when the folder has less free space than twice the file.
+    // ever, gkrost/unidrive-cli#863). Skipped when the disk has too little space for the rewrite ([RewriteRoom]: the folder
+    // and SQLite's temp directory, where the copy of the live pages is built).
     private fun shrinkFile(
         c: Connection,
         maxBytes: Long,
     ) {
         c.createStatement().use { st ->
             st.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            if ((fileBytes() > maxBytes || mostlyFree(c)) && hasRoomToRewrite()) {
+            if ((fileBytes() > maxBytes || mostlyFree(c)) && hasRoomToRewrite(c)) {
                 st.execute("VACUUM")
                 st.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             }
         }
     }
 
-    private fun hasRoomToRewrite(): Boolean {
-        val usable = runCatching { usableSpace(dbPath.toAbsolutePath().parent) }.getOrDefault(Long.MAX_VALUE)
-        if (usable >= 2 * fileBytes()) return true
-        log.info("{} cannot be rewritten: the folder has too little space", dbPath)
+    // A space read that fails says nothing: the rewrite goes ahead, as it did before the check (a file over its budget
+    // must still shrink).
+    private fun hasRoomToRewrite(c: Connection): Boolean {
+        if (rewriteRoom.check(dbPath, fileBytes(), liveBytes(c)) != false) return true
+        log.info("{} cannot be rewritten: the disk has too little space", dbPath)
         return false
     }
 

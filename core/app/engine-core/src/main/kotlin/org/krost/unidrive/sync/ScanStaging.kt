@@ -417,8 +417,11 @@ internal class ScanStaging(
         }
     }
 
-    /** Every staged row and the checkpoint, in one transaction. */
-    fun clearAll() {
+    /**
+     * Every staged row and the checkpoint, in one transaction. [reclaim] false leaves the rewrite to the caller: one that
+     * holds the main database's monitor (#531) calls [reclaimSpace] once it let go, so no disk sync runs under it.
+     */
+    fun clearAll(reclaim: Boolean = true) {
         if (connection() == null) return
         transaction { c ->
             c.createStatement().use { stmt ->
@@ -426,19 +429,25 @@ internal class ScanStaging(
                 stmt.executeUpdate("DELETE FROM scan_meta")
             }
         }
-        reclaimSpace()
+        if (reclaim) reclaimSpace()
     }
+
+    /** What [reclaimSpace] asks for the disk space of a rewrite; a test seam. */
+    @Volatile
+    internal var rewriteRoom = RewriteRoom()
 
     /**
      * Rewrites the file (`VACUUM`) when at least [MIN_RECLAIM_BYTES] of it are free pages and they are more than a quarter
      * of all pages. The staging is scratch for one listing: a scan that ends leaves its pages on the free list, and the
      * file keeps the size of the largest listing for ever (251 MB on a profile whose account was emptied, gkrost/unidrive-cli#863).
      * Called where rows go (a scan's end, [clearAll], the discard of a dead scan's rows), so a crashed or killed scan is
-     * reclaimed by the next scan's [begin]. Skipped when the folder has less free space than twice the file (the rewrite
-     * and its WAL); a failed rewrite (a reader holds the file) leaves it as it was. Returns whether the file was rewritten.
+     * reclaimed by the next scan's [begin]. Skipped when the disk has too little space for the rewrite ([RewriteRoom]: the
+     * folder and SQLite's temp directory) or when that cannot be told. Best effort: nothing it meets fails the scan around
+     * it; a failed rewrite (a reader holds the file, a space read fails) leaves the file as it was. Returns whether the
+     * file was rewritten.
      */
     @Synchronized
-    internal fun reclaimSpace(usableSpace: (Path) -> Long = { Files.getFileStore(it).usableSpace }): Boolean {
+    internal fun reclaimSpace(): Boolean {
         val f = file ?: return false
         val c = conn?.takeIf { !it.isClosed && !readOnly } ?: return false
         return try {
@@ -449,9 +458,10 @@ internal class ScanStaging(
                 val pageSize = pragma("page_size")
                 if (pages == 0L || free * pageSize < MIN_RECLAIM_BYTES || free <= pages * RECLAIM_FREE_SHARE) return@use false
                 val wal = f.resolveSibling("${f.fileName}-wal")
-                val logical = pages * pageSize + if (Files.exists(wal)) Files.size(wal) else 0L
-                if (usableSpace(f.toAbsolutePath().parent) < 2 * logical) {
-                    log.info("{} has {} of {} pages free, but the folder has too little space to rewrite it", f, free, pages)
+                val logical = pages * pageSize + sizeOrZero(wal)
+                val room = rewriteRoom.check(f, logical, (pages - free) * pageSize)
+                if (room != true) {
+                    log.info("{} has {} of {} pages free, but {}", f, free, pages, if (room == null) "its disk space cannot be read" else "the disk has too little space to rewrite it")
                     return@use false
                 }
                 val started = System.nanoTime()
@@ -463,7 +473,7 @@ internal class ScanStaging(
                     f,
                     free,
                     pages,
-                    Files.size(f) / 1_048_576,
+                    sizeOrZero(f) / 1_048_576,
                     (System.nanoTime() - started) / 1_000_000,
                 )
                 true
@@ -473,6 +483,9 @@ internal class ScanStaging(
             false
         }
     }
+
+    // A file that is gone (the WAL a checkpoint just removed) or cannot be read counts as empty.
+    private fun sizeOrZero(f: Path): Long = runCatching { if (Files.exists(f)) Files.size(f) else 0L }.getOrDefault(0L)
 
     // Whether scan_staging holds no row of another scan: min and max of the key's leading column are two seeks.
     private fun holdsOnly(

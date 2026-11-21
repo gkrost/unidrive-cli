@@ -80,6 +80,37 @@ class TelemetryStoreTest {
         assertTrue(store.fileBytes() < full / 2, "file is ${store.fileBytes()} bytes, was $full")
     }
 
+    // #865: the rewrite needs room in the folder and in SQLite's temp directory; without it the file keeps its size and
+    // its rows, and retention does not fail.
+    @Test
+    fun `too little disk space leaves the telemetry file and its rows as they were`() {
+        val store = open()
+        store.rewriteRoom = org.krost.unidrive.sync.RewriteRoom(usableSpace = { 0L })
+        val pad = "x".repeat(300)
+        store.upsert((0 until 15_000).map { row("op-$it").copy(path = "/$it/$pad", queuedAt = 1_000L) })
+        store.upsert((15_000 until 20_000).map { row("op-$it").copy(path = "/$it/$pad", queuedAt = 9_000L) })
+        val before = store.fileBytes()
+
+        assertEquals(15_000, store.prune(cutoffMs = 5_000L, maxBytes = Long.MAX_VALUE / 2))
+
+        assertEquals(5_000, store.readAll().size)
+        assertTrue(store.fileBytes() >= before / 2, "file is ${store.fileBytes()} bytes: rewritten without room, was $before")
+    }
+
+    @Test
+    fun `a disk space read that fails still lets an over-budget file shrink`() {
+        val store = open()
+        store.rewriteRoom = org.krost.unidrive.sync.RewriteRoom(usableSpace = { throw java.io.IOException("no file store") })
+        val pad = "x".repeat(300)
+        store.upsert((0 until 15_000).map { row("op-$it").copy(path = "/$it/$pad", queuedAt = 1_000L) })
+        store.upsert((15_000 until 20_000).map { row("op-$it").copy(path = "/$it/$pad", queuedAt = 9_000L) })
+        val before = store.fileBytes()
+
+        store.prune(cutoffMs = 5_000L, maxBytes = Long.MAX_VALUE / 2)
+
+        assertTrue(store.fileBytes() < before / 2, "file is ${store.fileBytes()} bytes, was $before")
+    }
+
     @Test
     fun `upsert rolls the batch back when commit fails with a non-SQL exception`() {
         val store = open(CommitFailingConnector)

@@ -372,6 +372,87 @@ class StateDatabaseScanStagingTest {
         assertTrue(bytes < 512 * 1024, "the staging file is $bytes bytes after clearAll")
     }
 
+    // #865: the rewrite is an optimisation; a disk-space read that throws must not fail the scan around it.
+    @Test
+    fun `a disk space read that fails does not fail the scan`() {
+        val stagingFile = dir.resolve(StateDatabase.SCAN_STAGING_FILE_NAME)
+        val db = opened()
+        try {
+            db.scanStaging.rewriteRoom = RewriteRoom(usableSpace = { throw java.io.IOException("no file store") })
+            val scanId = db.beginScan(initialMarker = null)
+            repeat(40) { page -> db.persistScanPage(scanId, items(page * 500, 500), "page-$page") }
+            db.completeScan(scanId)
+            assertNull(db.getActiveScan(Duration.ofHours(6)))
+            val next = db.beginScan(initialMarker = null)
+            assertEquals(0, db.loadStagedItems(next).size)
+        } finally {
+            db.close()
+        }
+        assertTrue(Files.size(stagingFile) > 1024 * 1024, "nothing could be said about the space, so the file was not rewritten")
+    }
+
+    @Test
+    fun `too little disk space leaves the staging file as it was and the scan completes`() {
+        val stagingFile = dir.resolve(StateDatabase.SCAN_STAGING_FILE_NAME)
+        val db = opened()
+        try {
+            db.scanStaging.rewriteRoom = RewriteRoom(usableSpace = { 0L })
+            val scanId = db.beginScan(initialMarker = null)
+            repeat(40) { page -> db.persistScanPage(scanId, items(page * 500, 500), "page-$page") }
+            db.completeScan(scanId)
+            assertNull(db.getActiveScan(Duration.ofHours(6)))
+        } finally {
+            db.close()
+        }
+        assertTrue(Files.size(stagingFile) > 1024 * 1024, "the staging file was rewritten without the room for it")
+    }
+
+    // The copy of the live pages goes to SQLite's temp directory: its space counts, not only the file's folder.
+    @Test
+    fun `too little space in the temp directory leaves the staging file as it was`() {
+        val stagingFile = dir.resolve(StateDatabase.SCAN_STAGING_FILE_NAME)
+        val temp = Files.createDirectories(dir.resolve("sqlite-tmp"))
+        val db = opened()
+        try {
+            db.scanStaging.rewriteRoom =
+                RewriteRoom(
+                    usableSpace = { p -> if (p == temp) 0L else Long.MAX_VALUE / 4 },
+                    tempDir = { temp },
+                    sameStore = { _, _ -> false },
+                )
+            val scanId = db.beginScan(initialMarker = null)
+            repeat(40) { page -> db.persistScanPage(scanId, items(page * 500, 500), "page-$page") }
+            // A newer scan's rows stay staged when the older one is cleared, so the rewrite would copy live pages into
+            // the temp directory.
+            val newer = db.beginScan(initialMarker = null)
+            repeat(10) { page -> db.persistScanPage(newer, items(100_000 + page * 500, 500), "newer-$page") }
+            db.completeScan(scanId)
+            assertEquals(5_000, db.loadStagedItems(newer).size)
+        } finally {
+            db.close()
+        }
+        assertTrue(Files.size(stagingFile) > 1024 * 1024, "the staging file was rewritten without room in the temp directory")
+    }
+
+    // #531/#865: a reset clears the staging under the database's monitor, but its rewrite (a disk sync) runs after it.
+    @Test
+    fun `a reset rewrites the staging after the database is unlocked`() {
+        val stagingFile = dir.resolve(StateDatabase.SCAN_STAGING_FILE_NAME)
+        val db = opened()
+        val heldWhileRewriting = mutableListOf<Boolean>()
+        try {
+            db.scanStaging.rewriteRoom = RewriteRoom(usableSpace = { heldWhileRewriting += Thread.holdsLock(db); Long.MAX_VALUE / 4 })
+            val scanId = db.beginScan(initialMarker = null)
+            repeat(40) { page -> db.persistScanPage(scanId, items(page * 500, 500), "page-$page") }
+            heldWhileRewriting.clear()
+            db.resetAll()
+        } finally {
+            db.close()
+        }
+        assertTrue(heldWhileRewriting.isNotEmpty() && heldWhileRewriting.none { it }, "the rewrite ran with the database locked: $heldWhileRewriting")
+        assertTrue(Files.size(stagingFile) < 512 * 1024, "the reset left the staging file at ${Files.size(stagingFile)} bytes")
+    }
+
     companion object {
         fun items(
             from: Int,
