@@ -1,7 +1,6 @@
 package org.krost.unidrive.internxt
 
 import org.krost.unidrive.CloudItem
-import org.krost.unidrive.internxt.InternxtProvider.Companion.treeTopOf
 import org.krost.unidrive.internxt.model.InternxtFolder
 
 /**

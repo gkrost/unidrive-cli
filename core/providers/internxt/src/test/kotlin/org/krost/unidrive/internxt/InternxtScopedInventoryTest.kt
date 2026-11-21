@@ -88,10 +88,10 @@ class InternxtScopedInventoryTest {
 
     private fun paths(inv: ScopedInventory): Set<String> {
         val folderMap = inv.folders.associateBy { it.uuid }
-        val folderPaths = inv.folders.map { InternxtProvider.buildFolderPath(it.uuid, folderMap, "root")!! }
+        val folderPaths = inv.folders.map { buildFolderPath(it.uuid, folderMap, "root")!! }
         val filePaths =
             inv.files.map {
-                val parent = InternxtProvider.buildFolderPath(it.folderUuid!!, folderMap, "root")!!
+                val parent = buildFolderPath(it.folderUuid!!, folderMap, "root")!!
                 parent + "/" + it.plainName
             }
         return (folderPaths + filePaths).toSet()

@@ -26,7 +26,7 @@ internal class PreProviderIpc(
     val serveJob: Job,
     val serveScope: CoroutineScope,
     val vaultRpc: VaultRpcHandler,
-    val hydrationLink: DaemonRuntime.HydrationLink,
+    val hydrationLink: DaemonHydrationLink,
     var transferHistory: TransferHistory?,
     var historyRpc: HistoryRpcHandler?,
     /** True when a locked start already bound the socket (the tail must not bind again). */
@@ -86,9 +86,9 @@ internal suspend fun servePreProviderIpc(
     // The scope inherits the daemon's logContext from start() (gkrost/unidrive-cli#225).
     val serveJob = SupervisorJob()
     val serveScope = serveScopeOf(kotlin.coroutines.coroutineContext, serveJob)
-    // The engine's two hooks into the hydration layer (see HydrationLink). Declared outside the
+    // The engine's two hooks into the hydration layer (see DaemonHydrationLink). Declared outside the
     // tail's try: its finally joins the hydration uploads through it.
-    val hydrationLink = DaemonRuntime.HydrationLink()
+    val hydrationLink = DaemonHydrationLink()
     // archive#652: opened with the mount's hydration layer, closed (flushed) after its uploads have been joined.
     var transferHistory: TransferHistory? = null
     var historyRpc: HistoryRpcHandler? = null

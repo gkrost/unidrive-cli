@@ -125,15 +125,15 @@ class InternxtUnreachableItemsTest {
     fun `goneAncestorOf names the gone folder that stops a path and nothing else`() {
         val known = mapOf("S1" to folder("S1", "T1"), "S2" to folder("S2", "S1"))
 
-        assertEquals("T1", InternxtProvider.goneAncestorOf("S2", known, emptyMap(), "root", setOf("T1"), setOf("T1")))
-        assertEquals("T1", InternxtProvider.goneAncestorOf("T1", known, emptyMap(), "root", setOf("T1"), setOf("T1")), "the parent itself")
-        assertNull(InternxtProvider.goneAncestorOf("S2", known, emptyMap(), "root", setOf("T1"), emptySet()), "unfetchable for another reason")
-        assertNull(InternxtProvider.goneAncestorOf("S2", known, emptyMap(), "root", emptySet(), setOf("T1")), "nothing on the way is unresolved")
-        assertNull(InternxtProvider.goneAncestorOf("root", known, emptyMap(), "root", setOf("T1"), setOf("T1")), "an item at the top has no ancestor to blame")
-        assertNull(InternxtProvider.goneAncestorOf(null, known, emptyMap(), "root", setOf("T1"), setOf("T1")))
+        assertEquals("T1", goneAncestorOf("S2", known, emptyMap(), "root", setOf("T1"), setOf("T1")))
+        assertEquals("T1", goneAncestorOf("T1", known, emptyMap(), "root", setOf("T1"), setOf("T1")), "the parent itself")
+        assertNull(goneAncestorOf("S2", known, emptyMap(), "root", setOf("T1"), emptySet()), "unfetchable for another reason")
+        assertNull(goneAncestorOf("S2", known, emptyMap(), "root", emptySet(), setOf("T1")), "nothing on the way is unresolved")
+        assertNull(goneAncestorOf("root", known, emptyMap(), "root", setOf("T1"), setOf("T1")), "an item at the top has no ancestor to blame")
+        assertNull(goneAncestorOf(null, known, emptyMap(), "root", setOf("T1"), setOf("T1")))
         assertEquals(
             "T1",
-            InternxtProvider.goneAncestorOf("A", emptyMap(), mapOf("A" to folder("A", "T1")), "root", setOf("T1"), setOf("T1")),
+            goneAncestorOf("A", emptyMap(), mapOf("A" to folder("A", "T1")), "root", setOf("T1"), setOf("T1")),
             "the way runs through an ancestor-only row",
         )
     }
@@ -142,6 +142,6 @@ class InternxtUnreachableItemsTest {
     fun `goneAncestorOf ends on a parent chain that comes back to itself`() {
         val loop = mapOf("A" to folder("A", "B"), "B" to folder("B", "A"))
 
-        assertNull(InternxtProvider.goneAncestorOf("A", loop, emptyMap(), "root", emptySet(), emptySet()))
+        assertNull(goneAncestorOf("A", loop, emptyMap(), "root", emptySet(), emptySet()))
     }
 }

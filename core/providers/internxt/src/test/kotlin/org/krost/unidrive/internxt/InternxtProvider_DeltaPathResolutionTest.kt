@@ -23,14 +23,14 @@ class InternxtProvider_DeltaPathResolutionTest {
 
     @Test
     fun `root uuid resolves to empty path`() {
-        val result = InternxtProvider.buildFolderPath(rootUuid, emptyMap(), rootUuid)
+        val result = buildFolderPath(rootUuid, emptyMap(), rootUuid)
         assertEquals("", result, "root must resolve to empty string (parentPath sentinel)")
     }
 
     @Test
     fun `single-level child resolves to slash-name`() {
         val inbox = InternxtFolder(uuid = "inbox-uuid", plainName = "_INBOX", parentUuid = rootUuid)
-        val result = InternxtProvider.buildFolderPath(inbox.uuid, mapOf(inbox.uuid to inbox), rootUuid)
+        val result = buildFolderPath(inbox.uuid, mapOf(inbox.uuid to inbox), rootUuid)
         assertEquals("/_INBOX", result)
     }
 
@@ -39,7 +39,7 @@ class InternxtProvider_DeltaPathResolutionTest {
         val inbox = InternxtFolder(uuid = "inbox-uuid", plainName = "_INBOX", parentUuid = rootUuid)
         val xxx = InternxtFolder(uuid = "xxx-uuid", plainName = "_XXX", parentUuid = inbox.uuid)
         val folderMap = mapOf(inbox.uuid to inbox, xxx.uuid to xxx)
-        assertEquals("/_INBOX/_XXX", InternxtProvider.buildFolderPath(xxx.uuid, folderMap, rootUuid))
+        assertEquals("/_INBOX/_XXX", buildFolderPath(xxx.uuid, folderMap, rootUuid))
     }
 
     @Test
@@ -52,7 +52,7 @@ class InternxtProvider_DeltaPathResolutionTest {
         val xxx = InternxtFolder(uuid = "xxx-uuid", plainName = "_XXX", parentUuid = "inbox-uuid-not-in-map")
         val folderMapWithoutAncestor = mapOf(xxx.uuid to xxx)
 
-        val result = InternxtProvider.buildFolderPath(xxx.uuid, folderMapWithoutAncestor, rootUuid)
+        val result = buildFolderPath(xxx.uuid, folderMapWithoutAncestor, rootUuid)
 
         assertNull(result, "missing ancestor must return null so the caller drops the item")
     }
@@ -68,12 +68,12 @@ class InternxtProvider_DeltaPathResolutionTest {
 
         // Lookup of `_XXX` itself succeeds (it's in the map, immediate parent
         // is the missing one).
-        assertNull(InternxtProvider.buildFolderPath(xxx.uuid, folderMap, rootUuid))
+        assertNull(buildFolderPath(xxx.uuid, folderMap, rootUuid))
     }
 
     @Test
     fun `unknown uuid (not even in map) returns null`() {
-        val result = InternxtProvider.buildFolderPath("totally-unknown-uuid", emptyMap(), rootUuid)
+        val result = buildFolderPath("totally-unknown-uuid", emptyMap(), rootUuid)
         assertNull(result)
     }
 
@@ -91,7 +91,7 @@ class InternxtProvider_DeltaPathResolutionTest {
             val unfetchable = mutableSetOf<String>()
 
             val path =
-                InternxtProvider.buildFolderPathFetching(
+                buildFolderPathFetching(
                     uuid = xxx.uuid,
                     folderMap = folderMap,
                     rootUuid = rootUuid,
@@ -118,7 +118,7 @@ class InternxtProvider_DeltaPathResolutionTest {
             val unfetchable = mutableSetOf<String>()
 
             val path =
-                InternxtProvider.buildFolderPathFetching(
+                buildFolderPathFetching(
                     uuid = xxx.uuid,
                     folderMap = folderMap,
                     rootUuid = rootUuid,
@@ -140,7 +140,7 @@ class InternxtProvider_DeltaPathResolutionTest {
             val unfetchable = mutableSetOf<String>()
 
             val path =
-                InternxtProvider.buildFolderPathFetching(
+                buildFolderPathFetching(
                     uuid = xxx.uuid,
                     folderMap = folderMap,
                     rootUuid = rootUuid,
@@ -176,7 +176,7 @@ class InternxtProvider_DeltaPathResolutionTest {
 
             children.forEach { child ->
                 val path =
-                    InternxtProvider.buildFolderPathFetching(child.uuid, folderMap, rootUuid, unfetchable, fetch)
+                    buildFolderPathFetching(child.uuid, folderMap, rootUuid, unfetchable, fetch)
                 assertEquals("/_INBOX/${child.plainName}", path)
             }
 
@@ -201,7 +201,7 @@ class InternxtProvider_DeltaPathResolutionTest {
 
             children.forEach { child ->
                 assertNull(
-                    InternxtProvider.buildFolderPathFetching(child.uuid, folderMap, rootUuid, unfetchable, fetch),
+                    buildFolderPathFetching(child.uuid, folderMap, rootUuid, unfetchable, fetch),
                 )
             }
 
@@ -344,7 +344,7 @@ class InternxtProvider_DeltaPathResolutionTest {
         // buildFolderPath against the resumed folder must reach back to root.
         assertEquals(
             "/_INBOX",
-            InternxtProvider.buildFolderPath(resumed.uuid, mapOf(resumed.uuid to resumed), rootUuid),
+            buildFolderPath(resumed.uuid, mapOf(resumed.uuid to resumed), rootUuid),
         )
     }
 
@@ -419,7 +419,7 @@ class InternxtProvider_DeltaPathResolutionTest {
         val folderMap = mapOf(resumedInbox.uuid to resumedInbox, freshXxx.uuid to freshXxx)
         assertEquals(
             "/_INBOX/_XXX",
-            InternxtProvider.buildFolderPath(freshXxx.uuid, folderMap, rootUuid),
+            buildFolderPath(freshXxx.uuid, folderMap, rootUuid),
             "resumed folder must serve as a graph ancestor for fresh-fetched descendants",
         )
         // Sanity-check assertNotNull to keep the import live.
