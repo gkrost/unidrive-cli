@@ -418,12 +418,18 @@ class HistoryReaderTest {
         val history = open()
         sized(history, "/Z.txt", 1)
         sized(history, "/a.txt", 1)
+        // A real tie: the same path twice, so the operation id alone decides their order. Their ids are random
+        // UUIDs, so the assertion reads the ids the rows actually carry and compares against the sort of them.
+        sized(history, "/a.txt", 1)
+        sized(history, "/a.txt", 1)
         assertTrue(history.flush())
         val r = reader(history)
-        assertEquals(listOf("/Z.txt", "/a.txt"), r.query(ordered(PATH, ASC)).rows.map { it.path }, "'Z' before 'a'")
-        assertEquals(listOf("/a.txt", "/Z.txt"), r.query(ordered(PATH, DESC)).rows.map { it.path })
-        val descIds = r.query(ordered(PATH, DESC)).rows.map { it.operationId }
-        assertEquals(descIds.sortedDescending(), descIds, "equal paths break by the id in the direction of the order")
+        assertEquals(listOf("/Z.txt", "/a.txt", "/a.txt", "/a.txt"), r.query(ordered(PATH, ASC)).rows.map { it.path }, "'Z' before 'a'")
+        assertEquals(listOf("/a.txt", "/a.txt", "/a.txt", "/Z.txt"), r.query(ordered(PATH, DESC)).rows.map { it.path })
+        val tieIds = r.query(ordered(PATH, ASC)).rows.drop(1).map { it.operationId }
+        assertEquals(tieIds.sorted(), tieIds, "equal paths break by the operation id ascending under an ascending order")
+        val descTieIds = r.query(ordered(PATH, DESC)).rows.dropLast(1).map { it.operationId }
+        assertEquals(descTieIds.sortedDescending(), descTieIds, "and descending under a descending order")
     }
 
     @Test
