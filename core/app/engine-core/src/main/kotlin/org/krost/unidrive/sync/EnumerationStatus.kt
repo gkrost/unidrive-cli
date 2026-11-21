@@ -50,6 +50,15 @@ data class EnumerationStatus(
      */
     val unreachableItems: Int? = null,
     /**
+     * The items of the last full listing that hang below a folder outside the drive root (Internxt: a device folder of the
+     * desktop app's backups): returned whole by the listing, kept out of the drive, never written to or removed. Not
+     * [unreachableItems]: nothing about them is gone. Null when there are none; set by the engine from sync_state, never by
+     * the tracker (gkrost/unidrive-cli#862).
+     */
+    val outsideRootItems: Int? = null,
+    /** The folders outside the drive root those [outsideRootItems] hang below; null when there are none. */
+    val outsideRootTops: Int? = null,
+    /**
      * True while the running attempt lists the drive again because the previous scan ended incomplete, or held back a bulk
      * deletion that needs a second full listing (the recovery latch was set when it started). False otherwise, and always false when no attempt runs; set by the tracker.
      */

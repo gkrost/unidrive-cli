@@ -135,7 +135,8 @@ class RemoteGather(
     private fun withoutBackups(page: DeltaPage): DeltaPage {
         if (page.items.none { it.backup }) return page
         val (backups, rest) = page.items.partition { it.backup }
-        return page.copy(items = rest, unreachableIds = page.unreachableIds + backups.map { it.id })
+        val ids = backups.map { it.id }
+        return page.copy(items = rest, unreachableIds = page.unreachableIds + ids, outsideRootIds = page.outsideRootIds + ids)
     }
 
     // The names of the top-level items state.db holds alive, except the roots of [except]: a collision with one of them is
@@ -767,6 +768,11 @@ class RemoteGather(
         // absence sweep must not read their silence as a deletion.
         val unreachable = HashSet<String>()
 
+        // Of those, the ones that hang below a folder outside the drive root, and those folders (DeltaPage.outsideRootIds):
+        // counted apart for the status (#862). Still in [unreachable]: the sweep keeps their rows all the same.
+        val outsideRoot = HashSet<String>()
+        val outsideTops = HashSet<String>()
+
         // The entries the provider could not read (DeltaPage.skippedPaths): persisted with the
         // completeness flag so the status can name the blocked folder (archive#1234).
         val skippedPaths = LinkedHashSet<String>()
@@ -862,6 +868,8 @@ class RemoteGather(
                 }
                 val placed = placeTrashed(page)
                 unreachable.addAll(placed.unreachableIds)
+                outsideRoot.addAll(placed.outsideRootIds)
+                outsideTops.addAll(placed.outsideRootTops)
                 skippedPaths.addAll(page.skippedPaths)
                 return placed
             }
@@ -917,6 +925,8 @@ class RemoteGather(
             collisions.clear()
             ids.clear()
             unreachable.clear()
+            outsideRoot.clear()
+            outsideTops.clear()
             skippedPaths.clear()
             allComplete = true
             isFullSync = true
@@ -967,7 +977,7 @@ class RemoteGather(
             log.warn(msg)
             listener.onWarning(msg)
         }
-        recordUnreachable(unreachable, isFullSync)
+        recordUnreachable(unreachable, isFullSync, outsideRoot, outsideTops)
         // Record the gather's ACTUAL full-enumeration verdict (a 410 recovery above
         // can upgrade an incremental pass to full) so the sync-path remote-shrink
         // guard judges the real mode, not just the pre-gather cursor state.
@@ -1125,10 +1135,23 @@ class RemoteGather(
     fun recordUnreachable(
         unreachableIds: Set<String>,
         fullListing: Boolean,
+        outsideRootIds: Set<String> = emptySet(),
+        outsideRootTops: Set<String> = emptySet(),
     ) {
         if (!fullListing) return
-        val value = unreachableIds.size.toString()
-        if (db.getSyncState(UNREACHABLE_ITEMS_KEY) != value) db.setSyncState(UNREACHABLE_ITEMS_KEY, value)
+        // The items below a folder outside the drive root are in [unreachableIds] too (so the sweep holds their rows), but
+        // they are not unreachable: they are told apart, with the number of such folders (#862).
+        recordFigure(UNREACHABLE_ITEMS_KEY, unreachableIds.count { it !in outsideRootIds })
+        recordFigure(OUTSIDE_ROOT_ITEMS_KEY, outsideRootIds.size)
+        recordFigure(OUTSIDE_ROOT_TOPS_KEY, outsideRootTops.size)
+    }
+
+    private fun recordFigure(
+        key: String,
+        count: Int,
+    ) {
+        val value = count.toString()
+        if (db.getSyncState(key) != value) db.setSyncState(key, value)
     }
 
     // Adds the folders above [path] to [into]: the tree in state.db stays whole. The folder a held row (one of the
@@ -2090,6 +2113,10 @@ class RemoteGather(
 
         /** sync_state key: items of the last full listing that sit below a permanently gone folder ([recordUnreachable]). */
         const val UNREACHABLE_ITEMS_KEY = "unreachable_items"
+
+        /** sync_state keys: items of the last full listing below a folder outside the drive root, and how many such folders ([recordUnreachable]). */
+        const val OUTSIDE_ROOT_ITEMS_KEY = "outside_root_items"
+        const val OUTSIDE_ROOT_TOPS_KEY = "outside_root_tops"
 
         /**
          * sync_state key: the entries the last gather could not read (DeltaPage.skippedPaths), newline-joined and

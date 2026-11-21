@@ -4129,6 +4129,9 @@ class InternxtProvider(
                 hasMore = false,
                 complete = skipped == 0 && ancestorDrops == 0,
                 unreachableIds = if (outsideIds.isEmpty()) unreachable.ids else unreachable.ids + (outsideIds - listedIds),
+                // The same items, named apart (#862): below a folder outside the drive, not below one that is gone.
+                outsideRootIds = if (outsideIds.isEmpty()) emptySet() else outsideIds - listedIds,
+                outsideRootTops = treeTops.toSet(),
             )
         }
 

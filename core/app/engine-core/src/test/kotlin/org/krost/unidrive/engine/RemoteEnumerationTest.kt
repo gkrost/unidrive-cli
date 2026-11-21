@@ -1733,6 +1733,37 @@ class RemoteEnumerationTest {
             assertTrue(invalidations.none { (paths, _) -> paths.any { it.startsWith("/D") } }, "the view is told nothing about them: $invalidations")
         }
 
+    // gkrost/unidrive-cli#862: ids named outside the drive root are in the unreachable set too (their rows are held the same
+    // way) but are counted apart, with the number of folders they hang below, and are not told as unreachable.
+    @Test
+    fun `items outside the drive root keep their rows and are counted apart from the unreachable ones`() =
+        runTest {
+            provider.items = tree
+            val enumeration = enumeration()
+            enumeration.enumerate(reset = false)
+            val before = listOf("/D", "/D/c.txt", "/D/S", "/D/S/e.txt").associateWith { db.getEntry(it) }
+
+            provider.items = listOf(file("k", "/k.txt"), file("x", "/x.txt"))
+            provider.unreachable = setOf("c", "S", "e", "u1")
+            provider.outsideRoot = setOf("c", "S", "e")
+            provider.outsideTops = setOf("T")
+            val result = enumeration.enumerate(reset = false)
+
+            assertTrue(result.ok)
+            for ((path, row) in before) assertEquals(row, db.getEntry(path), "$path is exactly as it was: not reaped")
+            val status = enumeration.status()
+            assertEquals(3, status.outsideRootItems)
+            assertEquals(1, status.outsideRootTops)
+            assertEquals(1, status.unreachableItems, "only u1 hangs below a folder that is gone")
+
+            provider.unreachable = emptySet()
+            provider.outsideRoot = emptySet()
+            provider.outsideTops = emptySet()
+            enumeration.enumerate(reset = false)
+            assertNull(enumeration.status().outsideRootItems, "absent when there are none")
+            assertNull(enumeration.status().outsideRootTops)
+        }
+
     @Test
     fun `without the unreachable ids the same listing reaps those rows`() =
         runTest {
@@ -2095,6 +2126,8 @@ class RemoteEnumerationTest {
         // and the entries it could not read (DeltaPage.skippedPaths).
         var complete = true
         var unreachable: Set<String> = emptySet()
+        var outsideRoot: Set<String> = emptySet()
+        var outsideTops: Set<String> = emptySet()
         var skipped: List<String> = emptyList()
 
         // True: every delta lists the whole tree (localfs). False: a delta that is handed a cursor is incremental.
@@ -2132,6 +2165,8 @@ class RemoteEnumerationTest {
                 hasMore = false,
                 complete = complete,
                 unreachableIds = unreachable,
+                outsideRootIds = outsideRoot,
+                outsideRootTops = outsideTops,
                 skippedPaths = skipped,
             )
         }

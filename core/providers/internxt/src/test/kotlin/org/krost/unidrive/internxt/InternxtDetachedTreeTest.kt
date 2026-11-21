@@ -46,6 +46,8 @@ class InternxtDetachedTreeTest {
             assertEquals(setOf("/Docs", "/Docs/readme.txt"), paths(page), "nothing of the device tree reaches the sync root")
             assertTrue(page.complete, "the drive itself was listed whole")
             assertEquals(setOf("b0", "b1", "B1"), page.unreachableIds, "the engine keeps the rows it has and deletes nothing locally")
+            assertEquals(page.unreachableIds, page.outsideRootIds, "all of them hang below a folder outside the drive, none below a gone one (#862)")
+            assertEquals(setOf("DEV"), page.outsideRootTops)
         }
 
     @Test

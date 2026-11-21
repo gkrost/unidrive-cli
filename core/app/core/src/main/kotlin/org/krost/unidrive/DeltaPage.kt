@@ -25,6 +25,11 @@ package org.krost.unidrive
  * The same set names the items of a tree that is not part of the drive at all (Internxt: a device folder of the
  * desktop app's backups, which has no parent): the provider leaves them out of [items] and keeps them out of
  * writes, and the engine treats their rows as it does those above.
+ * [outsideRootIds] says which of those [unreachableIds] are such tree items, and [outsideRootTops] the folders outside the
+ * drive they hang below (one per tree, by id). They are not unreachable in the sense above: nothing about them is gone or
+ * unreadable, the listing returned them whole and the page is [complete]. They are named apart so that a status can
+ * say what they are (gkrost/unidrive-cli#862). The ids stay in [unreachableIds] as well, so every consumer that keeps
+ * the rows of that set alive keeps these too: a subset, never a separate set that a consumer could forget.
  * It also names the items a listing returned but could not read (OneDrive: an item whose JSON does not decode): they
  * are left out of [items] and their rows are held the same way.
  * Providers that always place every item leave the default empty set.
@@ -41,5 +46,7 @@ data class DeltaPage(
     val hasMore: Boolean,
     val complete: Boolean = true,
     val unreachableIds: Set<String> = emptySet(),
+    val outsideRootIds: Set<String> = emptySet(),
+    val outsideRootTops: Set<String> = emptySet(),
     val skippedPaths: List<String> = emptyList(),
 )
