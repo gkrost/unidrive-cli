@@ -28,11 +28,15 @@ class HydrationHistoryRetryTest {
 
     private fun openHistory(): TransferHistory = TransferHistory.open("p1", TestScratch.directory("retry-history").resolve("telemetry.db"))
 
-    // The rows of [path] as the file holds them (through the history's own reader).
+    // The rows of [path] as the file holds them (through the history's own reader), after the writer thread has
+    // committed every snapshot handed to it: a read without the flush races the writer and finds rows missing.
     private fun rowsOf(
         history: TransferHistory,
         path: String,
-    ): List<TransferRow> = history.openReader().use { r -> r.query(HistoryQuery(pathPrefix = path)).rows }
+    ): List<TransferRow> {
+        check(history.flush()) { "the history writer did not drain" }
+        return history.openReader().use { r -> r.query(HistoryQuery(pathPrefix = path)).rows }
+    }
 
     private fun HydrationTestEnv.pendingFile(content: String) {
         stateDb.insertCreatedRow(path)
