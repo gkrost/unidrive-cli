@@ -3203,9 +3203,9 @@ class HydrationImpl(
         }
 
         return runCatching {
-            mount.deleteRemote(normalised, permanent)
-            // A tracked file whose last edit's upload failed has a staged copy too. gkrost/unidrive-cli#746 finding 5: NonCancellable.
-            withContext(NonCancellable) { discardStagedUploadBestEffort(normalised); evictCacheFile(normalised) }
+            mount.deleteRemoteFile(normalised, permanent) {
+                withContext(NonCancellable) { discardStagedUploadBestEffort(normalised); evictCacheFile(normalised) }
+            }
             UnlinkResult.Ok
         }.getOrElse { e ->
             e.rethrowIfCancellation()

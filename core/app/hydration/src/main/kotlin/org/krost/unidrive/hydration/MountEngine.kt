@@ -2007,6 +2007,10 @@ class MountEngine private constructor(
         keepBelow: ((SyncEntry) -> Boolean)? = null,
     ): Set<String> = deletes.deleteRemote(path, permanent, keepBelow)
 
+    internal suspend fun deleteRemoteFile(path: String, permanent: Boolean, onDeleted: suspend () -> Unit) {
+        deletes.deleteRemote(path, permanent, onFileDeleted = onDeleted)
+    }
+
     // The listing of [path], or null when [root] itself is already gone in the cloud; see [MountDelete.snapshotListing].
     internal suspend fun snapshotListing(path: String, root: String): List<CloudItem>? = deletes.snapshotListing(path, root)
 
