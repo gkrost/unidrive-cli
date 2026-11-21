@@ -183,7 +183,7 @@ class DoctorCommand : Runnable {
                             }
                         results += checkEffectiveScope(db)
                         results += checkQuotaFreshness(db, now)
-                        results += checkWriteUploadFailures(db, mode)
+                        results += checkWriteUploadFailures(db, mode, full)
                     }
                 if (outcome.isFailure) {
                     // A read-only open does not run the additive migrations createTables() applies on a
@@ -469,55 +469,99 @@ class DoctorCommand : Runnable {
     }
 
     /**
-     * **Check — Write-upload durability.** Counts rows that were written
+     * **Check — Write-upload durability.** Reports rows that were written
      * locally (through a FUSE mount) but never uploaded to the cloud: a
      * `local:` synthetic `remote_id` AND a stamped `last_error_at` (an
      * `openForWrite` upload was attempted and failed). The co-daemon's
      * close() already returned 0 to the user, so without this surface the
-     * data sits only on disk silently. WARN whenever any such row exists;
-     * sample paths in detail, each with its cause (name-blocked, refused by
-     * the provider, plain failed attempt — gkrost/unidrive-cli#852). The
-     * advice follows [mode]: a mount profile has no `sync` to re-run, its
-     * daemon replays the uploads at startup. Read-only.
+     * data sits only on disk silently. WARN whenever any row that can still
+     * recover exists — a name block, a refusal the provider gave for another
+     * reason, a plain failed attempt — with sample paths in detail, each with
+     * its cause (gkrost/unidrive-cli#852). The advice follows [mode]: a mount
+     * profile has no `sync` to re-run, its daemon replays the uploads at
+     * startup. Rows the provider's plan refuses as such (`plan_limit` — on
+     * Internxt the empty files a free plan declines) recover only through the
+     * plan or the content, not by acting on the file, so they are their own
+     * informational [Severity.OK] check (`write-upload-plan-refusals`) with
+     * the refusal's reason and never inflate the warning
+     * (gkrost/unidrive-cli#852). The detail lists [SAMPLE_DETAIL] paths;
+     * [full] lists every path, and the summary names `doctor --full` whenever
+     * the sample hid rows — the pointer lives in the summary because the
+     * detail block only prints under `-v` (gkrost/unidrive-cli#852). Read-only.
      */
     internal fun checkWriteUploadFailures(
         db: StateDatabase,
         mode: ProfileMode? = null,
-    ): CheckResult {
+        full: Boolean = false,
+    ): List<CheckResult> {
         val name = "write-upload-failures"
-        val count = db.countWriteUploadFailed()
-        if (count == 0) {
-            return CheckResult(name, Severity.OK, "no files written locally but unsynced", emptyList())
+        // Every matching row: the count and the cause split are exact even where the detail stays a sample.
+        val rows = db.writeUploadFailedPaths(Int.MAX_VALUE)
+        if (rows.isEmpty()) {
+            return listOf(CheckResult(name, Severity.OK, "no files written locally but unsynced", emptyList()))
         }
-        val detail = mutableListOf<String>()
-        val rows = db.writeUploadFailedPaths(SAMPLE_DETAIL)
-        if (rows.isNotEmpty()) {
-            detail += "sample unsynced paths (written locally, not uploaded), by cause:"
-            // Grouped by cause, most specific first: a name block, then a refusal
-            // of the request itself, then a plain failed attempt.
-            val (nameBlocked, afterNames) = rows.partition { it.nameBlock != null }
-            val (refused, failed) = afterNames.partition { it.uploadRefused != null }
-            for (row in nameBlocked) {
-                detail += "  ${row.path} — blocked by name: ${row.nameBlock?.substringBefore('|')}"
-            }
-            for (row in refused) {
+        // The detail block samples [SAMPLE_DETAIL] paths; --full lists every path (gkrost/unidrive-cli#852).
+        fun sampled(lines: List<String>): List<String> =
+            if (full || lines.size <= SAMPLE_DETAIL) lines else lines.take(SAMPLE_DETAIL)
+
+        // The detail block only prints under -v, so the pointer to the full list lives in the summary.
+        fun fullListPointer(total: Int): String =
+            if (!full && total > SAMPLE_DETAIL) "; `unidrive doctor --full --verbose` lists every path" else ""
+
+        // Grouped by cause, most specific first: a name block, then a refusal
+        // of the request itself, then a plain failed attempt.
+        val (nameBlocked, afterNames) = rows.partition { it.nameBlock != null }
+        val (refused, failed) = afterNames.partition { it.uploadRefused != null }
+        // A plan refusal declines these bytes as such: only a changed plan or
+        // content uploads them, so the row informs instead of warning.
+        val (planRefused, otherRefused) = refused.partition {
+            UploadRefusals.reason(it.uploadRefused, it.localMtime, it.localSize)?.let(UploadRefusals::isPlanLimit) == true
+        }
+        val results = mutableListOf<CheckResult>()
+        val recoverableLines = buildList {
+            for (row in nameBlocked) add("  ${row.path} — blocked by name: ${row.nameBlock?.substringBefore('|')}")
+            for (row in otherRefused) {
                 val reason = UploadRefusals.reason(row.uploadRefused, row.localMtime, row.localSize)
-                detail += "  ${row.path} — refused by the provider${reason?.let { ": $it" } ?: ""}"
+                add("  ${row.path} — refused by the provider${reason?.let { ": $it" } ?: ""}")
             }
-            for (row in failed) detail += "  ${row.path} — upload attempt failed"
+            for (row in failed) add("  ${row.path} — upload attempt failed")
         }
-        val advice =
-            if (mode == ProfileMode.MOUNT) {
-                "the daemon replays these uploads at startup — check it is running"
-            } else {
-                "re-run sync to retry"
-            }
-        return CheckResult(
-            name,
-            Severity.WARN,
-            "$count file(s) written locally but not uploaded to cloud ($advice)",
-            detail,
-        )
+        if (recoverableLines.isNotEmpty()) {
+            val advice =
+                if (mode == ProfileMode.MOUNT) {
+                    "the daemon replays these uploads at startup — check it is running"
+                } else {
+                    "re-run sync to retry"
+                }
+            results +=
+                CheckResult(
+                    name,
+                    Severity.WARN,
+                    "${recoverableLines.size} file(s) written locally but not uploaded to cloud ($advice)" +
+                        fullListPointer(recoverableLines.size),
+                    listOf(if (full) "all unsynced paths (written locally, not uploaded), by cause:" else "sample unsynced paths (written locally, not uploaded), by cause:") +
+                        sampled(recoverableLines),
+                )
+        }
+        // Every row is plan-refused: the check stays present as OK, so a consumer keyed on the name never reads "not run" (gkrost/unidrive-cli#852 review).
+        if (recoverableLines.isEmpty() && planRefused.isNotEmpty()) {
+            results += CheckResult(name, Severity.OK, "no recoverable files written locally but unsynced", emptyList())
+        }
+        if (planRefused.isNotEmpty()) {
+            val planLines =
+                planRefused.map { row ->
+                    "  ${row.path} — refused by the plan: ${UploadRefusals.reason(row.uploadRefused, row.localMtime, row.localSize)}"
+                }
+            results +=
+                CheckResult(
+                    "write-upload-plan-refusals",
+                    Severity.OK,
+                    "${planLines.size} file(s) the provider's plan refuses (a changed plan or content uploads them)" +
+                        fullListPointer(planLines.size),
+                    sampled(planLines),
+                )
+        }
+        return results
     }
 
     /**

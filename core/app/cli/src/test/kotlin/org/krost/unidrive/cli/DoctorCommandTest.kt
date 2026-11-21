@@ -553,10 +553,12 @@ class DoctorCommandTest {
             neverUploaded(db, "/refused.txt")
             // What the refusal path does (HydrationImpl.completeRefused): the failed
             // attempt stamp AND the refusal, or the row would not match the predicate.
+            // A refusal that is not the plan's (it carries a deadline like every mount
+            // refusal, but a reason other than plan_limit) stays a warning.
             db.markUploadFailed("/refused.txt", Instant.parse("2026-05-17T08:30:00Z"))
             db.markUploadRefused(
                 "/refused.txt",
-                "1747459200000|9|1747459800000|plan_limit: upgrade your plan",
+                "1747459200000|9|1747459800000|blocked by the parent folder's name",
                 keepCloudBaseline = true,
             )
             neverUploaded(db, "/blocked.txt")
@@ -567,7 +569,10 @@ class DoctorCommandTest {
         val blockedLine = check.detail.first { it.contains("/blocked.txt") }
         assertTrue("blocked by name: name_incompatible" in blockedLine, blockedLine)
         val refusedLine = check.detail.first { it.contains("/refused.txt") }
-        assertTrue("refused by the provider: plan_limit: upgrade your plan" in refusedLine, refusedLine)
+        assertTrue("refused by the provider" in refusedLine, refusedLine)
+        assertTrue("blocked by the parent folder's name" in refusedLine, refusedLine)
+        // The refusal's deadline is stored in the row, but the display text must not carry it (gkrost/unidrive-cli#852 review).
+        assertFalse("|" in refusedLine, refusedLine)
         val failedLine = check.detail.first { it.contains("/failed.txt") }
         assertTrue("upload attempt failed" in failedLine, failedLine)
         // The sample is grouped by cause: name-blocked, then refused, then failed.
@@ -596,6 +601,83 @@ class DoctorCommandTest {
         // The sync advice is deliberately kept for the modes that have a sync.
         val mirror = result(runDoctor(mode = ProfileMode.MIRROR), "write-upload-failures")
         assertTrue("re-run sync" in mirror.summary, mirror.summary)
+    }
+
+    @Test
+    fun `write-upload-failures check demotes the plan-refused rows to an informational check`() {
+        seedDb { db ->
+            db.setSyncState("last_full_scan", Instant.parse("2026-05-17T08:00:00Z").toString())
+            db.setSyncState("pending_cursor_complete", "true")
+            db.setSyncState("quota_fetched_at", Instant.parse("2026-05-17T08:00:00Z").toString())
+            neverUploaded(db, "/failed.txt")
+            db.markUploadFailed("/failed.txt", Instant.parse("2026-05-17T08:30:00Z"))
+            neverUploaded(db, "/empty.txt")
+            // The free plan's empty-file refusal (gkrost/unidrive-cli#852): the provider
+            // declines these bytes as such; only a changed plan or content uploads them.
+            db.markUploadFailed("/empty.txt", Instant.parse("2026-05-17T08:30:00Z"))
+            db.markUploadRefused(
+                "/empty.txt",
+                "1747459200000|9|1747459800000|plan_limit: upgrade your plan",
+                keepCloudBaseline = true,
+            )
+        }
+        val checks = runDoctor()
+        // The warning counts only the rows the operator can still recover: the failed attempt.
+        val warn = result(checks, "write-upload-failures")
+        assertEquals(DoctorCommand.Severity.WARN, warn.severity)
+        assertTrue("1 file(s)" in warn.summary, warn.summary)
+        assertFalse("/empty.txt" in warn.detail.joinToString(), warn.detail.joinToString())
+        // The plan refusal informs with its reason instead of warning.
+        val info = result(checks, "write-upload-plan-refusals")
+        assertEquals(DoctorCommand.Severity.OK, info.severity)
+        assertTrue("1 file(s) the provider's plan refuses" in info.summary, info.summary)
+        val refusedLine = info.detail.first { it.contains("/empty.txt") }
+        assertTrue("refused by the plan: plan_limit: upgrade your plan" in refusedLine, refusedLine)
+    }
+
+    @Test
+    fun `write-upload-failures check stays quiet when every unsynced row is refused by the plan`() {
+        seedDb { db ->
+            db.setSyncState("last_full_scan", Instant.parse("2026-05-17T08:00:00Z").toString())
+            db.setSyncState("pending_cursor_complete", "true")
+            db.setSyncState("quota_fetched_at", Instant.parse("2026-05-17T08:00:00Z").toString())
+            neverUploaded(db, "/empty.txt")
+            db.markUploadFailed("/empty.txt", Instant.parse("2026-05-17T08:30:00Z"))
+            db.markUploadRefused(
+                "/empty.txt",
+                "1747459200000|9|1747459800000|plan_limit: upgrade your plan",
+                keepCloudBaseline = true,
+            )
+        }
+        val checks = runDoctor()
+        // The check stays present (OK) so a consumer keyed on the name never reads "not run" for "nothing to warn about".
+        val quiet = result(checks, "write-upload-failures")
+        assertEquals(DoctorCommand.Severity.OK, quiet.severity)
+        assertEquals("no recoverable files written locally but unsynced", quiet.summary)
+        assertEquals(DoctorCommand.Severity.OK, result(checks, "write-upload-plan-refusals").severity)
+    }
+
+    @Test
+    fun `write-upload-failures check lists every path under --full and points at it when sampled`() {
+        seedDb { db ->
+            db.setSyncState("last_full_scan", Instant.parse("2026-05-17T08:00:00Z").toString())
+            db.setSyncState("pending_cursor_complete", "true")
+            db.setSyncState("quota_fetched_at", Instant.parse("2026-05-17T08:00:00Z").toString())
+            for (i in 1..7) {
+                val path = "/unsynced-$i.txt"
+                neverUploaded(db, path)
+                db.markUploadFailed(path, Instant.parse("2026-05-17T08:30:00Z"))
+            }
+        }
+        // The default samples SAMPLE_DETAIL paths and names the full list in the summary
+        // (the detail block is only visible under -v, so the pointer must not live there).
+        val sampled = result(runDoctor(), "write-upload-failures")
+        assertEquals(DoctorCommand.SAMPLE_DETAIL, sampled.detail.filter { it.contains("/unsynced-") }.size, sampled.detail.toString())
+        assertTrue("doctor --full" in sampled.summary, sampled.summary)
+        // --full lists every path and drops the pointer.
+        val all = result(runDoctor(full = true), "write-upload-failures")
+        assertEquals(7, all.detail.filter { it.contains("/unsynced-") }.size, all.detail.toString())
+        assertFalse("doctor --full" in all.summary, all.summary)
     }
 
     // ── Hydration cache size (archive#450) ───────────────────────────────────────
