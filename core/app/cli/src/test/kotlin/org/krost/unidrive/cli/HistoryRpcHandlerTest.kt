@@ -19,6 +19,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
+import org.krost.unidrive.hydration.HistoryRetryOutcome
 import org.krost.unidrive.telemetry.TransferDirection
 import org.krost.unidrive.telemetry.TransferHistory
 import org.krost.unidrive.telemetry.TransferResult
@@ -32,6 +33,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import org.krost.unidrive.testing.TestScratch
@@ -390,5 +392,374 @@ class HistoryRpcHandlerTest {
         val deadline = System.currentTimeMillis() + 5_000
         while (lines.size < count && System.currentTimeMillis() < deadline) delay(10)
         assertNotNull(lines.getOrNull(count - 1), "expected $count line(s), got $lines")
+    }
+
+    // ── the `order` member (gkrost/unidrive-cli#848) ─────────────────────────────────────────────
+
+    // Rows with distinct sizes and results, one of them without a size; ids ascend with the wall clock.
+    private fun seedOrderRows() {
+        wallMs.set(1_000)
+        history!!.begin(TransferDirection.UPLOAD, "/a-success.txt", bytesTotal = 100).let { it.started(); it.finish(TransferResult.SUCCESS, bytesDone = 100) }
+        wallMs.set(2_000)
+        history!!.begin(TransferDirection.UPLOAD, "/b-failed.txt", bytesTotal = 20).let { it.started(); it.finish(TransferResult.FAILED, errorClass = "network") }
+        wallMs.set(3_000)
+        history!!.begin(TransferDirection.DOWNLOAD, "/c-nosize.txt").let { it.started(); it.finish(TransferResult.INTERRUPTED, errorClass = "cancelled") }
+        wallMs.set(4_000)
+        history!!.begin(TransferDirection.UPLOAD, "/d-conflict.txt", bytesTotal = 5).let { it.started(); it.finish(TransferResult.CONFLICT, errorClass = "conflict") }
+        wallMs.set(5_000)
+        history!!.begin(TransferDirection.UPLOAD, "/e-skipped.txt", bytesTotal = 50).let { it.finish(TransferResult.SKIPPED) }
+        assertTrue(history!!.flush())
+    }
+
+    private fun pathsOf(reply: JsonObject) = reply.getValue("rows").jsonArray.map { it.jsonObject.getValue("path").jsonPrimitive.content }
+
+    private fun order(field: String, direction: String) = """{"verb":"history.list","order":{"field":"$field","direction":"$direction"}}"""
+
+    @Test
+    fun `the size order sorts by bytes with the unmeasured after every known value in both directions`() = runBlocking {
+        val h = open()
+        h.start(scope) { _, _ -> true }
+        seedOrderRows()
+
+        val asc = obj(h.list(order("size", "asc")))
+        assertEquals(listOf("/d-conflict.txt", "/b-failed.txt", "/e-skipped.txt", "/a-success.txt", "/c-nosize.txt"), pathsOf(asc), "smallest first, null last")
+        assertEquals(true, asc.getValue("live_keyset").jsonPrimitive.boolean, "a non-default order is not live")
+        assertEquals("size", asc.getValue("order").jsonObject.getValue("field").jsonPrimitive.content)
+        assertEquals("asc", asc.getValue("order").jsonObject.getValue("direction").jsonPrimitive.content)
+
+        val desc = obj(h.list(order("size", "desc")))
+        assertEquals(listOf("/a-success.txt", "/e-skipped.txt", "/b-failed.txt", "/d-conflict.txt", "/c-nosize.txt"), pathsOf(desc), "largest first, null still last")
+        assertEquals("desc", desc.getValue("order").jsonObject.getValue("direction").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `the result order follows the fixed rank, not the string bytes`() = runBlocking {
+        val h = open()
+        h.start(scope) { _, _ -> true }
+        seedOrderRows()
+
+        val asc = obj(h.list(order("result", "asc")))
+        assertEquals(
+            listOf("/b-failed.txt", "/d-conflict.txt", "/c-nosize.txt", "/e-skipped.txt", "/a-success.txt"),
+            pathsOf(asc),
+            "failed, conflict, interrupted, skipped, success (no running row was seeded)",
+        )
+    }
+
+    @Test
+    fun `the path order is unsigned byte order and ties break by operation id in the same direction`() = runBlocking {
+        val h = open()
+        h.start(scope) { _, _ -> true }
+        // 'Z' (0x5A) sorts before 'a' (0x61) in byte order; equal paths break by id.
+        wallMs.set(1_000)
+        history!!.begin(TransferDirection.UPLOAD, "/Z.txt", bytesTotal = 1).let { it.started(); it.finish(TransferResult.SUCCESS) }
+        wallMs.set(2_000)
+        val firstTie = history!!.begin(TransferDirection.UPLOAD, "/a.txt", bytesTotal = 1).let { it.started(); it.finish(TransferResult.SUCCESS); it }
+        wallMs.set(3_000)
+        val secondTie = history!!.begin(TransferDirection.UPLOAD, "/a.txt", bytesTotal = 1).let { it.started(); it.finish(TransferResult.FAILED); it }
+        assertTrue(history!!.flush())
+
+        val asc = obj(h.list(order("path", "asc")))
+        assertEquals(listOf("/Z.txt", "/a.txt", "/a.txt"), pathsOf(asc), "'Z' before 'a', ids ascending")
+        assertEquals(listOf("/a.txt", "/a.txt", "/Z.txt"), pathsOf(obj(h.list(order("path", "desc")))))
+        // Equal primary values break by the operation id in the direction of the order.
+        val ascIds = asc.getValue("rows").jsonArray.map { it.jsonObject.getValue("operation_id").jsonPrimitive.content }
+        assertEquals(listOf("/Z.txt", "/a.txt", "/a.txt"), pathsOf(asc))
+        assertEquals(
+            listOf(firstTie.operationId, secondTie.operationId).sorted(),
+            ascIds.drop(1),
+            "equal paths break by the operation id ascending under an ascending order",
+        )
+        val descIds = obj(h.list(order("path", "desc"))).getValue("rows").jsonArray.map { it.jsonObject.getValue("operation_id").jsonPrimitive.content }
+        assertEquals(
+            listOf(firstTie.operationId, secondTie.operationId).sortedDescending(),
+            descIds.dropLast(1),
+            "and descending under a descending order",
+        )
+    }
+
+    @Test
+    fun `time ascending pages oldest first and the named default order is today's wire shape`() = runBlocking {
+        val h = open()
+        h.start(scope) { _, _ -> true }
+        seedOrderRows()
+
+        val asc = obj(h.list(order("time", "asc")))
+        assertEquals(listOf("/a-success.txt", "/b-failed.txt", "/c-nosize.txt", "/d-conflict.txt", "/e-skipped.txt"), pathsOf(asc), "oldest first")
+        assertEquals(true, asc.getValue("live_keyset").jsonPrimitive.boolean, "time ascending is not the default order")
+
+        // An explicitly named default order behaves exactly as the omitted one, with the echo saying so.
+        val named = obj(h.list(order("time", "desc")))
+        assertEquals(false, named.getValue("live_keyset").jsonPrimitive.boolean)
+        assertEquals(pathsOf(obj(h.list("""{"verb":"history.list"}"""))), pathsOf(named))
+        assertEquals(setOf("ok", "rows", "next_cursor", "order", "live_keyset", "tail_seq", "incomplete"), named.keys)
+        // No order member at all: today's reply shape, no echo, no liveness flag.
+        assertFalse(obj(h.list("""{"verb":"history.list"}""")).keys.contains("order"))
+        assertFalse(obj(h.list("""{"verb":"history.list"}""")).keys.contains("live_keyset"))
+    }
+
+    @Test
+    fun `an order that is not the contract's is refused`() = runBlocking {
+        val h = open()
+        h.start(scope) { _, _ -> true }
+        assertEquals("invalid_order", obj(h.list("""{"verb":"history.list","order":{"field":"bytes","direction":"asc"}}""")).getValue("error").jsonPrimitive.content)
+        assertEquals("invalid_order", obj(h.list("""{"verb":"history.list","order":{"field":"size","direction":"up"}}""")).getValue("error").jsonPrimitive.content)
+        assertEquals("invalid_order", obj(h.list("""{"verb":"history.list","order":{"field":"size"}}""")).getValue("error").jsonPrimitive.content, "both members are required")
+        assertEquals("invalid_order", obj(h.list("""{"verb":"history.list","order":{"field":"size","direction":"asc","extra":1}}""")).getValue("error").jsonPrimitive.content)
+        assertEquals("invalid_order", obj(h.list("""{"verb":"history.list","order":"size"}""")).getValue("error").jsonPrimitive.content)
+        assertEquals("invalid_order", obj(h.list("""{"verb":"history.list","order":7}""")).getValue("error").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `a cursor of another order or another filter set is invalid_cursor`() = runBlocking {
+        val h = open()
+        h.start(scope) { _, _ -> true }
+        repeat(5) { record("/f$it") }
+        assertTrue(history!!.flush())
+
+        // The v1 cursor (the default order's) is not one a non-default order accepts.
+        val v1 = obj(h.list("""{"verb":"history.list","limit":2}""")).getValue("next_cursor").jsonPrimitive.content
+        assertEquals("invalid_cursor", obj(h.list("""{"verb":"history.list","limit":2,"order":{"field":"size","direction":"asc"},"cursor":"$v1"}""")).getValue("error").jsonPrimitive.content)
+
+        // A cursor issued under one non-default order (or filter set) is not another's.
+        val sizePage = obj(h.list("""{"verb":"history.list","limit":2,"order":{"field":"size","direction":"asc"}}"""))
+        val sizeCursor = sizePage.getValue("next_cursor").jsonPrimitive.content
+        assertEquals(2, sizePage.getValue("rows").jsonArray.size)
+        assertEquals(
+            "invalid_cursor",
+            obj(h.list("""{"verb":"history.list","limit":2,"order":{"field":"path","direction":"asc"},"cursor":"$sizeCursor"}""")).getValue("error").jsonPrimitive.content,
+            "the order the cursor carries is not the requested one",
+        )
+        assertEquals(
+            "invalid_order",
+            obj(h.list("""{"verb":"history.list","limit":2,"order":{"field":"size","direction":"asc","x":"y"}}""")).getValue("error").jsonPrimitive.content,
+            "the order object is strict: exactly field and direction",
+        )
+        assertEquals(
+            "invalid_cursor",
+            obj(h.list("""{"verb":"history.list","limit":2,"order":{"field":"size","direction":"desc"},"cursor":"$sizeCursor"}""")).getValue("error").jsonPrimitive.content,
+            "the order the cursor carries is not the requested one",
+        )
+
+        // A cursor issued under one normalised filter set is not another's.
+        val filtered = obj(h.list("""{"verb":"history.list","limit":2,"order":{"field":"size","direction":"asc"},"filters":{"direction":"upload"}}"""))
+        val filteredCursor = filtered.getValue("next_cursor")
+        assertNotEquals(JsonNull, filteredCursor, "the filtered page has rows to carry on from")
+        assertEquals(
+            "invalid_cursor",
+            obj(h.list("""{"verb":"history.list","limit":2,"order":{"field":"size","direction":"asc"},"cursor":"${filteredCursor.jsonPrimitive.content}"}""")).getValue("error").jsonPrimitive.content,
+            "the filters the cursor was issued under are not the requested ones",
+        )
+        val carried = obj(h.list("""{"verb":"history.list","limit":2,"order":{"field":"size","direction":"asc"},"filters":{"direction":"upload"},"cursor":"${filteredCursor.jsonPrimitive.content}"}"""))
+        assertEquals(2, carried.getValue("rows").jsonArray.size, "the same filters carry on")
+        // And paging under one order and one filter set carries on.
+        val wholePage = obj(h.list("""{"verb":"history.list","limit":2,"order":{"field":"size","direction":"asc"}}"""))
+        val wholeCursor = wholePage.getValue("next_cursor").jsonPrimitive.content
+        val next = obj(h.list("""{"verb":"history.list","limit":2,"order":{"field":"size","direction":"asc"},"cursor":"$wholeCursor"}"""))
+        val seen = (wholePage.getValue("rows").jsonArray + next.getValue("rows").jsonArray).map { it.jsonObject.getValue("operation_id").jsonPrimitive.content }
+        assertEquals(4, seen.toSet().size, "two pages cover four rows once each")
+    }
+
+    @Test
+    fun `an ordered cursor survives a daemon restart`() = runBlocking {
+        val h = open()
+        h.start(scope) { _, _ -> true }
+        seedOrderRows()
+        val first = obj(h.list("""{"verb":"history.list","limit":3,"order":{"field":"result","direction":"asc"}}"""))
+        val cursor = first.getValue("next_cursor").jsonPrimitive.content
+        val firstPaths = pathsOf(first)
+
+        runCatching { handler?.close() }
+        runCatching { history?.close() }
+        handler = null
+        history = null
+        val reopened = open()
+        reopened.start(scope) { _, _ -> true }
+
+        val second = obj(reopened.list("""{"verb":"history.list","limit":3,"order":{"field":"result","direction":"asc"},"cursor":"$cursor"}"""))
+        assertEquals(firstPaths + pathsOf(second), pathsOf(obj(reopened.list(order("result", "asc")))), "the restart left the pages where they were")
+    }
+
+    // ── `history.retry` (gkrost/unidrive-cli#848) ────────────────────────────────────────────────
+
+    private inner class ScriptedRetryEngine(
+        /** The engine's half of the idempotency contract: the outcome is recorded durably before the reply. */
+        private val record: Boolean = false,
+        private val scripted: (path: String, payloadOperationId: String, requestId: String) -> HistoryRetryOutcome,
+    ) : HistoryRetryEngine {
+        val calls = CopyOnWriteArrayList<Triple<String, String, String>>()
+
+        override fun retryUpload(
+            path: String,
+            payloadOperationId: String,
+            requestId: String,
+        ): HistoryRetryOutcome {
+            calls += Triple(path, payloadOperationId, requestId)
+            val outcome = scripted(path, payloadOperationId, requestId)
+            if (record) {
+                val at = java.util.concurrent.atomic.AtomicLong(wallMs.get())
+                val row =
+                    when (outcome) {
+                        is HistoryRetryOutcome.Admitted -> org.krost.unidrive.telemetry.RetryOutcomeRecord(payloadOperationId, true, outcome.newOperationId, null, at.get())
+                        is HistoryRetryOutcome.Refused -> org.krost.unidrive.telemetry.RetryOutcomeRecord(payloadOperationId, false, null, outcome.token, at.get())
+                    }
+                checkNotNull(history).recordRetryOutcome(requestId, row)
+            }
+            return outcome
+        }
+    }
+
+    private fun openWithRetry(engine: HistoryRetryEngine?): HistoryRpcHandler {
+        val h = TransferHistory.open("p1", db, clock = { wallMs.get() }).also { history = it }
+        return HistoryRpcHandler(h, HistoryRpcHandler.OPEN_FAILED, retry = engine).also { handler = it }
+    }
+
+    // A failed upload, on record with its row id.
+    private fun seedFailedUpload(path: String): String {
+        wallMs.set(10_000)
+        val handle = history!!.begin(TransferDirection.UPLOAD, path, bytesTotal = 10, maxAttempts = 3)
+        handle.started()
+        wallMs.set(11_000)
+        handle.finish(TransferResult.FAILED, errorClass = "network", message = "connection reset")
+        assertTrue(history!!.flush())
+        return handle.operationId
+    }
+
+    private fun retry(opId: String, requestId: String, extra: String = "") = """{"verb":"history.retry","operation_id":"$opId","request_id":"$requestId"$extra}"""
+
+    @Test
+    fun `a well-formed retry reaches the engine with the row's path and answers its admission`() = runBlocking {
+        val engine = ScriptedRetryEngine { path, payload, _ -> HistoryRetryOutcome.Admitted("new-row-id") }
+        val h = openWithRetry(engine)
+        val failedId = seedFailedUpload("/docs/f.txt")
+
+        val reply = obj(h.retry(retry(failedId, "00000000-0000-0000-0000-000000000001")))
+        assertTrue(reply.getValue("ok").jsonPrimitive.boolean)
+        assertTrue(reply.getValue("accepted").jsonPrimitive.boolean)
+        assertEquals("new-row-id", reply.getValue("operation_id").jsonPrimitive.content)
+        assertEquals("00000000-0000-0000-0000-000000000001", reply.getValue("request_id").jsonPrimitive.content)
+        assertEquals(listOf(Triple("/docs/f.txt", failedId, "00000000-0000-0000-0000-000000000001")), engine.calls, "the engine got the row's path, payload and request id")
+    }
+
+    @Test
+    fun `a retry without an engine, or of a row that is not an eligible newest failed upload, is refused`() = runBlocking {
+        val noEngine = openWithRetry(null)
+        seedFailedUpload("/docs/f.txt")
+        val listedBefore = obj(noEngine.list("""{"verb":"history.list"}""")).getValue("rows").jsonArray.single().jsonObject
+        assertEquals(
+            "retry_unavailable",
+            obj(noEngine.retry(retry(listedBefore.getValue("operation_id").jsonPrimitive.content, "00000000-0000-0000-0000-000000000002"))).getValue("error").jsonPrimitive.content,
+            "no engine: there is no retry, whatever the row",
+        )
+
+        // The engine is never asked about a row that is not an upload that failed or was interrupted.
+        val engine = ScriptedRetryEngine { _, _, _ -> throw IllegalStateException("the engine is not asked for a refused row") }
+        runCatching { handler?.close(); history?.close() }
+        handler = null
+        history = null
+        val h = openWithRetry(engine)
+        wallMs.set(12_000)
+        history!!.begin(TransferDirection.DOWNLOAD, "/d.txt").let { it.started(); it.finish(TransferResult.FAILED, errorClass = "network") }
+        wallMs.set(13_000)
+        history!!.begin(TransferDirection.UPLOAD, "/s.txt").let { it.started(); it.finish(TransferResult.SUCCESS) }
+        wallMs.set(14_000)
+        history!!.begin(TransferDirection.UPLOAD, "/r.txt", maxAttempts = 3).let { it.started() }
+        assertTrue(history!!.flush())
+        val listed = obj(h.list("""{"verb":"history.list"}""")).getValue("rows").jsonArray.map { it.jsonObject }.associateBy { it.getValue("path").jsonPrimitive.content }
+        for (path in listOf("/d.txt", "/s.txt", "/r.txt")) {
+            assertEquals(
+                "not_retryable",
+                obj(h.retry(retry(listed.getValue(path).getValue("operation_id").jsonPrimitive.content, "00000000-0000-0000-0000-000000000003"))).getValue("error").jsonPrimitive.content,
+                "not an upload that failed or was interrupted: $path",
+            )
+        }
+        assertTrue(engine.calls.isEmpty(), "no refused row reached the engine")
+    }
+
+    @Test
+    fun `a row a later row of its path superseded is not the newest and is not retryable`() = runBlocking {
+        val engine = ScriptedRetryEngine { _, _, _ -> HistoryRetryOutcome.Admitted("new-row-id") }
+        val h = openWithRetry(engine)
+        val failedId = seedFailedUpload("/docs/f.txt")
+        // A later success of the same path supersedes the failed row.
+        wallMs.set(20_000)
+        history!!.begin(TransferDirection.UPLOAD, "/docs/f.txt").let { it.started(); it.finish(TransferResult.SUCCESS) }
+        assertTrue(history!!.flush())
+
+        assertEquals("not_retryable", obj(h.retry(retry(failedId, "00000000-0000-0000-0000-000000000005"))).getValue("error").jsonPrimitive.content)
+        assertTrue(engine.calls.isEmpty())
+    }
+
+    @Test
+    fun `a row retention took away answers not_found`() = runBlocking {
+        val h = openWithRetry(ScriptedRetryEngine { _, _, _ -> HistoryRetryOutcome.Admitted("new-row-id") })
+        val reply = obj(h.retry(retry("00000000-0000-0000-0000-999999999999", "00000000-0000-0000-0000-000000000006")))
+        assertEquals("not_found", reply.getValue("error").jsonPrimitive.content)
+        assertEquals("00000000-0000-0000-0000-000000000006", reply.getValue("request_id").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `a malformed retry is refused before anything is looked up`() = runBlocking {
+        val engine = ScriptedRetryEngine { _, _, _ -> HistoryRetryOutcome.Admitted("new-row-id") }
+        val h = openWithRetry(engine)
+        for (request in listOf(
+            """{"verb":"history.retry"}""",
+            """{"verb":"history.retry","operation_id":"x"}""",
+            """{"verb":"history.retry","request_id":"00000000-0000-0000-0000-000000000001"}""",
+            """{"verb":"history.retry","operation_id":"","request_id":"00000000-0000-0000-0000-000000000001"}""",
+            """{"verb":"history.retry","operation_id":"x","request_id":"not-a-uuid"}""",
+            """{"verb":"history.retry","operation_id":"x","request_id":"00000000-0000-0000-0000-000000000001","extra":1}""",
+            """{"verb":"history.retry","operation_id":7,"request_id":"00000000-0000-0000-0000-000000000001"}""",
+            """not json""",
+        )) {
+            assertEquals("invalid_request", obj(h.retry(request)).getValue("error").jsonPrimitive.content, "for $request")
+        }
+        assertTrue(engine.calls.isEmpty())
+    }
+
+    @Test
+    fun `an engine refusal passes through with the request id`() = runBlocking {
+        val engine = ScriptedRetryEngine { _, _, _ -> HistoryRetryOutcome.Refused("busy") }
+        val h = openWithRetry(engine)
+        val failedId = seedFailedUpload("/docs/f.txt")
+        val reply = obj(h.retry(retry(failedId, "00000000-0000-0000-0000-000000000007")))
+        assertFalse(reply.getValue("ok").jsonPrimitive.boolean)
+        assertEquals("busy", reply.getValue("error").jsonPrimitive.content)
+        assertEquals("00000000-0000-0000-0000-000000000007", reply.getValue("request_id").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `a resend of one request id replays the stored answer, another payload is a conflict`() = runBlocking {
+        val engine = ScriptedRetryEngine(record = true) { _, _, _ -> HistoryRetryOutcome.Admitted("new-row-id") }
+        val h = openWithRetry(engine)
+        val failedId = seedFailedUpload("/docs/f.txt")
+        val requestId = "00000000-0000-0000-0000-000000000008"
+
+        val first = obj(h.retry(retry(failedId, requestId)))
+        assertTrue(first.getValue("accepted").jsonPrimitive.boolean)
+        assertEquals(1, engine.calls.size)
+        val again = obj(h.retry(retry(failedId, requestId)))
+        assertTrue(again.getValue("accepted").jsonPrimitive.boolean, "the same outcome replays")
+        assertEquals("new-row-id", again.getValue("operation_id").jsonPrimitive.content)
+        assertEquals(1, engine.calls.size, "the engine is not asked again")
+
+        // The same request id for another row is a reused idempotency key, not a retry.
+        wallMs.set(30_000)
+        val otherId = seedFailedUpload("/docs/other.txt")
+        val conflict = obj(h.retry(retry(otherId, requestId)))
+        assertEquals("idempotency_conflict", conflict.getValue("error").jsonPrimitive.content)
+        assertEquals(1, engine.calls.size)
+    }
+
+    @Test
+    fun `a resend after a refusal replays the refusal`() = runBlocking {
+        val engine = ScriptedRetryEngine(record = true) { _, _, _ -> HistoryRetryOutcome.Refused("source_changed") }
+        val h = openWithRetry(engine)
+        val failedId = seedFailedUpload("/docs/f.txt")
+        val requestId = "00000000-0000-0000-0000-000000000009"
+        assertEquals("source_changed", obj(h.retry(retry(failedId, requestId))).getValue("error").jsonPrimitive.content)
+        val again = obj(h.retry(retry(failedId, requestId)))
+        assertEquals("source_changed", again.getValue("error").jsonPrimitive.content, "the same outcome replays")
+        assertEquals(1, engine.calls.size, "the engine is not asked again")
     }
 }

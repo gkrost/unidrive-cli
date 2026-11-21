@@ -403,6 +403,8 @@ internal fun ipcStatusJson(requestCounts: Map<String, Long>): JsonObject =
  * says whether a folder is listed whole, rmdir takes discard_local, ignore.explain takes paths.
  * `hydration.open_read_etag` (gkrost/unidrive-cli#707): open_read names the etag of the version it served, where it is the row's.
  * `hydration.rmdir_not_empty_reason` (gkrost/unidrive-cli#717): a rmdir refused with not_empty names its reason and one child.
+ * `history.order.v1` and `history.retry.v1` (gkrost/unidrive-cli#848): `history.list` takes an `order` member, and a
+ * failed upload row can be queued again through `history.retry` — where a history is open to serve them from.
  */
 internal fun daemonCapabilitiesJson(
     profileMode: ProfileMode,
@@ -410,17 +412,27 @@ internal fun daemonCapabilitiesJson(
     uploadIgnore: Boolean,
     viewNamespaces: ViewNamespaces,
     shareCapable: Boolean,
+    // gkrost/unidrive-cli#848: the history verbs serve only where a history is open (a mirror records none, and a
+    // mount whose telemetry.db did not open answers unavailable, so neither advertises the capabilities).
+    historyOpen: Boolean = false,
     // issue#796: the vault verbs exist (vault.enc present); `vault.unlock` and `vault.lock` answer.
     vaultUnlockable: Boolean = false,
 ): String =
     (
         profileMode.capabilities + NOTIFICATIONS_STATUS_CAPABILITY +
             (if (hydration) listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY, HYDRATION_STAT_CAPABILITY, CANCEL_READ_CAPABILITY, HANDLE_STATUS_CAPABILITY, HYDRATION_LOCATE_CAPABILITY, SUBSCRIBE_REPLAY_CAPABILITY, LIST_COMPLETE_CAPABILITY, RMDIR_DISCARD_LOCAL_CAPABILITY, OPEN_READ_ETAG_CAPABILITY, RMDIR_NOT_EMPTY_REASON_CAPABILITY) else emptyList()) +
+            (if (historyOpen) listOf(HISTORY_ORDER_CAPABILITY, HISTORY_RETRY_CAPABILITY) else emptyList()) +
             (if (uploadIgnore) listOf(IGNORE_EXPLAIN_BATCH_CAPABILITY) else emptyList()) +
             (if (viewNamespaces.isEmpty()) emptyList() else listOf("views", "view_page")) +
             (if (shareCapable) listOf(SHARE_CREATE_CAPABILITY) else emptyList()) +
             (if (vaultUnlockable) listOf(VAULT_UNLOCK_CAPABILITY) else emptyList())
     ).joinToString(",", "[", "]") { ndjsonString(it) }
+
+/** The `daemon.status` capability that says `history.list` takes an `order` member (gkrost/unidrive-cli#848). */
+internal const val HISTORY_ORDER_CAPABILITY = "history.order.v1"
+
+/** The `daemon.status` capability that says the daemon answers `history.retry` (gkrost/unidrive-cli#848). */
+internal const val HISTORY_RETRY_CAPABILITY = "history.retry.v1"
 
 /**
  * The `daemon.status` capability that says the daemon answers `vault.unlock` and `vault.lock`

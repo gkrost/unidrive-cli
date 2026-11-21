@@ -99,6 +99,11 @@ internal class TelemetryStore private constructor(
             // gkrost/unidrive-cli#134: a `result` filter (failed, running) seeks its rows in time order instead of reading every newer row
             // on the index above. Created at the next open of an existing file, like the one above, without a schema version of its own.
             st.execute("CREATE INDEX IF NOT EXISTS idx_transfers_result_time ON transfers(result, $SORT_TIME, operation_id)")
+            // The orders of the non-default `history.list` sorts (§4.8): the path order seeks the path index, the
+            // same seek-and-scan the time order gets from idx_transfers_time. The size order sorts by a nulls-last
+            // expression and the result order by the fixed rank expression below, which no plain column index
+            // serves: both scan, and what they scan is bounded by the retention. Created at the next open, as above.
+            st.execute("CREATE INDEX IF NOT EXISTS idx_transfers_path ON transfers(path, operation_id)")
             st.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID")
             // Schema step 2: the request-attempt tables. A file at step 1 gains them; nothing of step 1 changes.
             if (version < ATTEMPTS_SCHEMA_VERSION) AttemptTables.create(c)
@@ -192,6 +197,26 @@ internal class TelemetryStore private constructor(
             ps.executeQuery().use { if (it.next()) it.getString(1) else null }
         }
 
+    /**
+     * The durable answer of a `history.retry` request id (§4.8): records [value] under [key] when no outcome
+     * is on file yet and returns null; when one is, records nothing and returns what the file holds, so the
+     * caller replays that outcome instead of acting twice. Runs on the writer thread, inside the caller's turn.
+     */
+    @Synchronized
+    fun recordRetryOutcomeIfAbsent(
+        key: String,
+        value: String,
+    ): String? {
+        val inserted =
+            connection().prepareStatement("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)").use {
+                it.setString(1, key)
+                it.setString(2, value)
+                it.executeUpdate() == 1
+            }
+        if (inserted) return null
+        return meta(key)
+    }
+
     @Synchronized
     fun readAll(): List<TransferRow> =
         connection().createStatement().use { st ->
@@ -228,6 +253,7 @@ internal class TelemetryStore private constructor(
                 it.setLong(1, cutoffMs)
                 it.executeUpdate()
             }
+        removed += pruneRetryOutcomes(c, cutoffMs)
         var guard = 0
         while (liveBytes(c) > maxBytes && guard++ < MAX_PRUNE_ROUNDS) {
             // The byte budget is shared with the request metrics, which give way first: raw attempts, then roll-ups.
@@ -252,6 +278,43 @@ internal class TelemetryStore private constructor(
         return removed
     }
 
+    /**
+     * The `history.retry` mappings live as long as the rows they answer for (§4.8): one recorded before
+     * [cutoffMs] goes with the retention, and so does one this build cannot read again. Returns the keys removed.
+     */
+    private fun pruneRetryOutcomes(
+        c: Connection,
+        cutoffMs: Long,
+    ): Int {
+        val keys = ArrayList<String>()
+        c.prepareStatement("SELECT key, value FROM meta WHERE key LIKE 'retry\\_req:%' ESCAPE '\\'").use { ps ->
+            ps.executeQuery().use { rs -> keys += expiredRetryKeysFrom(rs, cutoffMs) }
+        }
+        var removed = 0
+        for (key in keys) {
+            c.prepareStatement("DELETE FROM meta WHERE key = ?").use {
+                it.setString(1, key)
+                removed += it.executeUpdate()
+            }
+        }
+        return removed
+    }
+
+    /** The `retry_req:` keys [rs] holds that the retention takes: recorded before [cutoffMs], or unreadable again. */
+    private fun expiredRetryKeysFrom(
+        rs: ResultSet,
+        cutoffMs: Long,
+    ): List<String> {
+        val keys = ArrayList<String>()
+        rs.use {
+            while (rs.next()) {
+                val recordedAt = RetryOutcomeRecord.decode(rs.getString(2))?.recordedAtMs
+                if (recordedAt == null || recordedAt < cutoffMs) keys += rs.getString(1)
+            }
+        }
+        return keys
+    }
+
     /** Inserts the attempts of one profile in one transaction. */
     @Synchronized
     fun insertAttempts(
@@ -260,9 +323,7 @@ internal class TelemetryStore private constructor(
     ) {
         if (attempts.isEmpty()) return
         inTransaction { AttemptTables.insert(it, profile, attempts) }
-    }
-
-    /** Recomputes the roll-ups of [minutes] from the raw rows. */
+    }    /** Recomputes the roll-ups of [minutes] from the raw rows. */
     @Synchronized
     fun rollUp(minutes: Collection<Long>) {
         if (minutes.isEmpty()) return
@@ -356,6 +417,16 @@ internal class TelemetryStore private constructor(
 
         /** The instant a transfer sorts by: when it finished, or, while it has not, when it was queued. */
         const val SORT_TIME = "COALESCE(finished_at, queued_at)"
+
+        /**
+         * The SQL form of the `result` order's fixed rank (§4.8): the same mapping [HistoryOrder.rankOf] makes,
+         * spelled for the query. The rank is part of the v1 contract; a new result value gets a new rank only
+         * in a new capability version, and an unknown value sorts after every known one (6).
+         */
+        const val RESULT_RANK_EXPR =
+            "(CASE result WHEN 'failed' THEN 0 WHEN 'conflict' THEN 1 WHEN 'interrupted' THEN 2 " +
+                "WHEN 'running' THEN 3 WHEN 'skipped' THEN 4 WHEN 'success' THEN 5 ELSE 6 END)"
+
         private const val MAX_PRUNE_ROUNDS = 64
         private const val PRUNE_FRACTION = 10
         private val log = LoggerFactory.getLogger(TelemetryStore::class.java)

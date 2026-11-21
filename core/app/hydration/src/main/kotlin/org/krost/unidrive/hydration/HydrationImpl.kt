@@ -71,9 +71,9 @@ import java.util.concurrent.atomic.AtomicLong
 class HydrationImpl(
     // archive#560 U3: the mount operations (hydrate, upload, remote create/delete/rename) run on the mount
     // front-end; this class owns the upload queue, the open set and the cache budget on top of it.
-    private val mount: MountEngine,
-    private val stateDb: StateDatabase,
-    private val recoveryUploadScope: CoroutineScope = defaultRecoveryUploadScope(),
+    internal val mount: MountEngine, // gkrost/unidrive-cli#848: the retry admission resolves the cache path through it
+    internal val stateDb: StateDatabase, // gkrost/unidrive-cli#848: the retry admission reads the row it re-queues
+    internal val recoveryUploadScope: CoroutineScope = defaultRecoveryUploadScope(), // gkrost/unidrive-cli#848: the rounds and the retry submission launch here
     // Upload-queue tuning. The waiting depth bounds how many submitted-but-
     // not-yet-running uploads the daemon holds; a burst beyond it suspends
     // the open_write callers (back-pressure towards the client) instead of
@@ -119,7 +119,7 @@ class HydrationImpl(
     val exhaustedRetryDelaysMs: List<Long> = DEFAULT_EXHAUSTED_RETRY_DELAYS_MS,
     // archive#652: where finished transfers are recorded (the daemon opens it per mount profile); null = no history.
     // The history never fails or slows a transfer: every call on it only hands a snapshot to its writer queue.
-    private val history: TransferHistory? = null,
+    internal val history: TransferHistory? = null, // gkrost/unidrive-cli#848: the retry records its outcome through it
 ) : Hydration {
 
     /** Test seam to hold a startup cache scan in flight and verify cancellation between entries. */
@@ -384,6 +384,7 @@ class HydrationImpl(
         @Volatile var retryAtMs: Long? = null
     }
     private val uploadSlots = ConcurrentHashMap<String, UploadSlot>()
+    internal fun isUploading(path: String): Boolean = uploadSlots.containsKey(path) // gkrost/unidrive-cli#848: busy while a slot holds the path
 
     // gkrost/unidrive-cli#584: the old spelling of each never-uploaded file the user renamed by its case only (keyed by the new
     // spelling, NFC): what a stale cloud item of that file is looked for under once its upload ends ([settleStaleSpelling]).
@@ -438,6 +439,7 @@ class HydrationImpl(
     // [uploadQueueDepth] suspends the submitter: back-pressure towards the
     // client instead of unbounded queue growth.
     private val queueSlots = Semaphore(uploadQueueDepth)
+    internal fun uploadQueueHasRoom(): Boolean = queueSlots.availablePermits > 0 // gkrost/unidrive-cli#848: busy when full
 
     // archive#450: when each path was last opened, created or written through this instance (epoch ms), for
     // the least-recently-used order. After a restart a path has no entry and the file's own access and
@@ -949,20 +951,23 @@ class HydrationImpl(
     // (on launch) and the decrement-and-remove re-decides the removal under the
     // same bin lock (removeDyingSlot, in the finally block) — a slot is never
     // removed while another submitter holds a count on it (#210).
-    private suspend fun launchSerializedUpload(
+
+    // archive#652: the logical transfer's row begins here (the wait for a waiting slot is queue time); history.retry
+    // (gkrost/unidrive-cli#848) begins it at its admission, so the verb answers the row's id before the submission queues.
+    private fun beginUploadRow(path: String, cachePath: Path): TransferHandle? =
+        history?.begin(TransferDirection.UPLOAD, path, bytesTotal = runCatching { Files.size(cachePath) }.getOrNull(), maxAttempts = maxUploadAttempts)
+
+    internal suspend fun launchSerializedUpload(
         path: String,
         cachePath: Path,
         handleId: String,
         baseEtag: String?,
+        presetTx: TransferHandle? = null,
     ) {
         // archive#652: the logical transfer starts being queued here (the wait for a waiting slot is queue time); nothing is
-        // written until it gets a transfer permit or ends.
-        val tx = history?.begin(
-            TransferDirection.UPLOAD,
-            path,
-            bytesTotal = runCatching { Files.size(cachePath) }.getOrNull(),
-            maxAttempts = maxUploadAttempts,
-        )
+        // written until it gets a transfer permit or ends. A preset row (history.retry's, begun at its admission) carries the
+        // operation id the verb already answered with; the submission that drops before queueing leaves it unwritten.
+        val tx = presetTx ?: beginUploadRow(path, cachePath)
         _events.emit(HydrationEvent.Queued(path))
         // Atomically create-or-get the slot and bump its pending count. The bin lock
         // held by compute() ensures that no concurrent finally-block can remove the
@@ -1744,7 +1749,7 @@ class HydrationImpl(
     // The rows the dirty-overwrite scan takes up: alive file rows with a real remote id, hydrated or carrying a noted
     // unsynced edit (archive#1070; a cloud-only row has no baseline to drift from). A folder row has no file in the cache, and
     // a never-uploaded row is the pending loop's.
-    private fun isDirtyReplayCandidate(entry: org.krost.unidrive.sync.model.SyncEntry): Boolean =
+    internal fun isDirtyReplayCandidate(entry: org.krost.unidrive.sync.model.SyncEntry): Boolean =
         !entry.isFolder && entry.remoteId != null && (entry.isHydrated || entry.editBase != null)
 
     /**
@@ -1758,10 +1763,11 @@ class HydrationImpl(
      * and no reap drops it), the row shows the failure and the conflict is reported, as for an upload that met one.
      * Returns whether an upload was queued.
      */
-    private suspend fun launchDirtyReplay(
+    internal suspend fun launchDirtyReplay(
         entry: org.krost.unidrive.sync.model.SyncEntry,
         cachePath: Path,
         handleId: String,
+        presetTx: TransferHandle? = null,
     ): Boolean {
         val path = entry.path
         val base = entry.editBase
@@ -1780,9 +1786,10 @@ class HydrationImpl(
                 ),
             )
             log.warn("replay of {} not sent: the cloud copy changed after the edit began; the edit stays in the cache", path)
+            presetTx?.finish(TransferResult.FAILED, errorClass = "conflict", attempted = false)
             return false
         }
-        launchSerializedUpload(path, cachePath, handleId, baseEtag = if (base == null) current else base.ifEmpty { null })
+        launchSerializedUpload(path, cachePath, handleId, baseEtag = if (base == null) current else base.ifEmpty { null }, presetTx = presetTx)
         return true
     }
 
@@ -1855,11 +1862,14 @@ class HydrationImpl(
     }
 
     // archive#526: the same check for the deferred rows, which run after the replay pass and resolve on their own.
-    private fun replayable(path: String): Boolean =
+    internal fun replayable(path: String): Boolean =
         cacheCopy(CachePaths.Pass(mount.hydrationCacheDir()), path) != null
 
     // gkrost/unidrive-cli#70: the rounds an upload of a path has had since its last success or its last client submission.
-    private val exhaustedRounds = ConcurrentHashMap<String, Int>()
+    internal val exhaustedRounds = ConcurrentHashMap<String, Int>()
+
+    // gkrost/unidrive-cli#848: the round timers and the `history.retry` admission (HistoryRetry.kt beside this file, which the
+    internal val historyRetries = HistoryRetryRounds(this) // ratchet keeps from growing), reading this class's state at call time.
 
     /**
      * gkrost/unidrive-cli#70: an upload that used all [maxUploadAttempts] is offered again after the next delay of
@@ -1880,21 +1890,7 @@ class HydrationImpl(
             return
         }
         log.info("upload of {} is offered again in {} s (round {} of {})", failedPath, waitMs / 1000, round, exhaustedRetryDelaysMs.size)
-        recoveryUploadScope.launch {
-            delay(waitMs)
-            val path = failedPath
-            val entry = stateDb.getEntry(path) ?: return@launch // deleted or renamed away: nothing left to upload at this path
-            val waitingForUpload = if (entry.remoteId == null) entry.isHydrated else isDirtyReplayCandidate(entry)
-            if (!waitingForUpload || uploadSlots.containsKey(path) || !replayable(path)) return@launch
-            val cachePath = mount.resolveCachePath(path)
-            if (refusedEarlier(path, cachePath, engineOffer = true) != null) return@launch
-            val handleId = "engine-retry-$round"
-            if (entry.remoteId == null) {
-                launchSerializedUpload(path, cachePath, handleId, baseEtag = null)
-            } else {
-                launchDirtyReplay(entry, cachePath, handleId)
-            }
-        }
+        historyRetries.scheduleRound(failedPath, waitMs, round)
     }
 
     // Test drive 2, E3: a resume offers again every never-uploaded file whose last upload failed and that nothing uploads now
@@ -1907,6 +1903,10 @@ class HydrationImpl(
             if (refusedEarlier(row.path, cachePath, engineOffer = true) == null) launchSerializedUpload(row.path, cachePath, "engine-resume-retry", baseEtag = null)
         }
     }
+
+    // gkrost/unidrive-cli#848: `history.retry`'s admission and the round in the pending one's place — the checks, the outcome
+    // record and the scheduling live in [HistoryRetryRounds], beside this file.
+    override fun retryUpload(path: String, payloadOperationId: String, requestId: String) = historyRetries.retryUpload(path, payloadOperationId, requestId)
 
     // archive#493: <cache mtime ms>|<cache size> of the bytes an upload sends; null when the cache copy is gone.
     // The token of a provider's permanent upload refusal: `parent_gone` for a folder its walk proved gone (archive#580),
@@ -1959,7 +1959,7 @@ class HydrationImpl(
     // The reason the provider refused this path's upload, when the refusal was for exactly the content the cache holds now.
     // [engineOffer]: the engine's own offer (a start's replay, a backoff round, a resume; `engine-` handles), which a parent_gone
     // refusal does not hold back (test drive 2, E3: a gone folder can come back). The co-daemon's `recovery-` offers still are.
-    private fun refusedEarlier(path: String, cachePath: Path, engineOffer: Boolean = false): String? {
+    internal fun refusedEarlier(path: String, cachePath: Path, engineOffer: Boolean = false): String? {
         val refusal = runCatching { stateDb.uploadRefusal(path) }.getOrNull() ?: return null
         val stamp = refusalStamp(cachePath) ?: return null
         if (!refusal.startsWith("$stamp|")) return null

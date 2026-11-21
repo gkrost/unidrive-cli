@@ -647,12 +647,14 @@ class DaemonRuntime(
                 // sync.subscribe — the same wiring as SyncCommand's (gkrost/unidrive-cli#442).
                 server.registerSyncSubscribeVerb()
 
-                // history.list / history.subscribe (archive#653): read verbs over the transfer history. A mirror daemon, or a mount
-                // daemon whose history did not open, answers history_unavailable (never an empty list).
+                // history.list / history.subscribe / history.retry (archive#653, gkrost/unidrive-cli#848): the verbs over
+                // the transfer history. A mirror daemon, or a mount daemon whose history did not open, answers
+                // history_unavailable (never an empty list) and retry_unavailable: there is nothing to retry from.
                 historyRpc =
                     HistoryRpcHandler(
                         transferHistory,
                         if (mountMode) HistoryRpcHandler.OPEN_FAILED else HistoryRpcHandler.MIRROR,
+                        retry = mountHistoryRetryEngine(hydration),
                     ).also { it.register(server, serveScope) }
 
                 // refresh.run verb (spec §4.2); the handler is constructed above.
@@ -740,8 +742,9 @@ class DaemonRuntime(
                 // hosting contract before it sends a verb the profile refuses (additive, read-only). Fixed for the run, so
                 // rendered once here, not at every status request (gkrost/unidrive-cli#442).
                 val modeJson = ndjsonString(profileMode.wireName)
+                // The history verbs' capabilities (gkrost/unidrive-cli#848) serve only where a history is open.
                 val capabilitiesJson =
-                    daemonCapabilitiesJson(profileMode, hydration != null, engine.uploadIgnore != null, viewNamespaces, shareCapable, vaultUnlockable = vault != null)
+                    daemonCapabilitiesJson(profileMode, hydration != null, engine.uploadIgnore != null, viewNamespaces, shareCapable, historyOpen = transferHistory != null, vaultUnlockable = vault != null)
 
                 // daemon.status verb (spec §4.3). protocol_version is the
                 // additive cross-repo handshake field (IPC_PROTOCOL_VERSION):
@@ -1238,7 +1241,7 @@ class DaemonRuntime(
         // verb, capability or field), so a client orders engine builds by what they answer; protocol_version moves only
         // on a breaking change and engine_version does not order dev builds. IpcContractLevelTest pins the IPC surface
         // of each level and fails when the surface changes without a raise.
-        const val IPC_CONTRACT_LEVEL: Int = 6
+        const val IPC_CONTRACT_LEVEL: Int = 7
 
         /**
          * Whether a successful `hydration.subscribe` is followed by the one guarded enumerate: only for a
