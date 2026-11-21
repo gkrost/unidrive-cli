@@ -5,6 +5,7 @@ import java.sql.SQLException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /** Why [thread] ended ([failure]), or its state and top frames: what a test that waits on a telemetry writer reports (#390). */
 internal fun writerThreadStatus(
@@ -51,7 +52,15 @@ internal class HistoryWriter(
         val key: String,
         val value: String,
         val done: CompletableFuture<String>,
-    ) : Op<TransferRow>
+    ) : Op<TransferRow> {
+        /**
+         * Who owns the op: the writer takes it ([STARTED]) before it writes, the caller that stops waiting
+         * abandons it ([ABANDONED]) first; whichever wins the compare-and-set decides, so an answer of "not
+         * recorded" is never followed by a record written later (a resend would replay an accepted answer for a
+         * submission that was never queued).
+         */
+        val state = AtomicInteger(PENDING)
+    }
 
     // Terminal snapshots a full queue could not take: the writer drains this every turn. A row that
     // lost its final snapshot stands `running` in the file for ever, and the retention skips running
@@ -121,12 +130,33 @@ internal class HistoryWriter(
         key: String,
         value: String,
         timeoutMs: Long,
-    ): RetryOutcomeWrite =
-        when (val answer = controlWithResult(timeoutMs) { RecordOutcome(key, value, it) }) {
-            null -> RetryOutcomeWrite.NotRecorded
-            FRESH -> RetryOutcomeWrite.Recorded
-            else -> RetryOutcomeWrite.Existing(answer)
+    ): RetryOutcomeWrite {
+        var op: RecordOutcome? = null
+        val answer =
+            controlWithResult(timeoutMs) { done ->
+                RecordOutcome(key, value, done).also { op = it }
+            }
+        if (answer == null) {
+            val given = op ?: return RetryOutcomeWrite.NotRecorded
+            // The caller gives up unless the writer already took the op: then its result is the answer.
+            if (given.state.compareAndSet(PENDING, ABANDONED)) return RetryOutcomeWrite.NotRecorded
+            val late =
+                try {
+                    given.done.get(timeoutMs, TimeUnit.MILLISECONDS)
+                } catch (e: java.util.concurrent.TimeoutException) {
+                    log.warn("History for {}: the retry outcome write did not answer within {} ms ({})", profile, timeoutMs, e.javaClass.simpleName)
+                    return RetryOutcomeWrite.NotRecorded
+                } catch (e: java.util.concurrent.ExecutionException) {
+                    log.warn("History for {}: the retry outcome write failed ({})", profile, e.javaClass.simpleName)
+                    return RetryOutcomeWrite.NotRecorded
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return RetryOutcomeWrite.NotRecorded
+                }
+            return if (late == FRESH) RetryOutcomeWrite.Recorded else RetryOutcomeWrite.Existing(late)
         }
+        return if (answer == FRESH) RetryOutcomeWrite.Recorded else RetryOutcomeWrite.Existing(answer)
+    }
 
     fun flush(timeoutMs: Long): Boolean = control(timeoutMs) { Op.Barrier(it) }
 
@@ -162,7 +192,7 @@ internal class HistoryWriter(
             writePending()
             replaceRow(op.row, op.previousId)
         }
-        if (op is RecordOutcome) {
+        if (op is RecordOutcome && op.state.compareAndSet(PENDING, STARTED)) {
             // The pending rows go first, so the record lands in the same turn as the snapshots before it.
             writePending()
             try {
@@ -290,5 +320,9 @@ internal class HistoryWriter(
 
         /** The [RecordOutcome] answer that says this call wrote the record (a stored form is never empty). */
         private const val FRESH = ""
+
+        private const val PENDING = 0
+        private const val STARTED = 1
+        private const val ABANDONED = 2
     }
 }

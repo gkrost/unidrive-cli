@@ -303,7 +303,11 @@ class TransferHistory private constructor(
      * nothing is on file and the caller must not report an accepted retry. The mapping is pruned with the
      * history's retention.
      */
-    fun recordRetryOutcome(requestId: String, record: RetryOutcomeRecord): RetryOutcomeWrite = writer.recordOutcome(RetryOutcomeRecord.keyOf(requestId), record.encode(), HistoryWriter.DEFAULT_WAIT_MS)
+    fun recordRetryOutcome(
+        requestId: String,
+        record: RetryOutcomeRecord,
+        timeoutMs: Long = HistoryWriter.DEFAULT_WAIT_MS,
+    ): RetryOutcomeWrite = writer.recordOutcome(RetryOutcomeRecord.keyOf(requestId), record.encode(), timeoutMs)
 
     /**
      * [listener] is called for every row snapshot committed to the file from now on, with the snapshot's number

@@ -2,6 +2,8 @@ package org.krost.unidrive.telemetry
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.io.path.deleteIfExists
 import kotlin.test.AfterTest
@@ -86,6 +88,29 @@ class RetryOutcomeStoreTest {
 
         assertNull(history.retryOutcome("00000000-0000-0000-0000-000000000001"), "the mapping went with the retention")
         assertEquals("new-op-2", history.retryOutcome("00000000-0000-0000-0000-000000000002")?.newOperationId, "the recent one stays")
+    }
+
+    @Test
+    fun `a record the caller gave up on is never written later`() {
+        val history = open()
+        val stalled = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        // A tail listener runs on the writer thread: blocking it holds the writer while the record's op waits in its queue.
+        history.addTailListener { _, _ ->
+            stalled.countDown()
+            release.await(30, TimeUnit.SECONDS)
+        }
+        history.begin(TransferDirection.UPLOAD, "/stall.txt", bytesTotal = 1).started()
+        assertTrue(stalled.await(10, TimeUnit.SECONDS), "the writer is held inside the listener")
+
+        val key = "00000000-0000-0000-0000-000000000001"
+        val write = history.recordRetryOutcome(key, record("op-1", true, "new-op", nowMs.get()), timeoutMs = 200)
+        assertIs<RetryOutcomeWrite.NotRecorded>(write, "the writer did not take it in time")
+
+        release.countDown()
+        assertTrue(history.flush(), "the writer drains its queue")
+        assertNull(history.retryOutcome(key), "NotRecorded means nothing is on file, now or later: a resend must not replay an accepted answer")
+        assertIs<RetryOutcomeWrite.Recorded>(history.recordRetryOutcome(key, record("op-1", false, null, nowMs.get())), "the same request id can still be answered afresh")
     }
 
     @Test
