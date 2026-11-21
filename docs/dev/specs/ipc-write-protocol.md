@@ -421,6 +421,33 @@ the provider's name for the bytes of the version the row records:
 - Nothing else in the entry changes: `etag` stays the base for `base_etag`, and `remote_modified_ms` stays the cloud
   item's modified time (after a read, those of the version the read brought down, as above).
 
+**Who last changed a row (`hydration.list_changed_by`, gkrost/unidrive-cli#849; `contract_level` 7).** On an engine that lists
+`hydration.list_changed_by` in the `daemon.status` `capabilities`, a `hydration.list` (and `hydration.stat`) file or folder
+entry may carry two more fields, at the end of the entry object:
+
+```
+{"path":"/a.txt","size":5,...,"pending_upload":false,"error":false,"changed_by":"remote","changed_at_ms":1700000000000}
+```
+
+- **`changed_by`.** `"local"`: a change the engine made itself: the upload that landed (also the kept-both copy of a
+  conflict and the item an upload left in the cloud before a crash, adopted afterwards), a folder the mount created, the
+  engine's own rename or move of the row. `"remote"`: a change the cloud told it: a delta item or an enumeration that
+  brought the row something it did not hold (a new row, another version, a rename), a folder the cloud already held when
+  the mount asked for it, and the version a download or a refused write found in the cloud after the row was listed.
+- **`changed_at_ms`.** Epoch milliseconds of when the engine saw that change (the delivery merged, the upload ended), not
+  the cloud item's own time (`remote_modified_ms`). After a first enumeration, or one that starts over, every row it
+  brought in carries the time of that merge.
+- **Absent together** wherever the engine does not know: every row written before the engine had the columns, a row no
+  delivery or upload has changed since, and a row whose version the engine knows to be stale (a write refused as a
+  conflict whose cloud version could not be read). Never `null`, never a guess: absence is the answer "not known". A
+  client reads the fields only from an engine that lists the capability.
+- **What does not change the stamp.** A delivery that leaves the row as it holds it, one that repeats what the row holds
+  (a provider that lists its whole tree each poll), the echo of the engine's own upload (the same item, bytes, size and
+  token, only another modified time), an upload that found the cloud already holding these bytes and sent nothing, and
+  housekeeping writes (a download of the recorded version, a cache sweep, a mark).
+- **Where.** Every entry `hydration.list`, `hydration.stat` and `view.page` write, also an entry in a view (which is the real
+  row's), and the `entry` of a `completed` upload event.
+
 **One row without a listing (`hydration.stat`, gkrost/unidrive-cli#415).** On an engine that lists `hydration.stat` in
 the `daemon.status` `capabilities`, the request `{"verb":"hydration.stat","path":"/foo.txt"}` answers the one entry
 `hydration.list` would give for that path, under `entry` with the same field names and shapes, so a client reuses its
@@ -592,7 +619,7 @@ top-level folder with that name through the mount gets `read_only` while the vie
 `mtime_ms` is the daemon's start (constant while it runs; `remote_modified_ms` is `null`). `hydration.list("/Recents")` has one
 entry per reference, in the provider's order (Recents: the newest change first), its `remote_id` the synthetic key
 `unidrive:view:recents:<id of the real item>`, never the bare id (a client must not see one id at two paths). `size`,
-`mtime_ms`, `remote_modified_ms`, `etag`, `content_id`, `hydrated`, `pending_upload`, `error`, `excluded` and `blocked` are the real row's, read
+`mtime_ms`, `remote_modified_ms`, `etag`, `content_id`, `hydrated`, `pending_upload`, `error`, `excluded`, `blocked`, `changed_by` and `changed_at_ms` are the real row's, read
 at each listing. A view is flat except for folders (below): `hydration.list` of a path below a file entry answers an empty list.
 
 **Folder aliases.** A reference to a folder is an entry whose `folder` is `true` and which is a read-only **alias** of the real
