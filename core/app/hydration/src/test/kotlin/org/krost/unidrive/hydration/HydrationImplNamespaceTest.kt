@@ -34,6 +34,9 @@ class HydrationImplNamespaceTest {
         var throwOnDelete: Throwable? = null
         var children: List<CloudItem> = emptyList()
 
+        // gkrost/unidrive-cli#853: listings by path (the snapshot guard descends); a path not named here answers [children].
+        var childrenByPath: Map<String, List<CloudItem>> = emptyMap()
+
         // gkrost/unidrive-cli#452: the item the metadata probe answers as already in the cloud at [itemAtPath]; null = absent.
         var itemAt: CloudItem? = null
 
@@ -42,7 +45,7 @@ class HydrationImplNamespaceTest {
         // gkrost/unidrive-cli#824: the folder was deleted in the cloud; every listing answers the typed not-found.
         var gone = false
         override suspend fun listChildren(path: String): List<CloudItem> =
-            if (gone) throw ProviderException("Folder not found: $path") else children
+            if (gone) throw ProviderException("Folder not found: $path") else childrenByPath[path] ?: children
         // A never-uploaded local file is genuinely absent on the cloud — the
         // rename/unlink ghost-probe expects a typed not-found, not a generic error.
         override suspend fun getMetadata(path: String): CloudItem {
@@ -721,14 +724,20 @@ class HydrationImplNamespaceTest {
         mimeType = null,
     )
 
-    private inline fun <T> capturingLog(block: () -> T): Pair<T, List<String>> {
-        val logger = org.slf4j.LoggerFactory.getLogger(HydrationImpl::class.java) as ch.qos.logback.classic.Logger
-        val appender = ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>().also { it.start() }
-        logger.addAppender(appender)
+    // HydrationImpl's logger by default; the mount front-end's log lines keep their host's logger name, so a test
+    // that reads them names the class its logger carries (the engine's).
+    private inline fun <T> capturingLog(vararg loggers: Class<*>, block: () -> T): Pair<T, List<String>> {
+        val names = loggers.takeIf { it.isNotEmpty() } ?: arrayOf(HydrationImpl::class.java)
+        val attached = names.map { cls ->
+            val logger = org.slf4j.LoggerFactory.getLogger(cls) as ch.qos.logback.classic.Logger
+            val appender = ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>().also { it.start() }
+            logger.addAppender(appender)
+            logger to appender
+        }
         try {
-            return block() to appender.list.map { it.formattedMessage }
+            return block() to attached.flatMap { (_, appender) -> appender.list }.map { it.formattedMessage }
         } finally {
-            logger.detachAppender(appender)
+            attached.forEach { (logger, appender) -> logger.detachAppender(appender) }
         }
     }
 
@@ -933,6 +942,69 @@ class HydrationImplNamespaceTest {
         assertEquals(null, RmdirStaleRowSettle.insideLagWindow(listOf(atEdge), now), "a row exactly the window old settles")
         assertEquals(justInside, RmdirStaleRowSettle.insideLagWindow(listOf(atEdge, justInside), now))
         assertEquals(java.time.Duration.ofSeconds(10), window)
+    }
+
+    // ── gkrost/unidrive-cli#853: a listed ghost whose row the engine itself holds as DELETED must not refuse forever ──
+
+    @Test
+    fun rmdir_recursive_passes_over_a_listed_child_whose_row_the_engine_holds_as_deleted() = runTest {
+        // The cloud's own delta deleted pic.jpg days ago (the reap tombstones it without a mount delete, so the
+        // own-delete receipt misses it), and the provider's listing still names it below /dir/sub. hydration.list
+        // answers from the alive view, so the client never sees the ghost and has nothing to unlink: the guard
+        // passes it over instead of refusing the tree forever.
+        val env = freshEnv()
+        env.db.upsertEntry(row("/dir", "rid-dir", isFolder = true, lastSynced = settled))
+        env.db.upsertEntry(row("/dir/sub", "rid-sub", isFolder = true, lastSynced = settled))
+        env.db.upsertEntry(row("/dir/sub/pic.jpg", "rid-pic", lastSynced = settled))
+        env.db.markDeleted("/dir/sub/pic.jpg")
+        env.provider.childrenByPath = mapOf(
+            "/dir" to listOf(listed(row("/dir/sub", "rid-sub", isFolder = true))),
+            "/dir/sub" to listOf(listed(row("/dir/sub/pic.jpg", "rid-pic"))),
+        )
+
+        val (result, lines) = capturingLog { env.impl.rmdir("/dir", recursive = true) }
+
+        assertEquals(RmdirResult.Ok, result, "lines: $lines")
+        assertEquals("/dir", env.provider.lastDeletedPath)
+        assertEquals(null, env.db.getEntry("/dir"), "the tree's rows are tombstoned with the folder")
+        assertEquals(null, env.db.getEntry("/dir/sub"))
+    }
+
+    @Test
+    fun plain_rmdir_of_the_ghosts_parent_passes_over_the_deleted_row_too() = runTest {
+        // The children-first fallback's last move: the client listed /dir/sub (the ghost is not in the alive view),
+        // found nothing to unlink, and the plain rmdir meets the same guard with the same ghost.
+        val env = freshEnv()
+        env.db.upsertEntry(row("/dir/sub", "rid-sub", isFolder = true, lastSynced = settled))
+        env.db.upsertEntry(row("/dir/sub/pic.jpg", "rid-pic", lastSynced = settled))
+        env.db.markDeleted("/dir/sub/pic.jpg")
+        env.provider.childrenByPath = mapOf("/dir/sub" to listOf(listed(row("/dir/sub/pic.jpg", "rid-pic"))))
+
+        val result = env.impl.rmdir("/dir/sub")
+
+        assertEquals(RmdirResult.Ok, result)
+        assertEquals("/dir/sub", env.provider.lastDeletedPath)
+        assertEquals(null, env.db.getEntry("/dir/sub"))
+    }
+
+    @Test
+    fun the_whole_listing_windows_refusal_names_the_listing_that_lets_the_rmdir_through() = runTest {
+        // A delta indexed the child after the client's last whole listing of /dir: the refusal stays, and its log
+        // says which listing clears it — the folder's own (a listing of the child's parent never re-arms the window).
+        val env = freshEnv()
+        env.db.upsertEntry(row("/dir", "rid-dir", isFolder = true, lastSynced = settled))
+        env.provider.children = emptyList()
+        val listed = env.impl.list("/dir")
+        assertTrue(listed is ListResult.Ok && listed.complete == true, "precondition: the folder was listed whole")
+        env.db.upsertEntry(row("/dir/new.txt", "rid-new", isHydrated = false, lastSynced = Instant.now().plusSeconds(5)))
+
+        val (result, lines) = capturingLog(SyncEngine::class.java) { env.impl.rmdir("/dir", recursive = true) }
+
+        assertEquals(RmdirResult.NotEmpty("remote_unobserved", "/dir/new.txt"), result)
+        assertTrue(
+            lines.any { it.startsWith("#853:") && it.contains("/dir") },
+            "the log names the folder's own whole listing as the one that clears it: lines: $lines",
+        )
     }
 
     @Test

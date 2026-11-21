@@ -32,7 +32,7 @@ internal object MoveRecord {
     ) {
         if (before == null || moved.isFolder) return
         val row = db.getEntry(newPath) ?: return
-        recorded(before, row, moved, heldBefore)?.let { db.upsertEntry(it, keepMarks = true) }
+        recorded(before, row, moved, heldBefore)?.let { db.upsertEntry(it.stampedLocal(), keepMarks = true) } // #849: every move followed here is the engine's own
     }
 
     // The row at the move's destination ([row]) with what it takes from [moved]; null when it takes nothing.

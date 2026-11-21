@@ -225,25 +225,105 @@ class MountEngineOperationsTest {
         assertNotNull(db.getEntry("/dir"))
     }
 
+    // gkrost/unidrive-cli#853: the cloud's own delta deleted the child, so the rows hold its id as DELETED while the
+    // provider's listing can still name it for days — hydration.list answers from the alive view, and the client can
+    // neither see the ghost nor unlink it. The tombstone passes over whatever receipt it carries: a reap's none, an
+    // own delete's one older than the lagging window. An own delete within the window passes over first (#635).
     @Test
-    fun `#635 a tombstone that is not the mount's own delete, or an old one, does not hide a listed child`() = runTest {
-        for (case in listOf("not a mount delete", "outside the lagging window")) {
+    fun `#853 a tombstone the rows hold, mount receipt or not, passes over a listed ghost`() = runTest {
+        for (case in listOf("a reap's tombstone, no mount delete receipt", "an own delete outside the lagging window")) {
             setUp()
             val dir = trackedRow("/dir", isFolder = true)
             val file = trackedRow("/dir/a.txt", isFolder = false)
             db.upsertEntry(dir)
             db.upsertEntry(file)
-            if (case == "not a mount delete") {
-                db.markDeleted(file.path) // a reconciler delete or a reap: no mount delete receipt
-            } else {
+            val throughTheMount = case.startsWith("an own")
+            if (throughTheMount) {
                 engine.deleteRemote(file.path)
                 val old = Instant.now().minus(laggingWindow).minusSeconds(60).toString()
                 rawUpdate("UPDATE sync_entries SET mount_deleted_at = '$old' WHERE path = '${file.path}'")
+            } else {
+                db.markDeleted(file.path) // a reconciler delete or an enumeration reap: no mount delete receipt
+            }
+            provider.childrenByParent["/dir"] = listOf(unchangedCloudItem(file))
+            // a tombstone that is not an own recent delete is confirmed by a by-id probe: the cloud has no such item
+            if (!throughTheMount || case.contains("outside")) {
+                provider.getMetadataError = org.krost.unidrive.ProviderException("Item not found: ${file.path}")
+            }
+
+            engine.deleteRemote("/dir")
+            assertEquals(if (throughTheMount) listOf("/dir/a.txt", "/dir") else listOf("/dir"), provider.deletedPaths, case)
+            assertNull(db.getEntry("/dir"), case)
+            tearDown()
+        }
+        setUp() // the @AfterTest closes this one
+    }
+
+    // A DELETED tombstone alone no longer outweighs a fresh listing that names the item: the by-id probe confirms it
+    // once per ghost. A live answer (a reap's corroboration went wrong, a delta raced a re-upload under the same id) and
+    // a probe that fails for any reason other than absence refuse; not-found, deleted and trashed answers pass over.
+    @Test
+    fun `#853 the by-id probe decides a ghost held DELETED, and only an absent, deleted or trashed answer passes it over`() = runTest {
+        val cases =
+            listOf(
+                "live" to false,
+                "outage" to false,
+                "not found" to true,
+                "deleted" to true,
+                "trashed" to true,
+            )
+        for ((answer, passesOver) in cases) {
+            setUp()
+            val dir = trackedRow("/dir", isFolder = true)
+            val file = trackedRow("/dir/a.txt", isFolder = false)
+            db.upsertEntry(dir)
+            db.upsertEntry(file)
+            db.markDeleted(file.path) // a reap's tombstone: no mount delete receipt
+            val listed = unchangedCloudItem(file)
+            provider.childrenByParent["/dir"] = listOf(listed)
+            when (answer) {
+                "live" -> provider.metadataOverride[listed.path] = listed
+                "outage" -> provider.getMetadataError = org.krost.unidrive.ProviderException("Service unavailable", httpStatus = 503)
+                "not found" -> provider.getMetadataError = org.krost.unidrive.ProviderException("Item not found: ${listed.path}")
+                "deleted" -> provider.metadataOverride[listed.path] = listed.copy(deleted = true)
+                "trashed" -> provider.metadataOverride[listed.path] = listed.copy(trashed = true)
+            }
+
+            if (passesOver) {
+                engine.deleteRemote("/dir")
+                assertEquals(listOf("/dir"), provider.deletedPaths, answer)
+                assertNull(db.getEntry("/dir"), answer)
+            } else {
+                assertFailsWith<FolderNotEmptyException>(answer) { engine.deleteRemote("/dir") }
+                assertTrue(provider.deletedPaths.isEmpty(), answer)
+                assertNotNull(db.getEntry("/dir"), answer)
+            }
+            tearDown()
+        }
+        setUp() // the @AfterTest closes this one
+    }
+
+    // The tombstone of another kind and the restore still refuse: a TRASHED row may be an un-trash the delta has not
+    // re-delivered, and an alive row holding the listed id again is an item the client's comparison cannot have seen.
+    @Test
+    fun `#853 a TRASHED tombstone and an alive row holding the ghost's id still refuse the folder delete`() = runTest {
+        for (case in listOf("a TRASHED tombstone", "an alive row holds the id again")) {
+            setUp()
+            val dir = trackedRow("/dir", isFolder = true)
+            val file = trackedRow("/dir/a.txt", isFolder = false)
+            db.upsertEntry(dir)
+            db.upsertEntry(file)
+            db.markDeleted(file.path)
+            if (case == "a TRASHED tombstone") {
+                rawUpdate("UPDATE sync_entries SET status = 'TRASHED' WHERE path = '${file.path}'")
+            } else {
+                db.upsertEntry(trackedRow("/elsewhere/b.txt", isFolder = false).copy(remoteId = file.remoteId))
             }
             provider.childrenByParent["/dir"] = listOf(unchangedCloudItem(file))
 
             assertFailsWith<FolderNotEmptyException>(case) { engine.deleteRemote("/dir") }
             assertNotNull(db.getEntry("/dir"), case)
+            assertTrue(provider.deletedPaths.isEmpty(), case)
             tearDown()
         }
         setUp() // the @AfterTest closes this one
