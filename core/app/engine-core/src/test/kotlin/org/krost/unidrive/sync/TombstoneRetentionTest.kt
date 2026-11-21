@@ -193,6 +193,27 @@ class TombstoneRetentionTest {
     }
 
     @Test
+    fun `a purge whose rewrite was skipped for lack of space is rewritten at the next start, though the file was compacted before`() {
+        val db = opened()
+        try {
+            db.upsertEntry(row("/keep.txt"))
+            db.setSyncState(StateDatabase.COMPACTED_KEY, now.toString()) // the one rewrite of the file happened before
+            db.batch { for (i in 0 until 6_000) tombstone(db, "/emptied/account/folder/f$i.txt", old) }
+            db.pragma("wal_checkpoint(TRUNCATE)")
+            val before = Files.size(dbFile)
+
+            assertEquals(false, db.compactOnce(tombstoneRetention = retention, usableSpace = { 0L }), "no room: the purge ran, the rewrite did not")
+            assertEquals(sortedSetOf("EXISTS:/keep.txt"), pathsAnyStatus(db))
+
+            // The next start has nothing left to purge; the free pages are still there and must still be asked about.
+            assertTrue(db.compactOnce(tombstoneRetention = retention), "the freed pages are given back once there is room")
+            assertTrue(Files.size(dbFile) < before / 2, "${Files.size(dbFile)} < $before / 2")
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
     fun `a purge touches no file outside state db`() {
         val root = Files.createDirectories(dir.resolve("sync-root"))
         val local = Files.writeString(root.resolve("old-1.txt"), "bytes the purge must not touch")

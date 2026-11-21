@@ -472,7 +472,8 @@ class StateDatabase(
             val purged = TombstoneRetention.purge(tombstoneRetention, dbPath) { cutoff, after ->
                 batch { TombstoneRetention.purgeChunk(conn, cutoff, after, DELETE_CHUNK_ROWS) } // each chunk its own commit
             }
-            if (purged == 0 && getSyncState(COMPACTED_KEY) != null) return@locked false
+            if (purged > 0) batch { TombstoneRetention.forgetCompaction(conn) } // a rewrite that does not happen now is asked for again
+            if (getSyncState(COMPACTED_KEY) != null) return@locked false
             val pages = pragma("page_count").toLong()
             val free = pragma("freelist_count").toLong()
             if (pages == 0L || free <= pages * COMPACT_FREE_SHARE) return@locked false

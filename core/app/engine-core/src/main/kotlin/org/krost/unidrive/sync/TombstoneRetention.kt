@@ -59,6 +59,18 @@ internal object TombstoneRetention {
     }
 
     /**
+     * Drops the record of the one compaction ([StateDatabase.COMPACTED_KEY]) on [conn], inside the caller's transaction: a purge
+     * freed pages, and a rewrite that is skipped (too little room) or fails must be asked for again at the next start, not
+     * be shut out by the rule of one rewrite per file.
+     */
+    fun forgetCompaction(conn: Connection) {
+        conn.prepareStatement("DELETE FROM sync_state WHERE key = ?").use { stmt ->
+            stmt.setString(1, StateDatabase.COMPACTED_KEY)
+            stmt.executeUpdate()
+        }
+    }
+
+    /**
      * The `last_synced` bound for [retention] at [now]: ISO text compares only to the second, so the bound is cut to the
      * second and lowered by one (a tombstone a moment younger than the retention is never purged, a moment older may stay).
      */
