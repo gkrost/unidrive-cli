@@ -62,6 +62,17 @@ class DropboxAuthTest {
         assertTrue(factory.isAuthenticated(mapOf("client_id" to "k"), dir))
     }
 
+    // -- #142: the redirect URI Dropbox matches is named in what the user sees ---------------
+
+    @Test
+    fun `the browser sign-in names the exact redirect uri, also for a custom port`() {
+        val auth = DropboxAuth(DropboxConfig(appKey = "key", tokenPath = dir, oauthCallbackPort = 8123), FakeDropbox().let { io.ktor.client.HttpClient(it.engine) })
+
+        assertTrue("http://localhost:8123/callback" in auth.redirectNotice(), auth.redirectNotice())
+        assertTrue("http://localhost:8123/callback" in auth.bindFailureHint(), auth.bindFailureHint())
+        assertTrue(DropboxConfig.OAUTH_PORT_ENV in auth.bindFailureHint(), auth.bindFailureHint())
+    }
+
     // -- archive#866: the no-redirect code flow ------------------------------------------
 
     @Test

@@ -66,6 +66,7 @@ class DropboxAuth(
         val verifier = Pkce.generateVerifier()
         val url = authorizationUrl(state, Pkce.generateChallenge(verifier))
         println("Opening browser for Dropbox sign-in...")
+        println(redirectNotice())
         println("URL: $url")
         println("Waiting up to 5 minutes for the sign-in...")
         openBrowser(url)
@@ -75,10 +76,16 @@ class DropboxAuth(
                 expectedState = state,
                 providerLabel = "Dropbox",
                 timeout = 5.minutes,
-                bindFailureHint = "Set ${DropboxConfig.OAUTH_PORT_ENV} to a free port (and register that redirect URI with the Dropbox app).",
+                bindFailureHint = bindFailureHint(),
             )
         saveToken(exchangeCode(code, verifier))
     }
+
+    /** The line printed before the browser opens: Dropbox matches this string exactly against the app's redirect URIs (#142). */
+    internal fun redirectNotice(): String = "Redirect URI (must be registered for this app key exactly): ${config.redirectUri}"
+
+    internal fun bindFailureHint(): String =
+        "Set ${DropboxConfig.OAUTH_PORT_ENV} to a free port and register the redirect URI ${config.redirectUri} with the Dropbox app."
 
     /**
      * Persists a freshly exchanged grant (the browser flow and the no-redirect flow share it). A grant of another account
