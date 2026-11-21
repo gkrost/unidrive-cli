@@ -2466,9 +2466,6 @@ open class SyncEngine(
         // Items the provider listed but could not place below a permanently gone folder
         // (DeltaPage.unreachableIds): the absence sweep treats them as present.
         val unreachable = HashSet<String>()
-        // Of those, the items below a folder outside the drive root and those folders (DeltaPage.outsideRootIds, #862).
-        val outsideRoot = HashSet<String>()
-        val outsideTops = HashSet<String>()
         // The entries the provider could not read (DeltaPage.skippedPaths): persisted with the
         // completeness flag so the status can name the blocked folder (archive#1234).
         val skippedPaths = LinkedHashSet<String>()
@@ -2513,8 +2510,6 @@ open class SyncEngine(
             }
             val placed = remoteGather.placeTrashed(page)
             unreachable.addAll(placed.unreachableIds)
-            outsideRoot.addAll(placed.outsideRootIds)
-            outsideTops.addAll(placed.outsideRootTops)
             skippedPaths.addAll(page.skippedPaths)
             return placed
         }
@@ -2916,7 +2911,7 @@ open class SyncEngine(
             log.warn(msg)
             reporter.onWarning(msg)
         }
-        remoteGather.recordUnreachable(unreachable, isFullSync, outsideRoot, outsideTops)
+        remoteGather.recordUnreachable(unreachable, isFullSync)
         // Record the gather's full-enumeration verdict (see gatherRemoteChanges).
         cursorState.setLastGatherFull(isFullSync)
         if (!allComplete) {
