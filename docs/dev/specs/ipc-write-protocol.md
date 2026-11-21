@@ -253,7 +253,7 @@ hydration.rmdir   {path[,recursive[,discard_local]][,permanent][,sweep_total]} -
   `remote_listing_repeats`) and one path the engine names, where the refusal knows them. A client that reads
   `remote_unobserved` re-lists and reconciles instead of retrying the delete; one that reads a provider lag
   (`provider_not_empty`) may retry. An engine without the capability answers `not_empty` alone, as before.
-- `"sweep_total":N` (gkrost/unidrive-cli#851; `contract_level` 7; `daemon.status` lists
+- `"sweep_total":N` (gkrost/unidrive-cli#851; `contract_level` 8; `daemon.status` lists
   `hydration.sweep_progress`): the client's mark that this delete is one item of a released hold's drain of N items.
   The engine tracks the sweep and reports it while it is under way as the `delete_sweep` object of `daemon.status` —
   the sweep's `sweep_id`, the `total` it started with, the decreasing `remaining` and the `started_at_ms` of its first
