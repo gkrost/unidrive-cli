@@ -45,7 +45,7 @@ import java.util.UUID
  * `sync_entries` and recreates with the new shape; the next scan repopulates.
  */
 class StateDatabase(
-    private val dbPath: Path,
+    internal val dbPath: Path,
     // UD-738: when true, open an in-memory SQLite DB instead of a file-backed
     // one. Used by `--reset --dry-run` to plan against a clean slate without
     // touching the on-disk state.db. dbPath is retained for callers that
@@ -70,7 +70,7 @@ class StateDatabase(
     val file: Path get() = dbPath
 
     private var _conn: Connection? = null
-    private val conn: Connection
+    internal val conn: Connection
         get() = _conn ?: error("StateDatabase not initialized — call initialize() first")
 
     // The thread that opened the manual batch ([beginBatch]) holding the connection's one SQLite
@@ -459,21 +459,12 @@ class StateDatabase(
      * it writes. The main file stays smaller than that until a checkpoint. A failed rewrite (another connection
      * reading) leaves the file as it was and the next start asks again. For the daemon's start, before it serves: the
      * rewrite holds the file alone.
-     * #863: first the DELETED rows older than [tombstoneRetention] go ([TombstoneRetention]; zero keeps them all). A purge that
-     * removed rows lifts the once rule: the file is judged, and rewritten, again.
      * Returns whether the file was rewritten.
      */
-    fun compactOnce(
-        tombstoneRetention: Duration = Duration.ZERO,
-        usableSpace: (Path) -> Long = { Files.getFileStore(it).usableSpace },
-    ): Boolean =
+    fun compactOnce(tombstoneRetention: Duration = Duration.ZERO, usableSpace: (Path) -> Long = { Files.getFileStore(it).usableSpace }): Boolean =
         locked("compactOnce") {
             if (readOnly || isDisposable || batchOwner != null) return@locked false
-            val purged = TombstoneRetention.purge(tombstoneRetention, dbPath) { cutoff, after ->
-                batch { TombstoneRetention.purgeChunk(conn, cutoff, after, DELETE_CHUNK_ROWS) } // each chunk its own commit
-            }
-            if (purged > 0) batch { TombstoneRetention.forgetCompaction(conn) } // a rewrite that does not happen now is asked for again
-            if (getSyncState(COMPACTED_KEY) != null) return@locked false
+            if (compactedAfterTombstonePurge(tombstoneRetention)) return@locked false
             val pages = pragma("page_count").toLong()
             val free = pragma("freelist_count").toLong()
             if (pages == 0L || free <= pages * COMPACT_FREE_SHARE) return@locked false
