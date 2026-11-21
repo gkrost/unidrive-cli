@@ -36,7 +36,7 @@ class DeleteSweepProgressTest {
     fun `a completion with no sweep under way counts nothing`() {
         val sweep = sweep()
 
-        sweep.completed()
+        sweep.completed(3)
 
         assertNull(sweep.snapshot(), "an ordinary delete never starts a bar")
     }
@@ -46,7 +46,7 @@ class DeleteSweepProgressTest {
         val sweep = sweep()
         sweep.declared(3)
 
-        sweep.completed()
+        sweep.completed(3)
         now += 5
 
         val snap = assertNotNull(sweep.snapshot())
@@ -59,8 +59,8 @@ class DeleteSweepProgressTest {
         val sweep = sweep()
         sweep.declared(2)
 
-        sweep.completed()
-        sweep.completed()
+        sweep.completed(2)
+        sweep.completed(2)
 
         assertNull(sweep.snapshot(), "remaining 0: the sweep is over and the fields are gone")
     }
@@ -70,7 +70,7 @@ class DeleteSweepProgressTest {
         val sweep = sweep()
         sweep.declared(1)
         val first = assertNotNull(sweep.snapshot())
-        sweep.completed()
+        sweep.completed(1)
         now += 5
 
         sweep.declared(2)
@@ -86,7 +86,7 @@ class DeleteSweepProgressTest {
     fun `a declaration of another total mid-sweep starts a new sweep`() {
         val sweep = sweep()
         sweep.declared(3)
-        sweep.completed()
+        sweep.completed(3)
         val first = assertNotNull(sweep.snapshot())
         now += 5
 
@@ -102,7 +102,7 @@ class DeleteSweepProgressTest {
     fun `re-declaring the same total keeps the sweep`() {
         val sweep = sweep()
         sweep.declared(3)
-        sweep.completed()
+        sweep.completed(3)
         val first = assertNotNull(sweep.snapshot())
         now += 5
 
@@ -128,7 +128,7 @@ class DeleteSweepProgressTest {
     fun `a sweep still reaching deletes reports through the quiet window`() {
         val sweep = sweep()
         sweep.declared(2)
-        sweep.completed()
+        sweep.completed(2)
 
         now += DeleteSweepProgress.SWEEP_QUIET_MS - 1
 
@@ -147,6 +147,18 @@ class DeleteSweepProgressTest {
 
         val snap = assertNotNull(sweep.snapshot())
         assertEquals(2, snap.remaining, "the stale sweep's owed deletes are forgotten")
+    }
+
+    @Test
+    fun `a late completion of an earlier sweep does not count against the next one`() {
+        val sweep = sweep()
+        sweep.declared(5)
+        now += 5
+        sweep.declared(3)
+
+        sweep.completed(5)
+
+        assertEquals(3, assertNotNull(sweep.snapshot()).remaining, "a delete marked 5 belongs to the sweep that was replaced")
     }
 
     @Test

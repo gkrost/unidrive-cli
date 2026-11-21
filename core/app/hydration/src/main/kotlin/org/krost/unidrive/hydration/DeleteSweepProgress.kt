@@ -69,11 +69,14 @@ class DeleteSweepProgress(private val nowMs: () -> Long = System::currentTimeMil
         active = Sweep(UUID.randomUUID().toString(), total, remaining = total, startedAtMs = now, lastActivityAtMs = now)
     }
 
-    /** A marked delete answered ok: one op off the count, and the sweep's quiet window restarts. */
+    /**
+     * A delete marked [total] answered ok: one op off the count, and the sweep's quiet window restarts. A delete of a
+     * different total belongs to an earlier sweep (it was in flight when the next hold was declared) and counts nothing.
+     */
     @Synchronized
-    fun completed() {
+    fun completed(total: Int) {
         val now = nowMs()
-        val current = live(now) ?: return
+        val current = live(now)?.takeIf { it.total == total } ?: return
         current.lastActivityAtMs = now
         current.remaining -= 1
         if (current.remaining <= 0) active = null
