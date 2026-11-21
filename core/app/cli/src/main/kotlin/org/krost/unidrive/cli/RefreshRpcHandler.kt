@@ -198,8 +198,10 @@ class RefreshRpcHandler(
     // #863: a reset on a mounted profile also drops the tombstones no pending operation names (never an alive row, so the view
     // stays); the pages they freed are rewritten at the next start, not while the mount is served.
     private suspend fun resetEnumerate(jobId: String): EnumerateResult {
-        log.info("refresh.run reset=true: purged {} tombstone(s): job_id={}", db.purgeTombstones(Instant.now()), jobId)
-        return engine.enumerateRemoteIntoState(true)
+        val result = engine.enumerateRemoteIntoState(true)
+        // Only a reset that ran drops them: a skipped one (another pass in flight) and a failed one are answered busy / provider_error.
+        if (result.ok && !result.skipped) log.info("refresh.run reset=true: purged {} tombstone(s): job_id={}", db.purgeTombstones(Instant.now()), jobId)
+        return result
     }
 
     fun isInFlight(): Boolean = inFlight.get() != null

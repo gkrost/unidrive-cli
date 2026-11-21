@@ -89,6 +89,28 @@ class RefreshRoutingTest {
         assertEquals(listOf("/alive.txt", "/old-b.txt"), db.recovery.allEntriesAnyStatus().map { it.path }.sorted(), "the named tombstone and the alive row stay")
     }
 
+    // gkrost/unidrive-cli#863 (review of #869): a reset that did not run (another pass holds the single-flight flag, or the provider
+    // failed) answers busy / provider_error, so it must not have dropped the tombstones the operator was told it left alone.
+    @Test
+    fun a_mounted_refresh_reset_that_did_not_run_purges_no_tombstone(): Unit = runBlocking {
+        val old = java.time.Instant.parse("2026-01-01T00:00:00Z")
+        for (result in listOf(EnumerateResult(ok = true, skipped = true), EnumerateResult(ok = false, error = "boom"))) {
+            db.upsertEntry(
+                org.krost.unidrive.sync.model.SyncEntry(
+                    path = "/old.txt", remoteId = "id-old", remoteHash = "h", remoteSize = 1, remoteModified = old, localMtime = 1, localSize = 1,
+                    isFolder = false, isPinned = false, isHydrated = false, lastSynced = old, status = org.krost.unidrive.sync.model.EntryStatus.DELETED,
+                ),
+            )
+            val scope = CoroutineScope(coroutineContext + SupervisorJob())
+            val handler = RefreshRpcHandler(server, RecordingEngine(enumerateResult = result), db, scope, mountClientConnected = { true }, emit = {})
+
+            handler.handle("conn-1", """{"verb":"refresh.run","reset":true}""")
+            handler.awaitInFlight()
+
+            assertEquals(listOf("/old.txt"), db.recovery.allEntriesAnyStatus().map { it.path }, "reset did not run ($result): the tombstone stays")
+        }
+    }
+
     // archive#778: refresh.run enumerates the cloud on either path, so a paused daemon refuses it.
     @Test
     fun refresh_is_refused_while_paused_on_both_paths(): Unit = runBlocking {
