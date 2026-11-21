@@ -29,6 +29,7 @@ import java.util.concurrent.Callable
         ProfileDefaultCommand::class,
         ProfileListCommand::class,
         ProfileRemoveCommand::class,
+        ProfileResetStateCommand::class,
         ProfileSetCommand::class,
     ],
 )
@@ -37,7 +38,7 @@ class ProfileCommand : Runnable {
     lateinit var parent: Main
 
     override fun run() {
-        println("Usage: unidrive profile <add|list|set|default|remove>")
+        println("Usage: unidrive profile <add|list|set|default|remove|reset-state>")
     }
 }
 
@@ -632,3 +633,90 @@ class ProfileRemoveCommand : Callable<Int> {
 //
 //   generateProfileToml, removeProfileSection, isValidProfileName,
 //   escapeTomlValue, isProfileAuthenticated, updateProfileKey
+
+// ── profile reset-state ──────────────────────────────────────────────────────
+
+@Command(
+    name = "reset-state",
+    description = [
+        "Reset the state of a stopped profile whose account was emptied or changed (gkrost/unidrive-cli#863): drops the " +
+            "DELETED tombstones of state.db and rewrites it, and deletes scan-staging.db and telemetry.db. " +
+            "Works on the profile's own files only: no daemon is started, no cloud call is made, and the sync root " +
+            "and mount root are never touched. Refused while a daemon or another unidrive process holds the profile, " +
+            "while uploads never reached the cloud, and while a rename, replace or upload operation is on record. " +
+            "Reports rows and MB before and after for each file. " +
+            "Unlike `refresh --reset`, which re-reads the cloud through the running daemon and keeps the files' size, " +
+            "this one is offline and gives the space back.",
+    ],
+    mixinStandardHelpOptions = true,
+)
+class ProfileResetStateCommand : Callable<Int> {
+    @ParentCommand
+    lateinit var profileCmd: ProfileCommand
+
+    @Parameters(index = "0", description = ["Profile whose state to reset"])
+    lateinit var name: String
+
+    @Option(
+        names = ["--all"],
+        description = [
+            "Also drop the alive rows and the sync state, as `sync --reset` does (the next scan reads the whole drive again). " +
+                "state.db is copied aside first, as state-before-reset-<UTC time>.db next to it.",
+        ],
+    )
+    var all: Boolean = false
+
+    @Option(names = ["-y", "--yes"], description = ["Do not ask first"])
+    var yes: Boolean = false
+
+    @Option(
+        names = ["--json"],
+        description = ["Print the result (or the refusal) as one JSON object on stdout; needs --yes, never prompts"],
+    )
+    var json: Boolean = false
+
+    override fun call(): Int {
+        val configDir = profileCmd.parent.configBaseDir()
+        if (json) {
+            return try {
+                if (!yes) throw LifecycleError("confirmation_required", "--yes is required with --json; the command never prompts")
+                val result = ProfileStateResetter.reset(configDir, name, all) ?: error("no confirmation was asked")
+                emitJson(result.json)
+                0
+            } catch (e: LifecycleError) {
+                emitJson(lifecycleErrorJson(e))
+                1
+            }
+        }
+        val confirm: (() -> Boolean)? =
+            if (yes) {
+                { true }
+            } else {
+                StateReset.console()?.let { ask ->
+                    {
+                        ask(
+                            "Reset the state of profile '$name'? Tombstones are dropped${if (all) ", and so are the alive rows" else ""}; " +
+                                "scan-staging.db and telemetry.db are deleted.",
+                        )
+                    }
+                }
+            }
+        if (confirm == null) {
+            System.err.println("Error: profile reset-state needs a confirmation: run it on a terminal, or pass --yes. Nothing was reset.")
+            return 1
+        }
+        val result =
+            try {
+                ProfileStateResetter.reset(configDir, name, all, confirm)
+            } catch (e: LifecycleError) {
+                System.err.println("Error: ${e.message}")
+                return 1
+            }
+        if (result == null) {
+            System.err.println("Cancelled. Nothing was reset.")
+            return 1
+        }
+        ProfileStateResetReport.summaryLines(result).forEach { println(it) }
+        return 0
+    }
+}
