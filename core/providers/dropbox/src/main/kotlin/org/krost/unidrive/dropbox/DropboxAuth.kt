@@ -66,7 +66,7 @@ class DropboxAuth(
         val verifier = Pkce.generateVerifier()
         val url = authorizationUrl(state, Pkce.generateChallenge(verifier))
         println("Opening browser for Dropbox sign-in...")
-        println(redirectNotice())
+        println(redirectNotice(config.redirectUri))
         println("URL: $url")
         println("Waiting up to 5 minutes for the sign-in...")
         openBrowser(url)
@@ -76,16 +76,10 @@ class DropboxAuth(
                 expectedState = state,
                 providerLabel = "Dropbox",
                 timeout = 5.minutes,
-                bindFailureHint = bindFailureHint(),
+                bindFailureHint = bindFailureHint(config.redirectUri),
             )
         saveToken(exchangeCode(code, verifier))
     }
-
-    /** The line printed before the browser opens: Dropbox matches this string exactly against the app's redirect URIs (#142). */
-    internal fun redirectNotice(): String = "Redirect URI (must be registered for this app key exactly): ${config.redirectUri}"
-
-    internal fun bindFailureHint(): String =
-        "Set ${DropboxConfig.OAUTH_PORT_ENV} to a free port and register the redirect URI ${config.redirectUri} with the Dropbox app."
 
     /**
      * Persists a freshly exchanged grant (the browser flow and the no-redirect flow share it). A grant of another account
@@ -259,6 +253,14 @@ class DropboxAuth(
         const val TOKEN_FILE = "token.json"
     }
 }
+
+/** The line printed before the browser opens: Dropbox matches this string exactly against the app's redirect URIs (#142). */
+internal fun redirectNotice(redirectUri: String): String = "Redirect URI (must be registered for this app key exactly): $redirectUri"
+
+internal fun bindFailureHint(redirectUri: String): String =
+    "Redirect URI used for this attempt: $redirectUri. " +
+        "Set ${DropboxConfig.OAUTH_PORT_ENV} to a free port, rerun sign-in, and register the exact redirect URI " +
+        "printed on retry with the Dropbox app."
 
 // A refresh that meets an outage or a throttle at the token endpoint (408, 429, 5xx) is retryable: it says nothing about
 // the grant. (A code exchange has no refresh token and keeps failing as a refused sign-in.)
