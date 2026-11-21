@@ -216,8 +216,8 @@ errors: old_path_not_found / new_parent_not_found / new_path_exists /
 ### 3.7 Delete file / delete folder
 
 ```
-hydration.unlink {path[,permanent]}   -> {"ok":true} | {"ok":false,"error":"path_is_folder"} | ...
-hydration.rmdir   {path[,recursive[,discard_local]][,permanent]} -> {"ok":true} | {"ok":false,"error":"path_is_file"} |
+hydration.unlink {path[,permanent][,sweep_total]}   -> {"ok":true} | {"ok":false,"error":"path_is_folder"} | ...
+hydration.rmdir   {path[,recursive[,discard_local]][,permanent][,sweep_total]} -> {"ok":true} | {"ok":false,"error":"path_is_file"} |
                                           {"ok":false,"error":"not_empty"[,"reason":"..."[,"child":"..."]]} | ...
 ```
 
@@ -253,6 +253,15 @@ hydration.rmdir   {path[,recursive[,discard_local]][,permanent]} -> {"ok":true} 
   `remote_listing_repeats`) and one path the engine names, where the refusal knows them. A client that reads
   `remote_unobserved` re-lists and reconciles instead of retrying the delete; one that reads a provider lag
   (`provider_not_empty`) may retry. An engine without the capability answers `not_empty` alone, as before.
+- `"sweep_total":N` (gkrost/unidrive-cli#851; `contract_level` 8; `daemon.status` lists
+  `hydration.sweep_progress`): the client's mark that this delete is one item of a released hold's drain of N items.
+  The engine tracks the sweep and reports it while it is under way as the `delete_sweep` object of `daemon.status` —
+  the sweep's `sweep_id`, the `total` it started with, the decreasing `remaining` and the `started_at_ms` of its first
+  landing — so a front-end shows "remaining of total" with an ETA and keeps two consecutive sweeps apart. Counts
+  only, no paths. One marked delete (an `unlink`, or an `rmdir` recursive or not) is one item, like the client counts
+  it; a mark that fails stays owed; the fields clear when the last one lands, or when no marked delete reaches the
+  engine for a while. A mark with no sweep under way starts one; a repeat of the same total keeps it; a different
+  total starts the next sweep with a new id. An engine without the capability ignores the mark and answers as before.
 
 ### 3.8 Mkdir / rmdir
 

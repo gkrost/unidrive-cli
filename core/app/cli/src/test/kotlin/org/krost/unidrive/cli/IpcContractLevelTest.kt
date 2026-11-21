@@ -138,7 +138,11 @@ class IpcContractLevelTest {
                 // 7 (gkrost/unidrive-cli#849): a hydration.list file entry names who last changed the row
                 // (`changed_by`) and when the engine saw it (`changed_at_ms`), where the row knows.
                 setOf("capability:hydration.list_changed_by"),
-                // 8 (gkrost/unidrive-cli#848): history.list takes an `order` member (the reply echoes it and says
+                // 8 (gkrost/unidrive-cli#851): a released hold's drain marks its deletes with `sweep_total`, and while
+                // the sweep is under way daemon.status carries the `delete_sweep` object (sweep_id, total, remaining,
+                // started_at_ms). Present only then, so the idle corpus reply pins the capability alone.
+                setOf("capability:hydration.sweep_progress"),
+                // 9 (gkrost/unidrive-cli#848): history.list takes an `order` member (the reply echoes it and says
                 // live_keyset), and history.retry queues one failed upload row again; the capabilities name both.
                 setOf("verb:history.retry", "capability:history.order.v1", "capability:history.retry.v1"),
             )

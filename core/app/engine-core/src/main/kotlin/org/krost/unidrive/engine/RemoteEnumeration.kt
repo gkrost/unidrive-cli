@@ -239,6 +239,8 @@ class RemoteEnumeration(
         val first: Boolean,
         val lastScanComplete: Boolean?,
         val unreachableItems: Int?,
+        val outsideRootItems: Int?,
+        val outsideRootFolders: Int?,
         val droppedItems: Int?,
         val duplicateNames: Int?,
         val skippedPaths: List<String>?,
@@ -261,6 +263,8 @@ class RemoteEnumeration(
             first = gather.cursorState.deltaCursor.isNullOrEmpty(),
             lastScanComplete = gather.cursorState.pendingComplete.strict,
             unreachableItems = db.getSyncState(RemoteGather.UNREACHABLE_ITEMS_KEY)?.toIntOrNull()?.takeIf { it > 0 },
+            outsideRootItems = db.getSyncState(OutsideRoot.ITEMS_KEY)?.toIntOrNull()?.takeIf { it > 0 },
+            outsideRootFolders = db.getSyncState(OutsideRoot.FOLDERS_KEY)?.toIntOrNull()?.takeIf { it > 0 },
             droppedItems = db.getSyncState(RemoteGather.DROPPED_ITEMS_KEY)?.toIntOrNull()?.takeIf { it > 0 },
             duplicateNames = DuplicateNames.decoratedTwins(db.rowsWithRemotePath()).size.takeIf { it > 0 },
             skippedPaths = gather.cursorState.skippedPaths
@@ -300,6 +304,8 @@ class RemoteEnumeration(
             first = settled.first,
             lastScanComplete = settled.lastScanComplete,
             unreachableItems = settled.unreachableItems,
+            outsideRootItems = settled.outsideRootItems,
+            outsideRootFolders = settled.outsideRootFolders,
             droppedItems = settled.droppedItems,
             duplicateNames = settled.duplicateNames,
             skippedPaths = settled.skippedPaths,
@@ -562,12 +568,14 @@ class RemoteEnumeration(
     ) {
         val fullListing = gather.cursorState.lastGatherFull.strict == true
         val observedAlive = remoteChanges.values.count { !it.deleted }
-        val shrinkWarning = if (fullListing) RemoteGather.remoteShrinkWarningOrNull(observedAlive, preGatherTrackedRows) else null
+        // The held rows of a tree outside the drive root are not judged: the listing returned them (gkrost/unidrive-cli#862).
+        val shrinkBaseline = gather.outsideRoot.baseline(preGatherTrackedRows)
+        val shrinkWarning = if (fullListing) RemoteGather.remoteShrinkWarningOrNull(observedAlive, shrinkBaseline) else null
         if (shrinkWarning != null && db.getSyncState(RemoteGather.INCOMPLETE_ENUMERATION_KEY)?.equals("true", ignoreCase = true) == true) {
             log.warn(
                 "enumerate: the full listing observed only {} live item(s) against {} tracked rows; keeping the recovery latch",
                 observedAlive,
-                preGatherTrackedRows,
+                shrinkBaseline,
             )
         }
         gather.settleRecoveryLatch(scoped = false, shrinkWarning = shrinkWarning, reapsDeferred = reapsDeferred)

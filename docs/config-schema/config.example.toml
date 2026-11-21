@@ -61,6 +61,12 @@ sync_root = "~/Internxt"
 # about to open it is not handed a path that has just been evicted. Mount profiles only. Default 60000 (60 s).
 # cache_access_grace_ms = 60000
 
+# How many days state.db keeps the record of an item the engine deleted or reaped (a `DELETED` row, a
+# "tombstone") before the daemon's start purges it, together with the one-time rewrite of the file that
+# gives the space back. A record that a pending rename, replace, upload or unsynced edit still names is
+# never purged, and no cloud item and no local file is touched. 0 = keep every one. Default 90.
+# tombstone_retention_days = 90
+
 # `unidrive daemon run` polls the cloud for changes made elsewhere (web UI, another device, another
 # profile on the same account) every this many seconds, starting at daemon start. Each poll is an
 # incremental delta; after a provider failure the interval backs off (up to 10 min). 0 = off.

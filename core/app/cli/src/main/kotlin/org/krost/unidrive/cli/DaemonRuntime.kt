@@ -21,6 +21,7 @@ import org.krost.unidrive.engine.ViewCache
 import org.krost.unidrive.engine.ViewNamespaces
 import org.krost.unidrive.engine.ViewSpec
 import org.krost.unidrive.engine.throttleObservingSink
+import org.krost.unidrive.hydration.DeleteSweepProgress
 import org.krost.unidrive.hydration.HydrationEvent
 import org.krost.unidrive.hydration.HydrationImpl
 import org.krost.unidrive.hydration.HydrationIpcHandler
@@ -30,6 +31,7 @@ import org.krost.unidrive.hydration.provesProviderReachable
 import org.krost.unidrive.hydration.serialiseHydrationEvent
 import org.krost.unidrive.io.Os
 import org.krost.unidrive.io.ndjsonString
+import org.krost.unidrive.sync.DEFAULT_TOMBSTONE_RETENTION_DAYS
 import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.ProcessLock
@@ -39,6 +41,7 @@ import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.StateDbCorruptException
 import org.krost.unidrive.sync.StateDbRecovery
 import org.krost.unidrive.sync.SyncEngine
+import org.krost.unidrive.sync.maintainAtStart
 import org.krost.unidrive.telemetry.TransferHistory
 import org.krost.unidrive.sync.ignore.IgnoreSettings
 import org.krost.unidrive.sync.ignore.UploadIgnore
@@ -105,6 +108,7 @@ class DaemonRuntime(
     private val uploadQueueDepth: Int = HydrationImpl.DEFAULT_UPLOAD_QUEUE_DEPTH,
     // issue#72: how long a hydration-cache file stays un-evictable after its last use (profile key `cache_access_grace_ms`).
     private val cacheAccessGraceMs: Long = HydrationImpl.CACHE_ACCESS_GRACE_MS,
+    private val tombstoneRetentionDays: Int = DEFAULT_TOMBSTONE_RETENTION_DAYS, // #863
     private val deleteGuards: DeleteGuards = DeleteGuards(),
     // archive#603 (U4): the profile's hosting mode, resolved and gated by `daemon run` before this runtime is
     // constructed. A mount daemon serves the hydration verbs, sync.enumerate and the poller, and routes
@@ -284,7 +288,7 @@ class DaemonRuntime(
 
             db = openStateDatabase()
             // Before anything is served: the one rewrite of a fragmented file holds it alone (seconds on a large drive).
-            runCatching { db!!.compactOnce() }.onFailure { log.warn("compacting state.db at start failed", it) }
+            runCatching { db!!.maintainAtStart(tombstoneRetentionDays) }.onFailure { log.warn("compacting state.db at start failed", it) }
 
             // archive#655: seed the quota snapshot from the sync_state cache (the same tuple
             // `quota` persists), so the very first status already shows the last known
@@ -457,10 +461,12 @@ class DaemonRuntime(
                 if (hydration != null) {
                     log.info(hydrationLimitsLine(mount.transferBudgetSize, uploadQueueDepth, cacheAccessGraceMs))
                 }
+                // gkrost/unidrive-cli#851: the released-hold sweep progress — the hydration verbs feed it, daemon.status reads it.
+                val deleteSweep = DeleteSweepProgress()
                 val hydrationIpc: HydrationIpcHandler? =
                     // gkrost/unidrive-cli#24: the name_clash guard's first spellings persist in state.db, so a restart keeps them.
                     hydration?.let { h ->
-                        HydrationIpcHandler(h, spellingsStore = db?.let { StateDbNameSpellingStore(it) }).also { hydrationLink.bind(h, it) }
+                        HydrationIpcHandler(h, spellingsStore = db?.let { StateDbNameSpellingStore(it) }, deleteSweep = deleteSweep).also { hydrationLink.bind(h, it) }
                     }
 
                 // The construction order from here on is explicit: every handler and the poller exist
@@ -905,6 +911,9 @@ class DaemonRuntime(
                         .put("views", hydration?.viewStatuses()?.takeIf { it.isNotEmpty() }?.let { viewsStatusJson(it).toString() })
                         // remote_incomplete: present only while a truncated cloud object is remembered (count only, no names).
                         .put("remote_incomplete", mount.remoteIncompleteCount().takeIf { it > 0 }?.let { remoteIncompleteJson(it).toString() })
+                        // delete_sweep (gkrost/unidrive-cli#851): present only while a released hold's sweep is under way
+                        // (the sweep's total, remaining, start time and id; counts only, no paths).
+                        .put("delete_sweep", deleteSweep.snapshot()?.toJson()?.toString())
                         // paused (archive#778): present only while the daemon is paused; uploads and quota above keep reporting.
                         .put("paused", pause.current?.toJson()?.toString())
                         // locked (issue#796): present only while the vault data is unavailable — the
@@ -1240,8 +1249,9 @@ class DaemonRuntime(
         // contract_level (gkrost/unidrive-cli#445): an integer raised by one with every additive IPC change (a new
         // verb, capability or field), so a client orders engine builds by what they answer; protocol_version moves only
         // on a breaking change and engine_version does not order dev builds. IpcContractLevelTest pins the IPC surface
-        // of each level and fails when the surface changes without a raise.
-        const val IPC_CONTRACT_LEVEL: Int = 8
+        // of each level and fails when the surface changes without a raise. 8 (gkrost/unidrive-cli#851) shipped on main;
+        // the history verbs (gkrost/unidrive-cli#848, merged here at their own 8) are the raise to 9 on top of it.
+        const val IPC_CONTRACT_LEVEL: Int = 9
 
         /**
          * Whether a successful `hydration.subscribe` is followed by the one guarded enumerate: only for a

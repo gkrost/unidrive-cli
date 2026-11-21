@@ -105,4 +105,33 @@ class SyncConfigValidationTest {
         assertEquals(DEFAULT_UPLOAD_QUEUE_DEPTH, config.uploadQueueDepth("b"))
         assertEquals(DEFAULT_CACHE_ACCESS_GRACE_MS, config.cacheAccessGraceMs("b"))
     }
+
+    @Test
+    fun `tombstone_retention_days defaults to 90, takes 0 for keep and is per profile`() {
+        val toml = "[providers.a]\ntombstone_retention_days = 0\n[providers.b]\ntombstone_retention_days = 7\n[providers.c]\n"
+        val config = SyncConfig.parse(toml, "a")
+        assertEquals(90, DEFAULT_TOMBSTONE_RETENTION_DAYS)
+        assertEquals(0, config.tombstoneRetentionDays("a"))
+        assertEquals(7, config.tombstoneRetentionDays("b"))
+        assertEquals(90, config.tombstoneRetentionDays("c"))
+        assertEquals(90, config.tombstoneRetentionDays("unknown"))
+    }
+
+    // #858's folder-delete guard passes over a listed ghost only while its row is DELETED; #853 saw ghosts listed for 5 to 9 days.
+    @Test
+    fun `the default tombstone retention outlasts the days a provider keeps listing a deleted item with a wide margin`() {
+        val longestGhostDaysSeen = 9
+        assertTrue(
+            DEFAULT_TOMBSTONE_RETENTION_DAYS >= 10 * longestGhostDaysSeen,
+            "the default is $DEFAULT_TOMBSTONE_RETENTION_DAYS days; a purged row brings the guard's remote_unobserved refusal back",
+        )
+    }
+
+    @Test
+    fun `an out-of-range tombstone_retention_days is refused naming the key`() {
+        for (value in listOf(-1, 3651)) {
+            val message = refusal("[providers.p]\ntombstone_retention_days = $value\n")
+            assertTrue("tombstone_retention_days" in message, "the message names the key: $message")
+        }
+    }
 }
