@@ -504,7 +504,7 @@ class MountEngine private constructor(
                     parentUuid = item.parentId ?: current.parentUuid,
                     lastErrorAt = null,
                     lastSynced = Instant.now(),
-                )
+                ).stampedLocal() // #849: the engine created it again
                 db.upsertEntry(row, keepMarks = true)
                 row
             } ?: return false
@@ -920,7 +920,7 @@ class MountEngine private constructor(
                     cacheBacked = true,
                     // The cache copy is the cloud's now: a mark left by an edit whose copy is gone (see servesFromLocalCopy) ends.
                     editBase = null,
-                ).adopting(fetched.liveItem).recordingVersionRead(fetched.receipt)
+                ).adopting(fetched.liveItem).recordingVersionRead(fetched.receipt).stampedRemoteIfVersionMovedFrom(current) // #849: the cloud moved on since the listing
                 // The row just adopted the cache copy's stats, so the hash must describe the cache
                 // copy's bytes: keeping a hash recorded for the previous contents would pair stale
                 // bytes with a fresh mtime/size and let a later touch be absorbed as unchanged.
@@ -1558,7 +1558,7 @@ class MountEngine private constructor(
             // archive#1070/#1069: what was sent is the cloud's now. A write that landed mid-upload is a new edit, which
             // started from the version just stored.
             editBase = if (changedMidUpload) (result.version ?: result.hash).orEmpty() else null,
-        )
+        ).stampedLocalIf(unchanged == null) // #849: an upload that sent nothing changed nothing
         // The row just adopted the cache copy's stats, and these are exactly the bytes the
         // write-back sent: hash the cache copy (guarded against a writer landing mid-hash)
         // so the touch shield covers mount-edited files too.
@@ -1828,7 +1828,7 @@ class MountEngine private constructor(
                     localHash = null,
                     cacheBacked = null,
                     editBase = if (keepEdit) (current?.version ?: row.remoteVersion).orEmpty() else null,
-                ),
+                ).let { if (current != null) it.stampedRemote() else it.copy(changedBy = null, changedAtMs = null) }, // #849: the version the lookup read is the cloud's, seen now; with none read, the row's version is unknown and no stamp vouches for it
                 keepMarks = true,
             )
         }
@@ -1871,7 +1871,7 @@ class MountEngine private constructor(
                 cacheBacked = true,
                 remoteContentId = copy.contentId,
                 storedObject = copy.storedObject,
-            )
+            ).stampedLocal() // #849: the copy is the engine's own upload, kept beside the cloud's newer version
         db.upsertEntry(withSentHash(row, target, sent))
         return true
     }
@@ -1910,7 +1910,7 @@ class MountEngine private constructor(
         val landed = if (item.nameOverridden) item.path else remote
         val existing = db.getEntry(path)
         if (existing == null) {
-            db.insertFolder(path = path, remoteId = item.id, mtime = item.modified ?: Instant.now(), remotePath = landed.takeIf { it != path })
+            db.insertFolder(path = path, remoteId = item.id, mtime = item.modified ?: Instant.now(), remotePath = landed.takeIf { it != path }, changedBy = "local") // #849: the mount asked for it
         } else if (existing.remoteId == null) {
             // The row of a folder that was refused by name and lived only here until now; the upsert also clears its block.
             db.upsertEntry(
@@ -1920,7 +1920,7 @@ class MountEngine private constructor(
                     remoteModified = item.modified ?: Instant.now(),
                     lastErrorAt = null,
                     lastSynced = Instant.now(),
-                ),
+                ).stampedLocal(),
             )
             if (landed != path) db.assignRemotePaths(path, landed)
         }
@@ -2256,7 +2256,7 @@ class MountEngine private constructor(
             lastErrorAt = row.lastErrorAtAfterUpload(),
             cacheBacked = true,
             editBase = if (changedSince) (moved.version ?: moved.hash).orEmpty() else null,
-        )
+        ).stampedLocal() // #849: the landed upload and the move by its id are the engine's own change
         db.upsertEntry(withSentHash(adopted, cachePath, landed.sent))
         log.info("upload of {} landed at {} while a rename moved it; moved the item to {} by its id", newPath, landed.remotePath, newRemote)
         return true
@@ -2363,7 +2363,7 @@ class MountEngine private constructor(
         val existing = db.getEntry(path)
         if (existing == null) {
             val landed = if (item.nameOverridden) item.path else path
-            db.insertFolder(path = path, remoteId = item.id, mtime = item.modified ?: Instant.now(), remotePath = landed.takeIf { it != path })
+            db.insertFolder(path = path, remoteId = item.id, mtime = item.modified ?: Instant.now(), remotePath = landed.takeIf { it != path }, changedBy = "remote") // #849: the folder was the cloud's already
         } else if (existing.remoteId == null) {
             // The row of a folder that lived only here (refused by name, or excluded) until the drive took the name:
             // the upsert also clears its block.
@@ -2375,7 +2375,7 @@ class MountEngine private constructor(
                     remoteModified = item.modified ?: Instant.now(),
                     lastErrorAt = null,
                     lastSynced = Instant.now(),
-                ),
+                ).stampedRemote(),
             )
             if (landed != path) db.assignRemotePaths(path, landed)
         }
