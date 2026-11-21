@@ -543,6 +543,10 @@ class DoctorCommand : Runnable {
                         sampled(recoverableLines),
                 )
         }
+        // Every row is plan-refused: the check stays present as OK, so a consumer keyed on the name never reads "not run" (gkrost/unidrive-cli#852 review).
+        if (recoverableLines.isEmpty() && planRefused.isNotEmpty()) {
+            results += CheckResult(name, Severity.OK, "no recoverable files written locally but unsynced", emptyList())
+        }
         if (planRefused.isNotEmpty()) {
             val planLines =
                 planRefused.map { row ->

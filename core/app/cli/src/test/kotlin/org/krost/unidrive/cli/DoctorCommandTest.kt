@@ -571,6 +571,8 @@ class DoctorCommandTest {
         val refusedLine = check.detail.first { it.contains("/refused.txt") }
         assertTrue("refused by the provider" in refusedLine, refusedLine)
         assertTrue("blocked by the parent folder's name" in refusedLine, refusedLine)
+        // The refusal's deadline is stored in the row, but the display text must not carry it (gkrost/unidrive-cli#852 review).
+        assertFalse("|" in refusedLine, refusedLine)
         val failedLine = check.detail.first { it.contains("/failed.txt") }
         assertTrue("upload attempt failed" in failedLine, failedLine)
         // The sample is grouped by cause: name-blocked, then refused, then failed.
@@ -648,10 +650,10 @@ class DoctorCommandTest {
             )
         }
         val checks = runDoctor()
-        assertTrue(
-            checks.none { it.check == "write-upload-failures" },
-            "no warning when every row is refused by the plan: ${checks.map { it.check }}",
-        )
+        // The check stays present (OK) so a consumer keyed on the name never reads "not run" for "nothing to warn about".
+        val quiet = result(checks, "write-upload-failures")
+        assertEquals(DoctorCommand.Severity.OK, quiet.severity)
+        assertEquals("no recoverable files written locally but unsynced", quiet.summary)
         assertEquals(DoctorCommand.Severity.OK, result(checks, "write-upload-plan-refusals").severity)
     }
 

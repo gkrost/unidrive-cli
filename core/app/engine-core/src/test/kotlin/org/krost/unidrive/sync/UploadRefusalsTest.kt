@@ -40,7 +40,9 @@ class UploadRefusalsTest {
         val lookalike = "5|0|${now - 1}|plan_limits exceeded"
         assertTrue(UploadRefusals.holds(parentGone, 5, 0, now))
         assertTrue(UploadRefusals.holds(lookalike, 5, 0, now))
-        assertEquals("${now - 1}|parent_gone: /docs", UploadRefusals.reason(parentGone, 5, 0))
+        // The display text drops the deadline for every refusal, not only a plan's; holds() above is unchanged.
+        assertEquals("parent_gone: /docs", UploadRefusals.reason(parentGone, 5, 0))
+        assertEquals("plan_limits exceeded", UploadRefusals.reason(lookalike, 5, 0))
     }
 
     /** gkrost/unidrive-cli#852: the doctor's severity split reads the plan's token off a row's reason. */
