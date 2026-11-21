@@ -20,7 +20,9 @@ import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.StateDbCorruptException
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.SyncEngine
+import org.krost.unidrive.sync.UploadRefusals
 import org.krost.unidrive.sync.hydratedFiles
+import org.krost.unidrive.sync.writeUploadFailedPaths
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
 import picocli.CommandLine.ParentCommand
@@ -181,7 +183,7 @@ class DoctorCommand : Runnable {
                             }
                         results += checkEffectiveScope(db)
                         results += checkQuotaFreshness(db, now)
-                        results += checkWriteUploadFailures(db)
+                        results += checkWriteUploadFailures(db, mode)
                     }
                 if (outcome.isFailure) {
                     // A read-only open does not run the additive migrations createTables() applies on a
@@ -473,24 +475,47 @@ class DoctorCommand : Runnable {
      * `openForWrite` upload was attempted and failed). The co-daemon's
      * close() already returned 0 to the user, so without this surface the
      * data sits only on disk silently. WARN whenever any such row exists;
-     * sample paths in detail. Read-only.
+     * sample paths in detail, each with its cause (name-blocked, refused by
+     * the provider, plain failed attempt — gkrost/unidrive-cli#852). The
+     * advice follows [mode]: a mount profile has no `sync` to re-run, its
+     * daemon replays the uploads at startup. Read-only.
      */
-    internal fun checkWriteUploadFailures(db: StateDatabase): CheckResult {
+    internal fun checkWriteUploadFailures(
+        db: StateDatabase,
+        mode: ProfileMode? = null,
+    ): CheckResult {
         val name = "write-upload-failures"
         val count = db.countWriteUploadFailed()
         if (count == 0) {
             return CheckResult(name, Severity.OK, "no files written locally but unsynced", emptyList())
         }
         val detail = mutableListOf<String>()
-        val sample = db.writeUploadFailedPaths(SAMPLE_DETAIL)
-        if (sample.isNotEmpty()) {
-            detail += "sample unsynced paths (written locally, upload failed):"
-            sample.forEach { detail += "  $it" }
+        val rows = db.writeUploadFailedPaths(SAMPLE_DETAIL)
+        if (rows.isNotEmpty()) {
+            detail += "sample unsynced paths (written locally, not uploaded), by cause:"
+            // Grouped by cause, most specific first: a name block, then a refusal
+            // of the request itself, then a plain failed attempt.
+            val (nameBlocked, afterNames) = rows.partition { it.nameBlock != null }
+            val (refused, failed) = afterNames.partition { it.uploadRefused != null }
+            for (row in nameBlocked) {
+                detail += "  ${row.path} — blocked by name: ${row.nameBlock?.substringBefore('|')}"
+            }
+            for (row in refused) {
+                val reason = UploadRefusals.reason(row.uploadRefused, row.localMtime, row.localSize)
+                detail += "  ${row.path} — refused by the provider${reason?.let { ": $it" } ?: ""}"
+            }
+            for (row in failed) detail += "  ${row.path} — upload attempt failed"
         }
+        val advice =
+            if (mode == ProfileMode.MOUNT) {
+                "the daemon replays these uploads at startup — check it is running"
+            } else {
+                "re-run sync to retry"
+            }
         return CheckResult(
             name,
             Severity.WARN,
-            "$count file(s) written locally but not uploaded to cloud (re-run sync to retry)",
+            "$count file(s) written locally but not uploaded to cloud ($advice)",
             detail,
         )
     }

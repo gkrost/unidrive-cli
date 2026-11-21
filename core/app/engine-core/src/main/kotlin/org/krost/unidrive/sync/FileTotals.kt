@@ -77,3 +77,47 @@ fun StateDatabase.scanAliveRowsOncePerPath(visit: (StateDatabase.AliveRow) -> Un
     val visited = HashSet<String>()
     scanAliveRows { row -> if (visited.add(row.path)) visit(row) }
 }
+
+/**
+ * One row written locally but not uploaded, as [writeUploadFailedPaths] reports it: the marks that say why the upload
+ * did not happen ([nameBlock] from [StateDatabase.markNameBlocked], [uploadRefused] from
+ * [StateDatabase.markUploadRefused], neither when the attempt only failed), plus the local baseline
+ * [UploadRefusals.reason] matches a refusal's watermark against (gkrost/unidrive-cli#852).
+ */
+data class WriteUploadFailedRow(
+    val path: String,
+    val nameBlock: String?,
+    val uploadRefused: String?,
+    val localMtime: Long?,
+    val localSize: Long?,
+)
+
+/**
+ * Alive rows written locally but not uploaded ([StateDatabase.countWriteUploadFailed] counts them), capped at [limit]
+ * for the doctor detail block, with the cause marks per row.
+ */
+fun StateDatabase.writeUploadFailedPaths(limit: Int): List<WriteUploadFailedRow> =
+    readForReport("writeUploadFailedPaths") { c ->
+        c
+            .prepareStatement(
+                "SELECT path, name_block, upload_refused, local_mtime, local_size " +
+                    "FROM sync_entries WHERE status='EXISTS' " +
+                    "AND remote_id GLOB 'local:*' AND last_error_at IS NOT NULL " +
+                    "ORDER BY path LIMIT ?",
+            ).use { stmt ->
+                stmt.setInt(1, limit)
+                val rs = stmt.executeQuery()
+                val out = mutableListOf<WriteUploadFailedRow>()
+                while (rs.next()) {
+                    out +=
+                        WriteUploadFailedRow(
+                            path = rs.getString(1),
+                            nameBlock = rs.getString(2),
+                            uploadRefused = rs.getString(3),
+                            localMtime = rs.getObject(4)?.let { (it as Number).toLong() },
+                            localSize = rs.getObject(5)?.let { (it as Number).toLong() },
+                        )
+                }
+                out
+            }
+    }

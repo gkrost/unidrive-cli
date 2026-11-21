@@ -2713,26 +2713,6 @@ class StateDatabase(
         }
 
     /**
-     * Paths of alive rows written locally but not uploaded (see
-     * [countWriteUploadFailed]), capped at [limit] for the doctor detail block.
-     */
-    fun writeUploadFailedPaths(limit: Int): List<String> =
-        read("writeUploadFailedPaths") { c ->
-            val out = mutableListOf<String>()
-            c
-                .prepareStatement(
-                    "SELECT path FROM sync_entries WHERE status='EXISTS' " +
-                        "AND remote_id GLOB 'local:*' AND last_error_at IS NOT NULL " +
-                        "ORDER BY path LIMIT ?",
-                ).use { stmt ->
-                    stmt.setInt(1, limit)
-                    val rs = stmt.executeQuery()
-                    while (rs.next()) out += rs.getString(1)
-                }
-            return out
-        }
-
-    /**
      * Paths of alive FILE rows holding local content that has never reached
      * the cloud (`local:` synthetic remote_id, hydrated, whether or not an
      * attempt has failed yet): the rows [SyncEntry.isPendingUpload] names.
