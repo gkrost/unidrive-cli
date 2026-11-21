@@ -135,6 +135,9 @@ class IpcContractLevelTest {
                 // 6 (issue#796): the vault verbs (vault.unlock / vault.lock, ADMIN class) and the
                 // capability that names them on a daemon whose vault.enc exists.
                 setOf("verb:vault.unlock", "verb:vault.lock", "capability:vault-unlock:v1"),
+                // 7 (gkrost/unidrive-cli#849): a hydration.list file entry names who last changed the row
+                // (`changed_by`) and when the engine saw it (`changed_at_ms`), where the row knows.
+                setOf("capability:hydration.list_changed_by"),
             )
     }
 }

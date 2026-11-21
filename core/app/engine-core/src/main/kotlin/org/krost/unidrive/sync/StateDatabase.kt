@@ -698,7 +698,9 @@ class StateDatabase(
                     hint_encrypt_version TEXT,
                     hint_size            INTEGER,
                     hint_modified        TEXT,
-                    hint_updated_at      TEXT
+                    hint_updated_at      TEXT,
+                    changed_by           TEXT,
+                    changed_at_ms        INTEGER
                 )
             """,
             )
@@ -846,27 +848,21 @@ class StateDatabase(
             // Hydration stores the content stamp, retry deadline and reason. Same additive pattern, no schema_version bump:
             // NULL = not refused, which is every older row. Any upsert of the row clears it, a successful upload included.
             if (!columnExists("sync_entries", "upload_refused")) {
-                stmt.executeUpdate(
-                    "ALTER TABLE sync_entries ADD COLUMN upload_refused TEXT",
-                )
+                stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN upload_refused TEXT")
             }
             // The drive refuses this entry by its NAME (it compares the name as equal to a sibling's), as
             // `<reason>|<sibling name or empty>`: see [markNameBlocked]. Same additive pattern, no schema_version bump:
             // NULL = not blocked, which is every older row. Any upsert of the row (INSERT OR REPLACE) clears it, a
             // successful upload or a folder created at last included.
             if (!columnExists("sync_entries", "name_block")) {
-                stmt.executeUpdate(
-                    "ALTER TABLE sync_entries ADD COLUMN name_block TEXT",
-                )
+                stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN name_block TEXT")
             }
             // archive#1070/#1069: the cloud version an unsynced edit in the mount's cache copy started from (see
             // SyncEntry.editBase). Same additive pattern, no schema_version bump: NULL = no unsynced edit is known,
             // which is every older row. Unlike the two columns above it is carried by SyncEntry, so a merge's
             // copy() keeps it and only the upload that lands (or a download that replaces the copy) clears it.
             if (!columnExists("sync_entries", "edit_base")) {
-                stmt.executeUpdate(
-                    "ALTER TABLE sync_entries ADD COLUMN edit_base TEXT",
-                )
+                stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN edit_base TEXT")
             }
             // The provider's write token of the recorded version, apart from the content hash (see
             // SyncEntry.remoteVersion). Same additive pattern, no schema_version bump, no backfill: NULL = none known,
@@ -900,6 +896,9 @@ class StateDatabase(
             if (!columnExists("sync_entries", "pending_local")) {
                 stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN pending_local TEXT")
             }
+            // gkrost/unidrive-cli#849: who last changed the row and when the engine saw it (SyncEntry.changedBy). Additive, no
+            // schema_version bump, no backfill: NULL = unknown, which is every older row; an older build's upsert resets them to it.
+            for (col in listOf("changed_by TEXT", "changed_at_ms INTEGER")) if (!columnExists("sync_entries", col.substringBefore(' '))) stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN $col")
             // gkrost/unidrive-cli#414: the download hint the row carries (SyncEntry.storedObject): the stored object of
             // the version the row records, so a download after a daemon restart seeds the provider's in-memory hint from
             // the row and skips the metadata call it would otherwise pay per file. Unlike the additive columns above,
@@ -1236,17 +1235,18 @@ class StateDatabase(
                         stmt.setString(27, hint.updatedAt?.toString())
                     }
                 }
+                stmt.bindChangeStamp(entry) // gkrost/unidrive-cli#849: parameters 28 and 29, carried by every writer's copy()
                 // pending_local is carried by every upsert and cleared only when the action lands or the row is
                 // trashed. A touch or a same-path merge must not forget a remote change the next delta will not send.
                 // The sub-select misses a path change, so that row stays unmarked until the failure path writes it.
-                stmt.setString(28, storedId)
-                stmt.setString(29, entry.path)
+                stmt.setString(30, storedId)
+                stmt.setString(31, entry.path)
                 if (keepMarks) {
                     // The sub-selects read the row this statement replaces, before it is replaced.
-                    stmt.setString(30, storedId)
-                    stmt.setString(31, entry.path)
                     stmt.setString(32, storedId)
                     stmt.setString(33, entry.path)
+                    stmt.setString(34, storedId)
+                    stmt.setString(35, entry.path)
                 }
                 stmt.executeUpdate()
             }
@@ -1808,9 +1808,17 @@ class StateDatabase(
      * remote_size = 0, last_synced = Instant.now(), status = EXISTS.
      *
      * The [mtime] argument is the provider-reported creation time
-     * (CloudItem.modified) stored in the remote_modified column.
+     * (CloudItem.modified) stored in the remote_modified column. The caller says who the
+     * change came from ([changedBy], stamped now; gkrost/unidrive-cli#849): the mount's own mkdir (`local`) or a
+     * cloud item the drive adopted (`remote`); null leaves the row unstamped.
      */
-    fun insertFolder(path: String, remoteId: String, mtime: java.time.Instant, remotePath: String? = null) {
+    fun insertFolder(
+        path: String,
+        remoteId: String,
+        mtime: java.time.Instant,
+        remotePath: String? = null,
+        changedBy: String? = null,
+    ) {
         locked("insertFolder") {
             val existing = getEntry(path)
             if (existing != null) return
@@ -1828,6 +1836,8 @@ class StateDatabase(
                     isPinned = false,
                     isHydrated = false,
                     lastSynced = java.time.Instant.now(),
+                    changedBy = changedBy,
+                    changedAtMs = changedBy?.let { Instant.now().toEpochMilli() },
                 ),
             )
         }
@@ -3590,6 +3600,13 @@ class StateDatabase(
         return prefix.dropLast(1) + (last + 1)
     }
 
+    // gkrost/unidrive-cli#849: who last changed the row and when (SyncEntry.changedBy) rides on the row, so a writer that carries
+    // it along through copy() keeps the stamp and only the writer that IS the change sets a new one. NULL both = unknown.
+    private fun java.sql.PreparedStatement.bindChangeStamp(entry: SyncEntry) {
+        setString(28, entry.changedBy)
+        entry.changedAtMs?.let { setLong(29, it) } ?: setNull(29, java.sql.Types.BIGINT)
+    }
+
     private fun ResultSet.toSyncEntry(): SyncEntry {
         val storedId = getString("remote_id")
         // Translate the storage-layer synthetic back to Kotlin's nullable
@@ -3617,6 +3634,8 @@ class StateDatabase(
             editBase = getString("edit_base"),
             remoteVersion = getString("remote_version"),
             remoteContentId = getString("remote_content_id"),
+            changedBy = getString("changed_by"),
+            changedAtMs = getLong("changed_at_ms").let { if (wasNull()) null else it },
             // gkrost/unidrive-cli#414: the hint tuple reads as one stored object; a tuple without its fileId (the
             // pre-#414 shape) reads as none known. hint_size is nullable, so read it before testing it, and read it
             // as the 64-bit number it is written as (a 32-bit read flips a 2 GiB object's size negative).
@@ -3817,8 +3836,9 @@ class StateDatabase(
                 "local_mtime, local_size, is_folder, is_pinned, is_hydrated, last_synced, status, " +
                 "download_quarantined, last_error_at, local_hash, cache_backed, edit_base, remote_version, remote_content_id, " +
                 "hint_file_id, hint_bucket, hint_encrypt_version, hint_size, hint_modified, hint_updated_at, " +
+                "changed_by, changed_at_ms, " +
                 "pending_local) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
                 "(SELECT pending_local FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'))"
 
         // The same, with the refusal stamp and the name block of the row it replaces carried over (see upsertEntry).
@@ -3829,7 +3849,8 @@ class StateDatabase(
                 "local_mtime, local_size, is_folder, is_pinned, is_hydrated, last_synced, status, " +
                 "download_quarantined, last_error_at, local_hash, cache_backed, edit_base, remote_version, remote_content_id, " +
                 "hint_file_id, hint_bucket, hint_encrypt_version, hint_size, hint_modified, hint_updated_at, " +
-                "pending_local, upload_refused, name_block) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
+                "changed_by, changed_at_ms, " +
+                "pending_local, upload_refused, name_block) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
                 "(SELECT pending_local FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'), " +
                 "(SELECT upload_refused FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'), " +
                 "(SELECT name_block FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'))"
