@@ -1212,30 +1212,6 @@ class DaemonRuntime(
         /** archive#652: the transfer history's file, in the profile's state folder next to state.db. */
         const val HISTORY_FILE_NAME = "telemetry.db"
 
-        /**
-         * The serve scope: the daemon's launches (enumerations, event writers, pollers) run on [kotlinx.coroutines.Dispatchers.Default],
-         * not on the event loop of the `runBlocking` that calls [start]. That loop is one thread, which the shutdown's
-         * `closeSignal.await()` also needs: a blocking span on it would stall every writer and the stop. The IPC handlers
-         * already run on their own pool, so no state here relied on that single thread. Blocking JDBC and file work still
-         * goes through `withContext(Dispatchers.IO)` at its call site, so it does not hold a Default thread.
-         */
-        internal fun serveScopeOf(
-            parent: kotlin.coroutines.CoroutineContext,
-            job: kotlinx.coroutines.Job,
-        ): kotlinx.coroutines.CoroutineScope =
-            kotlinx.coroutines.CoroutineScope(parent + job + kotlinx.coroutines.Dispatchers.Default)
-
-        /**
-         * The scope the mount's hydration uploads and replays run in: a scope of its own (the shutdown joins it apart from
-         * the serve scope), so it carries the daemon's [logContext] itself (archive#150, gkrost/unidrive-cli#225).
-         */
-        internal fun hydrationUploadScope(profileName: String): kotlinx.coroutines.CoroutineScope =
-            kotlinx.coroutines.CoroutineScope(
-                kotlinx.coroutines.SupervisorJob() +
-                    kotlinx.coroutines.Dispatchers.IO +
-                    logContext(profileName),
-            )
-
         // Cross-repo IPC wire-protocol version, surfaced as the additive
         // protocol_version field in the daemon.status reply so co-clients
         // (Rust FUSE crate, C# CfAPI client) can warn/refuse on mismatch
