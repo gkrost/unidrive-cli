@@ -117,12 +117,12 @@ class DaemonHydrationWiringTest {
 
     /**
      * The engine is built before the hydration layer (which is built over it), so the engine's two hooks into
-     * that layer go through [DaemonRuntime.HydrationLink]. Until it is bound (and forever on a mirror daemon)
+     * that layer go through [DaemonHydrationLink]. Until it is bound (and forever on a mirror daemon)
      * no upload slot is held and a view invalidation has no subscriber to reach: it is dropped, never an error.
      */
     @Test
     fun `an unbound hydration link holds no upload slot and drops a view invalidation`() {
-        val link = DaemonRuntime.HydrationLink()
+        val link = DaemonHydrationLink()
         assertNull(link.hydration, "nothing to shut down before the hydration layer exists")
         assertFalse(link.hasUploadSlot("/a.txt"), "no upload can be in flight without a hydration layer")
         link.dispatchEvent(HydrationEvent.ViewInvalidated(paths = listOf("/a.txt")))

@@ -196,7 +196,7 @@ class InternxtAncestorRowsTest {
 
             val folderMap = mutableMapOf<String, InternxtFolder>()
             val resolution =
-                InternxtProvider.resolveAncestors(
+                resolveAncestors(
                     parents = missing.asSequence(),
                     folderMap = folderMap,
                     ancestors = emptyMap(),
@@ -223,7 +223,7 @@ class InternxtAncestorRowsTest {
             val reports = mutableListOf<Pair<Int, Int>>()
 
             val resolution =
-                InternxtProvider.resolveAncestors(
+                resolveAncestors(
                     parents = sequenceOf("M2"),
                     folderMap = mutableMapOf(),
                     ancestors = emptyMap(),
@@ -245,7 +245,7 @@ class InternxtAncestorRowsTest {
             var requests = 0
 
             val resolution =
-                InternxtProvider.resolveAncestors(
+                resolveAncestors(
                     parents = sequenceOf("T2", "L", "T2"),
                     folderMap = folderMap,
                     ancestors = ancestors,
@@ -260,7 +260,7 @@ class InternxtAncestorRowsTest {
             assertEquals(0, requests)
             assertEquals(2, resolution.fromRows, "T2 and T1, each counted once however many items hang below")
             assertEquals(0, resolution.fetched)
-            assertEquals("/T1/T2/L", InternxtProvider.buildFolderPath("L", folderMap, "root"))
+            assertEquals("/T1/T2/L", buildFolderPath("L", folderMap, "root"))
         }
 
     @Test
@@ -271,7 +271,7 @@ class InternxtAncestorRowsTest {
             var requests = 0
 
             val path =
-                InternxtProvider.buildFolderPathFetching("L", folderMap, "root", mutableSetOf(), { requests++; null }, ancestors)
+                buildFolderPathFetching("L", folderMap, "root", mutableSetOf(), { requests++; null }, ancestors)
 
             assertEquals("/T1/L", path)
             assertEquals(0, requests)
