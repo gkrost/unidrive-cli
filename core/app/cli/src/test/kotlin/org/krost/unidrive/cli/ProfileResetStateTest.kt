@@ -327,6 +327,20 @@ class ProfileResetStateTest {
         assertEquals("precious", Files.readString(root.resolve("my-document.txt")))
     }
 
+    // review of #871: the Reconciler's un-trash reads TRASHED rows (Reconciler: db.recovery.trashedEntries()); an item restored from the
+    // provider's trash must meet its row, not arrive as a new remote file beside a local file that has none.
+    @Test
+    fun `the default mode keeps a TRASHED row and --all drops it`() {
+        val trashed = { db: StateDatabase -> db.upsertEntry(entry("/trashed.txt", "cloud-trashed").copy(status = org.krost.unidrive.sync.model.EntryStatus.TRASHED)) }
+        seedAll(trashed)
+        assertEquals(0, resetJson())
+        assertEquals(1, rowCount("SELECT COUNT(*) FROM sync_entries WHERE status='TRASHED'"), "un-trash still finds its row")
+        assertEquals(3_000L, json().getValue("removed").jsonObject.getValue("tombstones").jsonPrimitive.long, "only the DELETED rows went")
+
+        assertEquals(0, resetJson("--all"))
+        assertEquals(0, rowCount("SELECT COUNT(*) FROM sync_entries"))
+    }
+
     @Test
     fun `the reset never starts a daemon or asks the cloud`() {
         seedAll()

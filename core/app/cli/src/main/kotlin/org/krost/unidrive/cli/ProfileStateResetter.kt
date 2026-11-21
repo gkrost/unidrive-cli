@@ -29,7 +29,7 @@ import java.time.temporal.ChronoUnit
  * reached the cloud are pending, and while a rename intent, a replace intent or an upload handle is on record. The
  * profile lock is held from the first look to the last file, so no daemon can start in between.
  *
- * What goes: every tombstone of `state.db` (a tombstone a delete through the mount stamped within the lagging-listing window
+ * What goes: every DELETED row of `state.db` (TRASHED rows stay: the un-trash reads them) (a tombstone a delete through the mount stamped within the lagging-listing window
  * stays, or a listing that lags would bring the item back), and `state.db` is rewritten so the space goes back; with
  * `all`, the alive rows and `sync_state` go too, after a copy of `state.db` is put aside ([StateReset.backup]). The staged scan
  * (`scan-staging.db`) and the transfer history (`telemetry.db`) are deleted: the next scan stages again and the history
@@ -241,7 +241,7 @@ internal object ProfileStateResetter {
     }
 
     /**
-     * Deletes every tombstone (DELETED or TRASHED) in one transaction and returns how many went; alive rows, `sync_state` and
+     * Deletes every DELETED row (a TRASHED row stays: the Reconciler's un-trash reads it) in one transaction and returns how many went; alive rows, `sync_state` and
      * the intent tables are not touched (no operation is on record, [refuseIfBusy]). A tombstone that a delete through the
      * mount stamped within [RemoteGather.LAGGING_LISTING_WINDOW] stays: a listing that lags may still report its item. The
      * bound is cut to the second and lowered by one, as `recentlyDeletedRemoteIds` does, so a tombstone a moment older may stay,
@@ -249,7 +249,7 @@ internal object ProfileStateResetter {
      */
     private fun deleteTombstones(stateDb: Path): Long {
         val bound = Instant.now().minus(RemoteGather.LAGGING_LISTING_WINDOW).truncatedTo(ChronoUnit.SECONDS).minusSeconds(1).toString()
-        val sql = "DELETE FROM sync_entries WHERE status <> 'EXISTS' AND (mount_deleted_at IS NULL OR mount_deleted_at < ?)"
+        val sql = "DELETE FROM sync_entries WHERE status = 'DELETED' AND (mount_deleted_at IS NULL OR mount_deleted_at < ?)"
         return SqliteFiles.withSqlite(stateDb) { c ->
             c.prepareStatement(sql).use { st ->
                 st.setString(1, bound)
