@@ -508,7 +508,7 @@ class StateDatabase(
             // so the restamp shares the transaction with the deletes. The staged scan goes first, in its own file: a
             // scan that finds no checkpoint starts again, while a checkpoint left over the reset would resume a listing
             // the reset has discarded.
-            scanStaging.clearAll()
+            scanStaging.clearAll(reclaim = false)
             batch {
                 conn.createStatement().use { stmt ->
                     stmt.executeUpdate("DELETE FROM sync_entries")
@@ -518,6 +518,7 @@ class StateDatabase(
                 aliveCount = 0
             }
         }
+        scanStaging.reclaimSpace() // outside the monitor: the staging's rewrite syncs to disk (#531, #865)
     }
 
     /**
@@ -538,7 +539,7 @@ class StateDatabase(
     fun resetKeepingPending(alsoKeep: (SyncEntry) -> Boolean = { false }): Int {
         scanStaging.warmUp() // outside the monitor: the first open of the staging file can pause (#531)
         return locked("resetKeepingPending") {
-            scanStaging.clearAll()
+            scanStaging.clearAll(reclaim = false)
             batch {
                 val keep = LinkedHashSet<String>()
                 conn.createStatement().use { stmt ->
@@ -584,7 +585,7 @@ class StateDatabase(
                 aliveCount = keep.size
                 keep.size
             }
-        }
+        }.also { scanStaging.reclaimSpace() } // outside the monitor, as in resetAll
     }
 
     /**
@@ -3258,13 +3259,14 @@ class StateDatabase(
         locked("clearEnumerationBaseline") {
             // The checkpoint and its rows first: a crash between the two files then leaves a stamp and no checkpoint
             // (the next gather lists fresh); the other order would leave a checkpoint the stamp no longer invalidates.
-            scanStaging.clearAll()
+            scanStaging.clearAll(reclaim = false)
             beginWrite()
             conn.prepareStatement("DELETE FROM sync_state WHERE key = ?").use { stmt ->
                 stmt.setString(1, "last_full_scan")
                 stmt.executeUpdate()
             }
         }
+        scanStaging.reclaimSpace() // outside the monitor, as in resetAll
     }
 
     fun addPinRule(
