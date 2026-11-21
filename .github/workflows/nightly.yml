@@ -66,3 +66,40 @@ jobs:
         run: |
           echo "::warning title=Live tier skipped::No provider credentials: the real-account tests skipped themselves. This run checks the task wiring only."
           echo "**Live tier skipped: no provider credentials.** The real-account tests skipped themselves; this run checks the task wiring only." >> "$GITHUB_STEP_SUMMARY"
+
+  # The full suite on Windows, once a night (gkrost/unidrive-cli#596). build.yml's SECONDARY_CHECKS switch keeps
+  # check-windows off the pull requests; this job is what finds a Windows-only failure within a day instead of
+  # only on a local deploy. It does not read the switch, and it fails the run when the suite fails.
+  check-windows:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Cache ~/.gradle (see the comment in the live-nightly job).
+      - name: Set up Gradle dependency cache
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Gradle check (Windows)
+        working-directory: core
+        shell: bash
+        run: ./gradlew check --no-daemon
+
+      - name: Upload test reports on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-reports-windows
+          path: |
+            core/app/*/build/reports/tests/test
+            core/app/*/build/test-results/test
+            core/providers/*/build/reports/tests/test
+            core/providers/*/build/test-results/test
+          if-no-files-found: ignore
+          retention-days: 14
