@@ -210,13 +210,12 @@ class HistoryReader internal constructor(
             HistoryOrderField.SIZE -> {
                 val key = seek.keyNumber
                 when {
-                    // The nulls sort last in both directions: after a null, only other nulls follow, and in the
-                    // descending order none does.
-                    key == null && order.direction == HistoryOrderDirection.ASC -> {
-                        where += "bytes_total IS NULL AND operation_id > ?"
+                    // The nulls sort last in both directions, ties by operation id in the order's direction: after a
+                    // null, only the later nulls of that tie order follow.
+                    key == null -> {
+                        where += "bytes_total IS NULL AND operation_id $comparator ?"
                         binds += seek.operationId
                     }
-                    key == null -> where += "1 = 0"
                     // A known value: the known values beyond it in the direction (ties by id), then the nulls.
                     else -> {
                         val compare = if (order.direction == HistoryOrderDirection.DESC) "<" else ">"

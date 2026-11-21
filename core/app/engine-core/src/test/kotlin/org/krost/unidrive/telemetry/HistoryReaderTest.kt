@@ -478,6 +478,30 @@ class HistoryReaderTest {
     }
 
     @Test
+    fun `size descending pages through the unmeasured rows after a cursor that sits on one`() {
+        val history = open()
+        sized(history, "/known-a", 30)
+        sized(history, "/known-b", 10)
+        for (i in 1..4) sized(history, "/null-$i", null)
+        assertTrue(history.flush())
+        val r = reader(history)
+
+        val hash = HistoryOrderCursor.filterHash(emptySet(), emptySet(), null, null, null)
+        for (direction in listOf(ASC, DESC)) {
+            val seen = ArrayList<String>()
+            var cursor: HistoryOrderCursor? = null
+            while (true) {
+                val page = r.query(ordered(SIZE, direction, limit = 1, after = cursor))
+                seen += page.rows.map { it.path }
+                if (!page.hasMore) break
+                cursor = HistoryOrderCursor.of(page.rows.last(), HistoryOrder(SIZE, direction), hash)
+            }
+            assertEquals(6, seen.size, "$direction: a one-row page that ends inside the null tail must carry on; saw $seen")
+            assertEquals(6, seen.toSet().size, "$direction: no row twice; saw $seen")
+        }
+    }
+
+    @Test
     fun `an ordered cursor stays valid across a close and reopen`() {
         val history = sizedOrderRows()
         val r = reader(history)
