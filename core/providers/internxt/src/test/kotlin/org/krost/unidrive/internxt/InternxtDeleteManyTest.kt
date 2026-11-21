@@ -1,12 +1,18 @@
 package org.krost.unidrive.internxt
 
+import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.BatchDeleteProvider
 import org.krost.unidrive.DeleteRequest
+import org.krost.unidrive.ProviderException
 import org.krost.unidrive.deleteManyOrEach
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.ceil
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -49,6 +55,43 @@ class InternxtDeleteManyTest {
                 assertEquals(listOf(50, 50, 20), drive.trashCalls.map { it.size })
                 assertEquals((1..120).map { "f$it" }, drive.trashCalls.flatten())
                 assertEquals(List(3) { "POST /drive/storage/trash/add" }, drive.requests, "no meta, no climb: the delta proved the parents")
+            } finally {
+                provider.close()
+            }
+        }
+
+    @Test
+    fun `a batch retried after 502 and refused for a trashed file still trashes the live file`() =
+        runTest {
+            val files = CopyOnWriteArrayList((1..2).map { FakeFile("f$it", "file$it", "a1", fakeAt("19:10:00")) })
+            val firstTrash = AtomicBoolean(true)
+            val drive =
+                FakeDrive(
+                    listOf(FakeFolder("a1", "Docs", "root", fakeAt("19:30:00"))),
+                    files,
+                    trashStatus = { ids ->
+                        when {
+                            firstTrash.getAndSet(false) -> HttpStatusCode.BadGateway
+                            ids.any { id -> files.none { it.uuid == id } } -> HttpStatusCode.BadRequest
+                            else -> {
+                                files.removeIf { it.uuid in ids }
+                                HttpStatusCode.OK
+                            }
+                        }
+                    },
+                )
+            val provider = internxtProviderOn(drive.engine)
+            try {
+                provider.delta(null, null, FakeStaging().context())
+                files.removeIf { it.uuid == "f2" } // Trashed by another client after the listing.
+
+                val answers = provider.deleteManyOrEach(requests(2))
+
+                assertEquals(listOf(listOf("f1", "f2"), listOf("f1", "f2"), listOf("f1"), listOf("f2")), drive.trashCalls)
+                assertTrue(files.isEmpty(), "the live file was trashed by its own request")
+                assertNull(answers[0])
+                val stale = assertIs<ProviderException>(answers[1])
+                assertEquals("Item not found: /Docs/file2.txt (remoteId=f2)", stale.message)
             } finally {
                 provider.close()
             }

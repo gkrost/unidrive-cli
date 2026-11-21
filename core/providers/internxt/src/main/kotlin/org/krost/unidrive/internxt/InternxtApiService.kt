@@ -1288,10 +1288,9 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
         require(items.all { it.second == "file" || it.second == "folder" }) {
             "type must be 'file' or 'folder'; got ${items.map { it.second }.distinct()}"
         }
-        // The routine delete (InternxtProvider.delete / deleteById) has no reconcile behind this call, so it retries the
-        // full set. A repeat of a trash whose first attempt committed answers 400 (the items are already in the bin):
-        // that 400 after a 500/502/504 of this same call means the earlier attempt took effect. A 400 on a first
-        // attempt (an invalid uuid) still surfaces.
+        // Retry server errors because the first attempt may have committed. For one item, a 400 after a 500/502/504
+        // is treated as an already-committed trash. For a batch, one stale uuid can cause the same 400 while other
+        // items are still live. Let that 400 reach the caller so it can retry each item before forgetting its hints.
         var ambiguous = false
         retryOnTransient(retryServerErrors = true) {
             try {
@@ -1324,7 +1323,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                     }
                 }
             } catch (e: InternxtApiException) {
-                if (ambiguous && e.statusCode == 400) {
+                if (items.size == 1 && ambiguous && e.statusCode == 400) {
                     log.info("Internxt trash answered 400 after an earlier 5xx of the same call; treating it as already trashed")
                     return@retryOnTransient
                 }
