@@ -107,14 +107,24 @@ class SyncConfigValidationTest {
     }
 
     @Test
-    fun `tombstone_retention_days defaults to 30, takes 0 for keep and is per profile`() {
+    fun `tombstone_retention_days defaults to 90, takes 0 for keep and is per profile`() {
         val toml = "[providers.a]\ntombstone_retention_days = 0\n[providers.b]\ntombstone_retention_days = 7\n[providers.c]\n"
         val config = SyncConfig.parse(toml, "a")
-        assertEquals(30, DEFAULT_TOMBSTONE_RETENTION_DAYS)
+        assertEquals(90, DEFAULT_TOMBSTONE_RETENTION_DAYS)
         assertEquals(0, config.tombstoneRetentionDays("a"))
         assertEquals(7, config.tombstoneRetentionDays("b"))
-        assertEquals(30, config.tombstoneRetentionDays("c"))
-        assertEquals(30, config.tombstoneRetentionDays("unknown"))
+        assertEquals(90, config.tombstoneRetentionDays("c"))
+        assertEquals(90, config.tombstoneRetentionDays("unknown"))
+    }
+
+    // #858's folder-delete guard passes over a listed ghost only while its row is DELETED; #853 saw ghosts listed for 5 to 9 days.
+    @Test
+    fun `the default tombstone retention outlasts the days a provider keeps listing a deleted item with a wide margin`() {
+        val longestGhostDaysSeen = 9
+        assertTrue(
+            DEFAULT_TOMBSTONE_RETENTION_DAYS >= 10 * longestGhostDaysSeen,
+            "the default is $DEFAULT_TOMBSTONE_RETENTION_DAYS days; a purged row brings the guard's remote_unobserved refusal back",
+        )
     }
 
     @Test

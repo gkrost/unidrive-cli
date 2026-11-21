@@ -58,7 +58,7 @@ const val MAX_TOMBSTONE_RETENTION_DAYS: Int = 3650
 
 /**
  * gkrost/unidrive-cli#863: how many days this profile's state.db keeps a `DELETED` tombstone row before the daemon's start
- * purges it (key `tombstone_retention_days`); [DEFAULT_TOMBSTONE_RETENTION_DAYS] (30) when unset, 0 = keep every one.
+ * purges it (key `tombstone_retention_days`); [DEFAULT_TOMBSTONE_RETENTION_DAYS] (90) when unset, 0 = keep every one.
  */
 fun SyncConfig.tombstoneRetentionDays(profileName: String): Int =
     providers[profileName]?.tombstoneRetentionDays ?: DEFAULT_TOMBSTONE_RETENTION_DAYS

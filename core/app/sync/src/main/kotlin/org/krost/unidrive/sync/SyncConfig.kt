@@ -524,7 +524,7 @@ data class RawProvider(
     val upload_queue_depth: Int? = null,
     // issue#72: how long a hydration-cache file stays un-evictable after its last use, in ms; absent = 60000. Mount only.
     val cache_access_grace_ms: Long? = null,
-    // gkrost/unidrive-cli#863: days a DELETED tombstone row is kept in state.db before the daemon's start purges it; absent = 30, 0 = keep.
+    // gkrost/unidrive-cli#863: days a DELETED tombstone row is kept in state.db before the daemon's start purges it; absent = 90, 0 = keep.
     val tombstone_retention_days: Int? = null,
 )
 

@@ -16,8 +16,12 @@ import java.time.temporal.ChronoUnit
  */
 private val log = LoggerFactory.getLogger("org.krost.unidrive.sync.TombstonePurge")
 
-/** The tombstone retention a profile without `tombstone_retention_days` gets, in days (see the config key). */
-const val DEFAULT_TOMBSTONE_RETENTION_DAYS: Int = 30
+/**
+ * The tombstone retention a profile without `tombstone_retention_days` gets, in days (see the config key). Ninety, not thirty: the
+ * folder-delete guard passes over a listed ghost only while its row is DELETED (gkrost/unidrive-cli#853, #858), providers listed
+ * such ghosts for 5 to 9 days with no known bound, and a purged row brings the guard's `remote_unobserved` refusal back.
+ */
+const val DEFAULT_TOMBSTONE_RETENTION_DAYS: Int = 90
 
 /** Rows one transaction of a purge removes: bounded, so the monitor is given back between the chunks. */
 internal const val PURGE_CHUNK_ROWS = 5_000
