@@ -146,6 +146,8 @@ class ProfileAddJsonTest {
         assertEquals("mount", r.getValue("mode").jsonPrimitive.content)
         assertEquals("My \"docs\"", r.getValue("label").jsonPrimitive.content)
         assertEquals(dir.resolve("docs").resolve("sync-root").toString(), r.getValue("sync_root").jsonPrimitive.content)
+        // #65 P9: a mount profile names its root as mount_root too; sync_root stays for one contract version.
+        assertEquals(r.getValue("sync_root").jsonPrimitive.content, r.getValue("mount_root").jsonPrimitive.content)
         assertEquals(JsonNull, r.getValue("default_profile"))
         assertEquals(0, r.getValue("warnings").jsonArray.size)
         assertEquals("none", r.getValue("next").jsonPrimitive.content)
@@ -172,6 +174,7 @@ class ProfileAddJsonTest {
         val r = json()
         assertEquals("localfs", r.getValue("profile").jsonPrimitive.content, "the name defaults to the type")
         assertEquals(root, r.getValue("sync_root").jsonPrimitive.content)
+        assertFalse("mount_root" in r, "a mirror profile has a sync root, not a mount root")
         assertEquals("localfs", r.getValue("default_profile").jsonPrimitive.content)
         assertEquals(JsonNull, r.getValue("label"))
         assertEquals("localfs", SyncConfig.parseRaw(Files.readString(configFile)).general.default_profile)
