@@ -251,6 +251,8 @@ internal class ScanStaging(
                 clearMeta(c, StateDatabase.SCAN_IN_PROGRESS_MARKER)
             }
         }
+        // The rows of a scan that died (crash, kill) went just now, when it left no checkpoint: its space goes with them.
+        reclaimSpace()
     }
 
     /**
@@ -391,7 +393,10 @@ internal class ScanStaging(
                 }
                 onlyThisScan
             }
-        if (emptied) return
+        if (emptied) {
+            reclaimSpace()
+            return
+        }
         while (true) {
             val removed =
                 transaction { c ->
@@ -404,13 +409,19 @@ internal class ScanStaging(
                             stmt.executeUpdate()
                         }
                 }
-            if (removed < chunkRows) return
+            if (removed < chunkRows) {
+                reclaimSpace()
+                return
+            }
             gap()
         }
     }
 
-    /** Every staged row and the checkpoint, in one transaction. */
-    fun clearAll() {
+    /**
+     * Every staged row and the checkpoint, in one transaction. [reclaim] false leaves the rewrite to the caller: one that
+     * holds the main database's monitor (#531) calls [reclaimSpace] once it let go, so no disk sync runs under it.
+     */
+    fun clearAll(reclaim: Boolean = true) {
         if (connection() == null) return
         transaction { c ->
             c.createStatement().use { stmt ->
@@ -418,7 +429,63 @@ internal class ScanStaging(
                 stmt.executeUpdate("DELETE FROM scan_meta")
             }
         }
+        if (reclaim) reclaimSpace()
     }
+
+    /** What [reclaimSpace] asks for the disk space of a rewrite; a test seam. */
+    @Volatile
+    internal var rewriteRoom = RewriteRoom()
+
+    /**
+     * Rewrites the file (`VACUUM`) when at least [MIN_RECLAIM_BYTES] of it are free pages and they are more than a quarter
+     * of all pages. The staging is scratch for one listing: a scan that ends leaves its pages on the free list, and the
+     * file keeps the size of the largest listing for ever (251 MB on a profile whose account was emptied, gkrost/unidrive-cli#863).
+     * Called where rows go (a scan's end, [clearAll], the discard of a dead scan's rows), so a crashed or killed scan is
+     * reclaimed by the next scan's [begin]. Skipped when the disk has too little space for the rewrite ([RewriteRoom]: the
+     * folder and SQLite's temp directory) or when that cannot be told. Best effort: nothing it meets fails the scan around
+     * it; a failed rewrite (a reader holds the file, a space read fails) leaves the file as it was. Returns whether the
+     * file was rewritten.
+     */
+    @Synchronized
+    internal fun reclaimSpace(): Boolean {
+        val f = file ?: return false
+        val c = conn?.takeIf { !it.isClosed && !readOnly } ?: return false
+        return try {
+            c.createStatement().use { stmt ->
+                fun pragma(name: String) = stmt.executeQuery("PRAGMA $name").use { it.next(); it.getLong(1) }
+                val pages = pragma("page_count")
+                val free = pragma("freelist_count")
+                val pageSize = pragma("page_size")
+                if (pages == 0L || free * pageSize < MIN_RECLAIM_BYTES || free <= pages * RECLAIM_FREE_SHARE) return@use false
+                val wal = f.resolveSibling("${f.fileName}-wal")
+                val logical = pages * pageSize + sizeOrZero(wal)
+                val room = rewriteRoom.check(f, logical, (pages - free) * pageSize)
+                if (room != true) {
+                    log.info("{} has {} of {} pages free, but {}", f, free, pages, if (room == null) "its disk space cannot be read" else "the disk has too little space to rewrite it")
+                    return@use false
+                }
+                val started = System.nanoTime()
+                statements.clear()
+                stmt.execute("VACUUM")
+                stmt.executeQuery("PRAGMA wal_checkpoint(TRUNCATE)").use { it.next() }
+                log.info(
+                    "Rewrote {} ({} of {} pages were free): {} MB now, in {} ms",
+                    f,
+                    free,
+                    pages,
+                    sizeOrZero(f) / 1_048_576,
+                    (System.nanoTime() - started) / 1_000_000,
+                )
+                true
+            }
+        } catch (e: java.sql.SQLException) {
+            log.warn("Rewriting {} failed ({}); it stays as it was", f, e.message)
+            false
+        }
+    }
+
+    // A file that is gone (the WAL a checkpoint just removed) or cannot be read counts as empty.
+    private fun sizeOrZero(f: Path): Long = runCatching { if (Files.exists(f)) Files.size(f) else 0L }.getOrDefault(0L)
 
     // Whether scan_staging holds no row of another scan: min and max of the key's leading column are two seeks.
     private fun holdsOnly(
@@ -469,6 +536,10 @@ internal class ScanStaging(
             )
 
         private const val STATEMENT_CACHE_LIMIT = 8
+
+        // [reclaimSpace]: free space worth a rewrite, and the share of the pages that must be free.
+        private const val MIN_RECLAIM_BYTES = 1L shl 20
+        private const val RECLAIM_FREE_SHARE = 0.25
 
         // The pause before each try to open the file (see [openWritableRetrying]): about 1.7 s in all before it is given up.
         private val OPEN_RETRY_PAUSES_MS = longArrayOf(0, 200, 500, 1_000)

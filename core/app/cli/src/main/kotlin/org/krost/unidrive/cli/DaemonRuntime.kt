@@ -1244,7 +1244,7 @@ class DaemonRuntime(
         // verb, capability or field), so a client orders engine builds by what they answer; protocol_version moves only
         // on a breaking change and engine_version does not order dev builds. IpcContractLevelTest pins the IPC surface
         // of each level and fails when the surface changes without a raise.
-        const val IPC_CONTRACT_LEVEL: Int = 7
+        const val IPC_CONTRACT_LEVEL: Int = 8
 
         /**
          * Whether a successful `hydration.subscribe` is followed by the one guarded enumerate: only for a
