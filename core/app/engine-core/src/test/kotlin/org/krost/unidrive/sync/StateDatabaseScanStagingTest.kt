@@ -336,6 +336,42 @@ class StateDatabaseScanStagingTest {
             }
         }
 
+    // #863: scan-staging.db is scratch for one listing; its pages went to the free list and the file kept its size.
+    @Test
+    fun `completing a scan gives the staging file its space back`() {
+        val stagingFile = dir.resolve(StateDatabase.SCAN_STAGING_FILE_NAME)
+        val db = opened()
+        try {
+            val scanId = db.beginScan(initialMarker = null)
+            repeat(40) { page -> db.persistScanPage(scanId, items(page * 500, 500), "page-$page") }
+            db.completeScan(scanId)
+            // a later scan still uses the rewritten file
+            val next = db.beginScan(initialMarker = null)
+            db.persistScanPage(next, items(0, 3), "m")
+            assertEquals(3, db.loadStagedItems(next).size)
+            db.completeScan(next)
+        } finally {
+            db.close()
+        }
+        val bytes = Files.size(stagingFile)
+        assertTrue(bytes < 512 * 1024, "the staging file is $bytes bytes after the scan completed")
+    }
+
+    @Test
+    fun `clearing the whole staging empties and shrinks the file`() {
+        val stagingFile = dir.resolve(StateDatabase.SCAN_STAGING_FILE_NAME)
+        val db = opened()
+        try {
+            val scanId = db.beginScan(initialMarker = null)
+            repeat(40) { page -> db.persistScanPage(scanId, items(page * 500, 500), "page-$page") }
+            db.scanStaging.clearAll()
+        } finally {
+            db.close()
+        }
+        val bytes = Files.size(stagingFile)
+        assertTrue(bytes < 512 * 1024, "the staging file is $bytes bytes after clearAll")
+    }
+
     companion object {
         fun items(
             from: Int,

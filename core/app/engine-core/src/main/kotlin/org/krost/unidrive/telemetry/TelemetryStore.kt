@@ -29,6 +29,7 @@ internal class TelemetryStore private constructor(
     val dbPath: Path,
     private val afterOpen: (Connection) -> Unit,
     private val connector: StateDatabaseConnector,
+    private val usableSpace: (Path) -> Long = { Files.getFileStore(it).usableSpace },
 ) {
     private var conn: Connection? = null
     private var closed = false
@@ -248,7 +249,7 @@ internal class TelemetryStore private constructor(
             removed += n
             if (n == 0) break
         }
-        if (removed > 0) shrinkFile(c, maxBytes)
+        if (removed > 0 || mostlyFree(c)) shrinkFile(c, maxBytes)
         return removed
     }
 
@@ -298,7 +299,7 @@ internal class TelemetryStore private constructor(
             if (shed == 0) break
             removed += shed
         }
-        if (removed > 0) shrinkFile(c, maxBytes)
+        if (removed > 0 || mostlyFree(c)) shrinkFile(c, maxBytes)
         return removed
     }
 
@@ -318,19 +319,37 @@ internal class TelemetryStore private constructor(
         }
     }
 
-    // Deleted rows leave free pages inside the file; a VACUUM gives them back when the file is still too big.
+    // Deleted rows leave free pages inside the file; a VACUUM gives them back when the file is still over the budget, or
+    // when more than a quarter of its pages are free (retention that stays under the cap used to keep the file's size for
+    // ever, gkrost/unidrive-cli#863). Skipped when the folder has less free space than twice the file.
     private fun shrinkFile(
         c: Connection,
         maxBytes: Long,
     ) {
         c.createStatement().use { st ->
             st.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            if (fileBytes() > maxBytes) {
+            if ((fileBytes() > maxBytes || mostlyFree(c)) && hasRoomToRewrite()) {
                 st.execute("VACUUM")
                 st.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             }
         }
     }
+
+    private fun hasRoomToRewrite(): Boolean {
+        val usable = runCatching { usableSpace(dbPath.toAbsolutePath().parent) }.getOrDefault(Long.MAX_VALUE)
+        if (usable >= 2 * fileBytes()) return true
+        log.info("{} cannot be rewritten: the folder has too little space", dbPath)
+        return false
+    }
+
+    /** At least [MIN_RECLAIM_BYTES] of the file are free pages, and they are more than a quarter of all pages. */
+    private fun mostlyFree(c: Connection): Boolean =
+        c.createStatement().use { st ->
+            fun pragma(name: String) = st.executeQuery("PRAGMA $name").use { it.next(); it.getLong(1) }
+            val pages = pragma("page_count")
+            val free = pragma("freelist_count")
+            pages > 0 && free * pragma("page_size") >= MIN_RECLAIM_BYTES && free > pages * FREE_SHARE
+        }
 
     private fun liveBytes(c: Connection): Long =
         c.createStatement().use { st ->
@@ -358,6 +377,8 @@ internal class TelemetryStore private constructor(
         const val SORT_TIME = "COALESCE(finished_at, queued_at)"
         private const val MAX_PRUNE_ROUNDS = 64
         private const val PRUNE_FRACTION = 10
+        private const val MIN_RECLAIM_BYTES = 1L shl 20
+        private const val FREE_SHARE = 0.25
         private val log = LoggerFactory.getLogger(TelemetryStore::class.java)
 
         // History that can be rebuilt: synchronous=NORMAL.
