@@ -137,6 +137,8 @@ internal class FakeDrive(
     // them, and a gather — a poll included, archive#312 — falls back to the offset listing).
     val syncStatus: Int? = null,
 ) {
+    // The items of each `POST /storage/trash/add`, as the request body named them, in order.
+    val trashCalls = CopyOnWriteArrayList<List<String>>()
     val metaRequests = CopyOnWriteArrayList<String>()
     val deviceRequests = AtomicInteger()
 
@@ -251,6 +253,10 @@ internal class FakeDrive(
                 // Anything that would change the drive is recorded and answered, so a test can say that none was sent.
                 request.method != HttpMethod.Get -> {
                     writes += "${request.method.value} $path"
+                    if (path.endsWith("/storage/trash/add")) {
+                        val body = (request.body as? io.ktor.http.content.TextContent)?.text.orEmpty()
+                        trashCalls += Regex("\"uuid\":\"([^\"]+)\"").findAll(body).map { it.groupValues[1] }.toList()
+                    }
                     respondJson("{}")
                 }
                 path.endsWith("/meta") -> {
