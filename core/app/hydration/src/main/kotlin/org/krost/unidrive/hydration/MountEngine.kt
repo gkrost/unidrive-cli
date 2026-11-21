@@ -2087,11 +2087,9 @@ class MountEngine private constructor(
     // gkrost/unidrive-cli#635: a listing can also lag this mount's own deletes (Internxt's lags a trash by minutes), so
     // `rm -rf`, which deletes the files and then their folder, met the files it had just trashed and was refused. A
     // listed child with no row is passed over when the mount deleted that very cloud id within the lagging window, or
-    // the rows hold the id as DELETED — the cloud's own delta said the item is gone (gkrost/unidrive-cli#853) — and no
-    // alive row holds the id again: the receipt RemoteGather's poll honours too (archive#1199). A DELETED tombstone that
-    // is not the mount's own recent delete is confirmed first by a by-id probe of the item (see listedGhostIsGone). It
-    // is never descended into. A new id at the same name, an id any of whose rows is TRASHED, a probe that answers a
-    // live item or fails, and a restored id still refuse.
+    // the rows hold the id as DELETED and a by-id probe confirms it gone (gkrost/unidrive-cli#853; listedChildPassesOver),
+    // and no alive row holds the id again: the receipt RemoteGather's poll honours too (archive#1199). It is never
+    // descended into. A new id at the same name, a TRASHED tombstone, a live or failed probe, and a restored id refuse.
     private suspend fun checkFolderDeleteSnapshot(folder: SyncEntry) {
         val prefix = folder.path.trimEnd('/') + "/"
         val below = db.getEntriesByPrefix(prefix).filter { it.remoteId != null }
@@ -2115,7 +2113,7 @@ class MountEngine private constructor(
             if (!visited.add(path)) throw UnobservedChildException(UnobservedChildException.REPEATED_LISTING, path)
             val children = snapshotListing(path, root) ?: return
             val (lagging, live) = children.filter { !it.deleted && !it.trashed }.partition { child ->
-                listedChildPassesOver(child, observed[child.id], ownDeletes, db, ::listedGhostIsGone)
+                listedChildPassesOver(child, observed[child.id], ownDeletes, db) { listedGhostIsGone(provider, it, log) }
             }
             passedOver += lagging.size
             for (child in live) {
@@ -2128,27 +2126,6 @@ class MountEngine private constructor(
             log.debug("#635: the listing below {} still shows {} item(s) this mount holds deleted; passed over", folder.path, passedOver)
         }
     }
-
-    // gkrost/unidrive-cli#853: the by-id probe that confirms a tombstone against the listing that names the item. True
-    // only when the provider answers not-found, or an item it marks deleted or trashed; a live answer refuses, and so
-    // does a probe that fails any other way (an outage is no proof of absence: the refusal is the one the guard gave
-    // before the tombstone counted at all).
-    private suspend fun listedGhostIsGone(child: CloudItem): Boolean =
-        try {
-            val item = provider.getMetadata(child.path)
-            val gone = item.deleted || item.trashed
-            if (!gone) log.info("#853: {} is held DELETED, but the cloud answers it live; the folder delete refuses", child.path)
-            gone
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            if (org.krost.unidrive.engine.RemoteErrors.isNotFound(e)) {
-                true
-            } else {
-                log.info("#853: {} is held DELETED, but its probe failed ({}); the folder delete refuses", child.path, e.message)
-                false
-            }
-        }
 
     // The listing of [path], or null when [root] itself is already gone in the cloud: nothing is left to compare.
     internal suspend fun snapshotListing(

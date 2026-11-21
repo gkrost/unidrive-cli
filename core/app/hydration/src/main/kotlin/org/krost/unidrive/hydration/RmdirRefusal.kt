@@ -1,7 +1,10 @@
 package org.krost.unidrive.hydration
 
+import kotlinx.coroutines.CancellationException
 import org.krost.unidrive.CloudItem
+import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.FolderNotEmptyException
+import org.krost.unidrive.engine.RemoteErrors
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.EntryStatus
 import org.krost.unidrive.sync.model.SyncEntry
@@ -117,6 +120,31 @@ internal suspend fun listedChildPassesOver(
     if (db.recovery.getEntryByRemoteIdAnyStatus(child.id)?.status != EntryStatus.DELETED) return false
     return probeAbsent(child)
 }
+
+// gkrost/unidrive-cli#853: the by-id probe that confirms a tombstone against the listing that names the item. True only
+// when the provider answers not-found, or an item it marks deleted or trashed; a live answer refuses, and so does a
+// probe that fails any other way (an outage is no proof of absence: the refusal is the one the guard gave before the
+// tombstone counted at all).
+internal suspend fun listedGhostIsGone(
+    provider: CloudProvider,
+    child: CloudItem,
+    log: Logger,
+): Boolean =
+    try {
+        val item = provider.getMetadata(child.path)
+        val gone = item.deleted || item.trashed
+        if (!gone) log.info("#853: {} is held DELETED, but the cloud answers it live; the folder delete refuses", child.path)
+        gone
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        if (RemoteErrors.isNotFound(e)) {
+            true
+        } else {
+            log.info("#853: {} is held DELETED, but its probe failed ({}); the folder delete refuses", child.path, e.message)
+            false
+        }
+    }
 
 /**
  * gkrost/unidrive-cli#635: the folder delete's snapshot guard refused: the listing has a child the rows do not account
