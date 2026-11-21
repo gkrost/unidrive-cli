@@ -242,6 +242,8 @@ class HydrationIpcHandlerWireTest {
             blocked = "similar_name",
             view = "recents",
             viewTarget = "/Notes/todo.txt",
+            changedBy = "remote",
+            changedAtMs = 1700000000000,
         )
         val fake = ScriptedHydration().apply { list = ListResult.Ok(listOf(plainEntry, full)) }
         assertEquals(
@@ -249,7 +251,8 @@ class HydrationIpcHandlerWireTest {
                 """{"path":"/Recents/todo.txt","size":5,"mtime_ms":1234567890123,"hydrated":true,"folder":true,""" +
                 """"remote_modified_ms":1234567890000,"remote_id":"unidrive:view:recents:22222222-todo","etag":"etag-todo",""" +
                 """"content_id":"obj-report|42","pending_upload":true,"error":true,"excluded":true,"read_only":true,"trash_root":true,""" +
-                """"blocked":"similar_name","view":"recents","view_target":"/Notes/todo.txt"}]}""",
+                """"blocked":"similar_name","view":"recents","view_target":"/Notes/todo.txt",""" +
+                """"changed_by":"remote","changed_at_ms":1700000000000}]}""",
             run(fake, """{"verb":"hydration.list","prefix":"/Recents"}"""),
         )
     }

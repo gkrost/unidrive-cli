@@ -27,3 +27,40 @@ internal fun mergeLeavesRowAsStored(
         PathNormalizer.nfc(existing.path) == existing.path &&
         (existing.remotePath == null || PathNormalizer.nfc(existing.remotePath) == existing.remotePath) &&
         (existing.isHydrated || (existing.localHash == null && existing.cacheBacked == null))
+
+/**
+ * gkrost/unidrive-cli#849: the row the merge writes for a delivery, with the stamp it earns. A delivery is a change the cloud
+ * told the engine of (`remote`, now) only when it brings the row something it does not hold: a new row, or a merged row that
+ * differs from the stored one. Two deliveries bring nothing and keep the stamp the row has (none, for a row from before the
+ * columns, never a wrong one): one that leaves the row as stored but is still written (a full-listing provider re-lists its
+ * tree every poll; the upsert normalises a path or a local hash on the way in), and the echo of the engine's own change
+ * ([echoesOwnChange]).
+ */
+internal fun stampedByDelivery(
+    existing: SyncEntry?,
+    merged: SyncEntry,
+    renamedFrom: String?,
+): SyncEntry =
+    if (existing != null && (merged == existing || echoesOwnChange(existing, merged, renamedFrom))) merged else merged.stampedRemote()
+
+/**
+ * The delivery of the version the engine itself just wrote: the row's last change is `local`, and the delivered item names
+ * the same bytes (id, hash, token, size, stored object) at the same place. Only its time may differ, as a provider rounds
+ * or restamps it (Internxt), and that is no change of the file. A provider that names neither a hash nor a token cannot
+ * vouch for the bytes, so only a folder (which has none) is judged by its id.
+ */
+private fun echoesOwnChange(
+    existing: SyncEntry,
+    merged: SyncEntry,
+    renamedFrom: String?,
+): Boolean =
+    existing.changedBy == "local" &&
+        renamedFrom == null &&
+        existing.status == EntryStatus.EXISTS &&
+        merged.remoteId == existing.remoteId &&
+        merged.isFolder == existing.isFolder &&
+        merged.remoteHash == existing.remoteHash &&
+        merged.remoteVersion == existing.remoteVersion &&
+        merged.remoteSize == existing.remoteSize &&
+        merged.remoteContentId == existing.remoteContentId &&
+        (merged.isFolder || merged.remoteHash != null || merged.remoteVersion != null)
