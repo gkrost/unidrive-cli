@@ -107,6 +107,13 @@ internal const val RMDIR_NOT_EMPTY_REASON_CAPABILITY = "hydration.rmdir_not_empt
  */
 internal const val LIST_CHANGED_BY_CAPABILITY = "hydration.list_changed_by"
 
+/**
+ * gkrost/unidrive-cli#851: `hydration.unlink` and `hydration.rmdir` take `sweep_total`, and while a released hold's
+ * sweep is under way daemon.status carries the `delete_sweep` object (the sweep's id, total, remaining and start time;
+ * counts only, no paths). A client's removal card shows "remaining of total" with an ETA and keeps two sweeps apart.
+ */
+internal const val SWEEP_PROGRESS_CAPABILITY = "hydration.sweep_progress"
+
 /** The `daemon.status` capability that says `ignore.explain` answers a batch of `paths` (gkrost/unidrive-cli#445). */
 internal const val IGNORE_EXPLAIN_BATCH_CAPABILITY = "ignore.explain_batch"
 
@@ -412,6 +419,7 @@ internal fun ipcStatusJson(requestCounts: Map<String, Long>): JsonObject =
  * `hydration.rmdir_not_empty_reason` (gkrost/unidrive-cli#717): a rmdir refused with not_empty names its reason and one child.
  * `hydration.list_changed_by` (gkrost/unidrive-cli#849): a hydration.list file entry names who last changed the row and when,
  * where the row knows.
+ * `hydration.sweep_progress` (gkrost/unidrive-cli#851): unlink/rmdir take `sweep_total` and daemon.status carries `delete_sweep` while a released hold's sweep is under way.
  */
 internal fun daemonCapabilitiesJson(
     profileMode: ProfileMode,
@@ -424,7 +432,7 @@ internal fun daemonCapabilitiesJson(
 ): String =
     (
         profileMode.capabilities + NOTIFICATIONS_STATUS_CAPABILITY +
-            (if (hydration) listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY, HYDRATION_STAT_CAPABILITY, CANCEL_READ_CAPABILITY, HANDLE_STATUS_CAPABILITY, HYDRATION_LOCATE_CAPABILITY, SUBSCRIBE_REPLAY_CAPABILITY, LIST_COMPLETE_CAPABILITY, RMDIR_DISCARD_LOCAL_CAPABILITY, OPEN_READ_ETAG_CAPABILITY, RMDIR_NOT_EMPTY_REASON_CAPABILITY, LIST_CHANGED_BY_CAPABILITY) else emptyList()) +
+            (if (hydration) listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY, HYDRATION_STAT_CAPABILITY, CANCEL_READ_CAPABILITY, HANDLE_STATUS_CAPABILITY, HYDRATION_LOCATE_CAPABILITY, SUBSCRIBE_REPLAY_CAPABILITY, LIST_COMPLETE_CAPABILITY, RMDIR_DISCARD_LOCAL_CAPABILITY, OPEN_READ_ETAG_CAPABILITY, RMDIR_NOT_EMPTY_REASON_CAPABILITY, LIST_CHANGED_BY_CAPABILITY, SWEEP_PROGRESS_CAPABILITY) else emptyList()) +
             (if (uploadIgnore) listOf(IGNORE_EXPLAIN_BATCH_CAPABILITY) else emptyList()) +
             (if (viewNamespaces.isEmpty()) emptyList() else listOf("views", "view_page")) +
             (if (shareCapable) listOf(SHARE_CREATE_CAPABILITY) else emptyList()) +
