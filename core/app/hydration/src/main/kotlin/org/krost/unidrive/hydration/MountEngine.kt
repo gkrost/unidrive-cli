@@ -2086,9 +2086,10 @@ class MountEngine private constructor(
     //
     // gkrost/unidrive-cli#635: a listing can also lag this mount's own deletes (Internxt's lags a trash by minutes), so
     // `rm -rf`, which deletes the files and then their folder, met the files it had just trashed and was refused. A
-    // listed child with no row is passed over when the mount deleted that very cloud id within the lagging window and no
-    // alive row holds the id again: the receipt RemoteGather's poll honours too (archive#1199). It is never descended
-    // into. A new id at the same name, a tombstone of another kind or an older one, and a restored id still refuse.
+    // listed child with no row is passed over when the mount deleted that very cloud id within the lagging window, or
+    // the rows hold the id as DELETED and a by-id probe confirms it gone (gkrost/unidrive-cli#853; listedChildPassesOver),
+    // and no alive row holds the id again: the receipt RemoteGather's poll honours too (archive#1199). It is never
+    // descended into. A new id at the same name, a TRASHED tombstone, a live or failed probe, and a restored id refuse.
     private suspend fun checkFolderDeleteSnapshot(folder: SyncEntry) {
         val prefix = folder.path.trimEnd('/') + "/"
         val below = db.getEntriesByPrefix(prefix).filter { it.remoteId != null }
@@ -2096,7 +2097,7 @@ class MountEngine private constructor(
         // gkrost/unidrive-cli#717: a row a delta indexed after a client was last told the folder whole is a child that
         // client's comparison of the folder's cloud contents with the engine's listing cannot have seen; it refuses
         // before any listing, like one the listing itself names.
-        refuseIndexedAfterWholeListing(below, liveFolders.lastWholeListing(PathNormalizer.nfc(folder.path)))
+        refuseIndexedAfterWholeListing(below, liveFolders.lastWholeListing(PathNormalizer.nfc(folder.path)), folder.path, log)
         // Read once, and only when a listed child has no row: the common delete never pays for the query.
         val ownDeletes by lazy {
             db.recovery.recentlyDeletedRemoteIds(Instant.now().minus(RemoteGather.LAGGING_LISTING_WINDOW))
@@ -2112,7 +2113,7 @@ class MountEngine private constructor(
             if (!visited.add(path)) throw UnobservedChildException(UnobservedChildException.REPEATED_LISTING, path)
             val children = snapshotListing(path, root) ?: return
             val (lagging, live) = children.filter { !it.deleted && !it.trashed }.partition { child ->
-                observed[child.id] == null && child.id in ownDeletes && db.getEntryByRemoteId(child.id) == null
+                listedChildPassesOver(child, observed[child.id], ownDeletes, db) { listedGhostIsGone(provider, it, log) }
             }
             passedOver += lagging.size
             for (child in live) {
@@ -2122,7 +2123,7 @@ class MountEngine private constructor(
             }
         }
         if (passedOver > 0) {
-            log.debug("#635: the listing below {} still shows {} item(s) this mount just deleted; passed over", folder.path, passedOver)
+            log.debug("#635: the listing below {} still shows {} item(s) this mount holds deleted; passed over", folder.path, passedOver)
         }
     }
 
