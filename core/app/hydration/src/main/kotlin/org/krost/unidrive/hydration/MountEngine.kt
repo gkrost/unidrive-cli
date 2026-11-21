@@ -1558,6 +1558,9 @@ class MountEngine private constructor(
             // archive#1070/#1069: what was sent is the cloud's now. A write that landed mid-upload is a new edit, which
             // started from the version just stored.
             editBase = if (changedMidUpload) (result.version ?: result.hash).orEmpty() else null,
+            // gkrost/unidrive-cli#849: this landing is the engine's own change to the row, and this is when it ended.
+            changedBy = "local",
+            changedAtMs = Instant.now().toEpochMilli(),
         )
         // The row just adopted the cache copy's stats, and these are exactly the bytes the
         // write-back sent: hash the cache copy (guarded against a writer landing mid-hash)
@@ -1828,6 +1831,11 @@ class MountEngine private constructor(
                     localHash = null,
                     cacheBacked = null,
                     editBase = if (keepEdit) (current?.version ?: row.remoteVersion).orEmpty() else null,
+                    // gkrost/unidrive-cli#849: where the lookup answered, the row now records the cloud's version,
+                    // found against a write that could not land on it — a remote change the engine saw here, before
+                    // any delta brought it. Where it did not, the row learned nothing: it keeps its stamp.
+                    changedBy = current?.let { "remote" },
+                    changedAtMs = current?.let { Instant.now().toEpochMilli() },
                 ),
                 keepMarks = true,
             )
@@ -1871,6 +1879,9 @@ class MountEngine private constructor(
                 cacheBacked = true,
                 remoteContentId = copy.contentId,
                 storedObject = copy.storedObject,
+                // gkrost/unidrive-cli#849: the copy is the engine's own upload, kept beside the cloud's newer version.
+                changedBy = "local",
+                changedAtMs = Instant.now().toEpochMilli(),
             )
         db.upsertEntry(withSentHash(row, target, sent))
         return true
@@ -1909,8 +1920,16 @@ class MountEngine private constructor(
         // (a folder refused earlier and created now has local-only children) follow it.
         val landed = if (item.nameOverridden) item.path else remote
         val existing = db.getEntry(path)
+        // gkrost/unidrive-cli#849: the drive created the folder because the mount asked it to — the engine's own change.
         if (existing == null) {
-            db.insertFolder(path = path, remoteId = item.id, mtime = item.modified ?: Instant.now(), remotePath = landed.takeIf { it != path })
+            db.insertFolder(
+                path = path,
+                remoteId = item.id,
+                mtime = item.modified ?: Instant.now(),
+                remotePath = landed.takeIf { it != path },
+                changedBy = "local",
+                changedAtMs = Instant.now().toEpochMilli(),
+            )
         } else if (existing.remoteId == null) {
             // The row of a folder that was refused by name and lived only here until now; the upsert also clears its block.
             db.upsertEntry(
@@ -1920,6 +1939,8 @@ class MountEngine private constructor(
                     remoteModified = item.modified ?: Instant.now(),
                     lastErrorAt = null,
                     lastSynced = Instant.now(),
+                    changedBy = "local",
+                    changedAtMs = Instant.now().toEpochMilli(),
                 ),
             )
             if (landed != path) db.assignRemotePaths(path, landed)
@@ -2255,6 +2276,9 @@ class MountEngine private constructor(
             lastErrorAt = row.lastErrorAtAfterUpload(),
             cacheBacked = true,
             editBase = if (changedSince) (moved.version ?: moved.hash).orEmpty() else null,
+            // gkrost/unidrive-cli#849: the landed upload and the move by its id are both the engine's own change.
+            changedBy = "local",
+            changedAtMs = Instant.now().toEpochMilli(),
         )
         db.upsertEntry(withSentHash(adopted, cachePath, landed.sent))
         log.info("upload of {} landed at {} while a rename moved it; moved the item to {} by its id", newPath, landed.remotePath, newRemote)
@@ -2360,9 +2384,18 @@ class MountEngine private constructor(
         if (item.deleted) return ExistingFolder.Unknown
         if (!item.isFolder) return ExistingFolder.HeldByFile
         val existing = db.getEntry(path)
+        // gkrost/unidrive-cli#849: what the row takes here is a folder the cloud already held — a remote change the
+        // engine saw through this probe, not its own.
         if (existing == null) {
             val landed = if (item.nameOverridden) item.path else path
-            db.insertFolder(path = path, remoteId = item.id, mtime = item.modified ?: Instant.now(), remotePath = landed.takeIf { it != path })
+            db.insertFolder(
+                path = path,
+                remoteId = item.id,
+                mtime = item.modified ?: Instant.now(),
+                remotePath = landed.takeIf { it != path },
+                changedBy = "remote",
+                changedAtMs = Instant.now().toEpochMilli(),
+            )
         } else if (existing.remoteId == null) {
             // The row of a folder that lived only here (refused by name, or excluded) until the drive took the name:
             // the upsert also clears its block.
@@ -2374,6 +2407,8 @@ class MountEngine private constructor(
                     remoteModified = item.modified ?: Instant.now(),
                     lastErrorAt = null,
                     lastSynced = Instant.now(),
+                    changedBy = "remote",
+                    changedAtMs = Instant.now().toEpochMilli(),
                 ),
             )
             if (landed != path) db.assignRemotePaths(path, landed)

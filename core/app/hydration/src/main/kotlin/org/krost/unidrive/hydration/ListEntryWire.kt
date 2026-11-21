@@ -46,5 +46,9 @@ internal fun appendListEntry(
     if (e.blocked != null) sb.append(",\"blocked\":").append(ndjsonString(e.blocked))
     if (e.view != null) sb.append(",\"view\":").append(ndjsonString(e.view))
     if (e.viewTarget != null) sb.append(",\"view_target\":").append(ndjsonString(e.viewTarget))
+    // gkrost/unidrive-cli#849: who last changed the row and when the engine saw it, only where the row says (daemon.status
+    // capability `hydration.list_changed_by`). Absent together where the engine does not know — never a wrong value.
+    if (e.changedBy != null) sb.append(",\"changed_by\":").append(ndjsonString(e.changedBy))
+    if (e.changedAtMs != null) sb.append(",\"changed_at_ms\":").append(e.changedAtMs)
     sb.append('}')
 }

@@ -1512,7 +1512,12 @@ class RemoteGather(
             // A root's row never moves alone (see moveNamespaceRoots): before the upsert, whose row the rename's clean-up at
             // the destination would otherwise take.
             if (renamedFrom != null && PlacedNamespace.isRootId(item.id)) db.renamePrefix(renamedFrom, realLocalPath)
-            if (!mergeLeavesRowAsStored(existing, merged, renamedFrom)) db.upsertEntry(merged, keepMarks = true) // #745 finding 7
+            // gkrost/unidrive-cli#849: the merge IS the engine seeing a remote change (delta item or enumeration), so
+            // the row it writes says so and when. A re-delivery that leaves the row as it is stored writes nothing and
+            // keeps the stamp it already carries (mergeLeavesRowAsStored).
+            if (!mergeLeavesRowAsStored(existing, merged, renamedFrom)) {
+                db.upsertEntry(merged.copy(changedBy = "remote", changedAtMs = Instant.now().toEpochMilli()), keepMarks = true) // #745 finding 7
+            }
             if (existing != null && existing.downloadQuarantined && !merged.downloadQuarantined) {
                 // The delivery ended the quarantine (see deliveryEndsQuarantine): the SQL clear, as the
                 // canonical second writer beside the merged row's copy.

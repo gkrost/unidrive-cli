@@ -86,6 +86,14 @@ data class SyncEntry(
     // the row takes an item's version. Null = none known (every row from before the columns, until its item is delivered
     // or uploaded again). Read through [downloadHint], which an alive row only answers.
     val storedObject: StoredObject? = null,
+    // gkrost/unidrive-cli#849: who last changed the row — `remote` (a delivery: a delta item or an enumeration) or
+    // `local` (an upload the engine itself sent) — and with [changedAtMs] (epoch ms) when the engine saw that change.
+    // Written only by the writer that IS the change; every other writer carries both along through its copy(), so a
+    // row's stamp is the last real change's, not the last housekeeping write's. Null = unknown, which is every row
+    // from before the columns and every row whose change predates them: `hydration.list` sends neither field then,
+    // never a wrong one.
+    val changedBy: String? = null,
+    val changedAtMs: Long? = null,
 ) {
     /**
      * The stored object a download of this row may be seeded with ([org.krost.unidrive.CloudProvider.seedStoredObject]):
