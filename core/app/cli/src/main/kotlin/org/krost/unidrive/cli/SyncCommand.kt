@@ -24,6 +24,7 @@ import org.krost.unidrive.sync.ProfileMode
 import org.krost.unidrive.sync.ProgressReporter
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SubscriptionRenewalScheduler
+import org.krost.unidrive.sync.resetAllReporting
 import org.krost.unidrive.sync.SubscriptionStore
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.SyncDirection
@@ -444,8 +445,8 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
             db = StateDatabase(dbPath)
             db.initialize()
             if (reset) {
-                db.resetAll()
-                println(if (resetBackup != null) "Sync state cleared; the previous state.db is saved as $resetBackup." else "Sync state cleared.")
+                val removed = db.resetAllReporting().summary()
+                println(if (resetBackup != null) "Sync state cleared ($removed); the previous state.db is saved as $resetBackup." else "Sync state cleared ($removed).")
             }
         }
         shutdown.closing(SyncShutdown.Step.DATABASE) { db.close() }

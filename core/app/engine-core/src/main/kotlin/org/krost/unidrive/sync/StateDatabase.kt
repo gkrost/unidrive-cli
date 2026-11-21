@@ -65,6 +65,7 @@ class StateDatabase(
 ) {
     /** True when this database can be discarded without losing real state (in-memory shadow or snapshot copy). */
     val isDisposable: Boolean get() = inMemory || disposableFile != null
+    internal val isWritable: Boolean get() = !readOnly
 
     /** Path of the backing file (for a snapshot: the copy, not the source it was taken from). */
     val file: Path get() = dbPath
@@ -463,40 +464,30 @@ class StateDatabase(
      */
     fun compactOnce(usableSpace: (Path) -> Long = { Files.getFileStore(it).usableSpace }): Boolean =
         locked("compactOnce") {
-            if (readOnly || isDisposable || batchOwner != null) return@locked false
             if (getSyncState(COMPACTED_KEY) != null) return@locked false
-            val pages = pragma("page_count").toLong()
-            val free = pragma("freelist_count").toLong()
-            if (pages == 0L || free <= pages * COMPACT_FREE_SHARE) return@locked false
-            val wal = dbPath.resolveSibling("${dbPath.fileName}-wal")
-            val walBytes = if (Files.exists(wal)) Files.size(wal) else 0L
-            val logical = pages * pragma("page_size").toLong() + walBytes
-            if (usableSpace(dbPath.toAbsolutePath().parent) < 2 * logical) {
-                log.info("{} is {} % free pages, but the folder has too little space to rewrite it", dbPath, free * 100 / pages)
-                return@locked false
-            }
-            val started = System.nanoTime()
-            statements.clear()
-            try {
-                conn.createStatement().use { stmt ->
-                    stmt.execute("VACUUM")
-                    stmt.executeQuery("PRAGMA wal_checkpoint(TRUNCATE)").use { it.next() }
-                }
-            } catch (e: SQLException) {
-                log.warn("Rewriting {} failed ({}); it stays as it was", dbPath, e.message)
-                return@locked false
-            }
+            if (!rewriteIfFragmented(usableSpace, "once")) return@locked false
             setSyncState(COMPACTED_KEY, Instant.now().toString())
-            log.info(
-                "Rewrote {} once ({} of {} pages were free): {} MB now, in {} ms",
-                dbPath,
-                free,
-                pages,
-                Files.size(dbPath) / 1_048_576,
-                (System.nanoTime() - started) / 1_000_000,
-            )
             true
         }
+
+    /**
+     * [compactOnce] without its once-per-file rule, for callers that have just freed many rows (a reset, a purge of
+     * tombstones). Logged as "Rewrote ... [whenText]". Returns whether the file was rewritten.
+     */
+    internal fun rewriteIfFragmented(
+        usableSpace: (Path) -> Long = { Files.getFileStore(it).usableSpace },
+        whenText: String = "after a bulk removal",
+    ): Boolean =
+        locked("rewriteIfFragmented") {
+            if (readOnly || isDisposable || batchOwner != null) return@locked false
+            StateRewrite.rewrite(this, conn, { statements.clear() }, usableSpace, whenText)
+        }
+
+    /** Runs [body] on the writer connection inside one transaction, with the monitor held (the purge of tombstones, see TombstonePurge.kt). */
+    internal fun <T> withWriter(
+        method: String,
+        body: (Connection) -> T,
+    ): T = locked(method) { batch { body(conn) } }
 
     private var snapshotShutdownHook: Thread? = null
 
@@ -3803,9 +3794,6 @@ class StateDatabase(
 
         /** The sync_state key that records the one compaction of the file ([compactOnce]). */
         internal const val COMPACTED_KEY = "compacted_at"
-
-        /** [compactOnce] runs when more than this share of the file's pages are free. */
-        private const val COMPACT_FREE_SHARE = 0.25
 
         /** The SQLite files of a state.db besides the file itself: the WAL, its index, and a rollback journal. */
         fun sidecarNames(stateDbName: String = "state.db"): List<String> = listOf("$stateDbName-wal", "$stateDbName-shm", "$stateDbName-journal")
