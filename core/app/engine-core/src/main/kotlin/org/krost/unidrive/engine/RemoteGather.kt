@@ -139,7 +139,14 @@ class RemoteGather(
         if (page.items.none { it.backup }) return page
         val (backups, rest) = page.items.partition { it.backup }
         val ids = backups.map { it.id }
-        return page.copy(items = rest, unreachableIds = page.unreachableIds + ids, outsideRootIds = page.outsideRootIds + ids)
+        // The top-level folders: the devices, which have no parent (a page may carry an item without its device).
+        val tops = backups.filter { it.isFolder && it.parentId == null }.map { it.id }
+        return page.copy(
+            items = rest,
+            unreachableIds = page.unreachableIds + ids,
+            outsideRootIds = page.outsideRootIds + ids,
+            outsideRootFolders = page.outsideRootFolders + tops,
+        )
     }
 
     // The names of the top-level items state.db holds alive, except the roots of [except]: a collision with one of them is
