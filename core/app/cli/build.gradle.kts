@@ -20,7 +20,7 @@ buildscript {
         resolutionStrategy {
             activateDependencyLocking()
             force("org.apache.logging.log4j:log4j-core:2.26.1")
-            force("org.codehaus.plexus:plexus-utils:4.1.0")
+            force("org.codehaus.plexus:plexus-utils:4.2.0")
             force("com.fasterxml.jackson.core:jackson-core:2.23.0")
             force("com.fasterxml.jackson.core:jackson-databind:2.23.0")
             force("com.fasterxml.jackson.core:jackson-annotations:2.23")   // the annotations line has no patch releases
