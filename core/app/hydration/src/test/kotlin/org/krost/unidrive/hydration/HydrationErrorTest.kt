@@ -66,6 +66,16 @@ class HydrationErrorTest {
         assertEquals("unsupported_object: this client cannot read it", HydrationError.UnsupportedObject("").message)
     }
 
+    // gkrost/unidrive-cli#40: a listed row the read cannot resolve: the token, then a short reason without a file name.
+    @Test
+    fun `unresolvable row carries the stable token with the reason`() {
+        assertEquals(
+            "unresolvable_row: a folder is at the path",
+            HydrationError.UnresolvableRow(UnresolvableRowException.FOLDER).message,
+        )
+        assertEquals("unresolvable_row", HydrationError.UNRESOLVABLE_ROW_TOKEN)
+    }
+
     // The tokens of the failed-download causes are all different (a client keys its column text on them).
     @Test
     fun `the download failure causes have distinct tokens`() {
@@ -76,6 +86,7 @@ class HydrationErrorTest {
                 HydrationError.RemoteObjectMissing.message.substringBefore(":"),
                 HydrationError.ContentRefused("x").message.substringBefore(":"),
                 HydrationError.UnsupportedObject("x").message.substringBefore(":"),
+                HydrationError.UnresolvableRow("x").message.substringBefore(":"),
             )
         assertEquals(tokens.size, tokens.toSet().size, "tokens: $tokens")
     }
@@ -95,6 +106,7 @@ class HydrationErrorTest {
             HydrationError.RemoteObjectMissing -> "remote_object_missing"
             is HydrationError.ContentRefused -> "content_refused"
             is HydrationError.UnsupportedObject -> "unsupported_object"
+            is HydrationError.UnresolvableRow -> "unresolvable_row"
             HydrationError.InvalidPath -> "invalid_path"
             is HydrationError.NameRefused -> "name_refused"
             is HydrationError.BlockedByParent -> "blocked_by_parent"

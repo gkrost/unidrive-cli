@@ -1641,6 +1641,7 @@ class IpcContractCorpusTest {
         // The four causes of a failed cloud download (archive#941), one token each; the reasons are the daemon's own wording.
         private fun downloadFailureFor(path: String): HydrationError? = when {
             path.startsWith("/gone") -> HydrationError.NotFound
+            path.startsWith("/stale") -> HydrationError.UnresolvableRow("the cloud shows the same id at the path")
             path.startsWith("/refused") -> HydrationError.ContentRefused("RIPEMD-160(SHA-256) mismatch")
             path.startsWith("/unsupported") ->
                 HydrationError.UnsupportedObject("it is stored in several parts, which this client cannot read")

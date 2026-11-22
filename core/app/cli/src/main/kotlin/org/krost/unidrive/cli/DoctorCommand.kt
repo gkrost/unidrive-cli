@@ -22,6 +22,7 @@ import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.SyncEngine
 import org.krost.unidrive.sync.UploadRefusals
 import org.krost.unidrive.sync.hydratedFiles
+import org.krost.unidrive.sync.downloadQuarantinedPaths
 import org.krost.unidrive.sync.writeUploadFailedPaths
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
@@ -184,6 +185,7 @@ class DoctorCommand : Runnable {
                         results += checkEffectiveScope(db)
                         results += checkQuotaFreshness(db, now)
                         results += checkWriteUploadFailures(db, mode, full)
+                        results += checkUnresolvableRows(db, mode, full)
                     }
                 if (outcome.isFailure) {
                     // A read-only open does not run the additive migrations createTables() applies on a
@@ -562,6 +564,40 @@ class DoctorCommand : Runnable {
                 )
         }
         return results
+    }
+
+    /**
+     * **Check — Rows listed but not resolvable (gkrost/unidrive-cli#40).** Alive rows whose download by the remote id they
+     * keep answered "gone" and that nothing healed since: the mount's read tries the file at the row's path first and marks
+     * the row only when that cannot stand in (nothing there, the same id, a folder, another row's id, a lookup the provider
+     * would not answer); the mirror marks a row on a stable 404. The state view and the cloud disagree about these files,
+     * so a client lists them and cannot read them. A refresh that delivers the item at the path adopts its current id and
+     * ends the mark, and so does a read that comes through. WARN with the paths (sampled like the other path lists, all
+     * of them under [full]); OK when there are none. Read-only.
+     */
+    internal fun checkUnresolvableRows(
+        db: StateDatabase,
+        mode: ProfileMode? = null,
+        full: Boolean = false,
+    ): CheckResult {
+        val name = "unresolvable-rows"
+        val rows = db.downloadQuarantinedPaths(Int.MAX_VALUE)
+        if (rows.isEmpty()) return CheckResult(name, Severity.OK, "every listed file resolved when it was last read", emptyList())
+        val advice =
+            if (mode == ProfileMode.MOUNT) {
+                "run `unidrive refresh`; the daemon log names each with its reason (#40)"
+            } else {
+                "re-run sync; a delivery of the item ends the mark"
+            }
+        val pointer = if (!full && rows.size > SAMPLE_DETAIL) "; `unidrive doctor --full --verbose` lists every path" else ""
+        val lines = rows.map { (path, at) -> "  $path${at?.let { " — since $it" } ?: ""}" }
+        return CheckResult(
+            name,
+            Severity.WARN,
+            "${rows.size} listed file(s) whose cloud copy does not resolve by the id the state keeps ($advice)$pointer",
+            listOf(if (full) "all unresolvable rows:" else "sample unresolvable rows:") +
+                if (full || lines.size <= SAMPLE_DETAIL) lines else lines.take(SAMPLE_DETAIL),
+        )
     }
 
     /**
