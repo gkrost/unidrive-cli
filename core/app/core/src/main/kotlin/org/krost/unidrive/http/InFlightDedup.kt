@@ -3,10 +3,13 @@ package org.krost.unidrive.http
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withTimeout
+import java.net.SocketTimeoutException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
 
@@ -40,6 +43,10 @@ import java.util.concurrent.atomic.AtomicReference
  *    caller cancels the load. A caller that joined it and is itself still
  *    active does not fail with that cancellation: it takes the key again and
  *    runs (or joins) a fresh load. Cancelling a joiner never touches the load.
+ *  - **Joiner patience** (gkrost/unidrive-cli#74). A caller that joined another caller's load waits at most
+ *    [joinPatienceMs] for it; on timeout it fails with a [SocketTimeoutException] while the shared load itself keeps
+ *    running for its other waiters. The winner's own wait is bounded by its loader's request timeouts and retry
+ *    ladders, not by this patience.
  *  - **Key design.** Callers must construct stable, collision-free keys.
  *    Recommended pattern: `"<provider>:<operation>:<argument>"`, e.g.
  *    `"internxt:listChildren:/Documents"` or
@@ -65,7 +72,14 @@ import java.util.concurrent.atomic.AtomicReference
  *     folderContentsDedup.load(uuid) { fetchFolderContentsFromServer(uuid) }
  * ```
  */
-class InFlightDedup<K : Any, V> {
+class InFlightDedup<K : Any, V>(
+    private val joinPatienceMs: Long = DEFAULT_JOIN_PATIENCE_MS,
+) {
+    companion object {
+        /** Generous on purpose: a winner's paged listing may legitimately run long; this only frees joiners from a hang. */
+        const val DEFAULT_JOIN_PATIENCE_MS: Long = 300_000L
+    }
+
     private object SharedLoadCancelled
 
     private data class Entry<V>(
@@ -154,6 +168,10 @@ class InFlightDedup<K : Any, V> {
                 return@coroutineScope join(key, winner)
             }
             try {
+                // Not bounded by the joiner's patience: this await is the winner's own load, whose duration its
+                // request timeouts and retry ladders bound. A timeout here would fail this coroutineScope and so
+                // cancel the shared load (a failing scope cancels its children), failing every joiner that still
+                // waits for it — exactly what the patience exists to avoid (gkrost/unidrive-cli#74).
                 winner.deferred.await()
             } finally {
                 // remove(key, value) is the conditional form: only removes
@@ -166,12 +184,27 @@ class InFlightDedup<K : Any, V> {
 
     // Awaits the load another caller started. That load is a child of the starter's scope, so it is cancelled when the
     // starter is, with a CancellationException that is not ours.
+    //
+    // gkrost/unidrive-cli#74: the joiner's wait is bounded by [joinPatienceMs]. Before, a joiner waited as long as
+    // the winner's load did, and a winner parked without a timeout of its own (a permit wait, a ladder of listing
+    // timeouts) held the joiner with it. On timeout the joiner fails with a [SocketTimeoutException] — the typed timeout
+    // callers already handle like a request one, and a real failure rather than a cancellation or a null for a [V]
+    // that is nullable on purpose — while the shared load keeps running for its other waiters: the entry is not
+    // removed (the winner's own finally does that) and the deferred is not cancelled.
     private suspend fun join(
         key: K,
         entry: Entry<V>,
     ): Any? =
         try {
-            entry.deferred.await()
+            withTimeout(joinPatienceMs) { entry.deferred.await() }
+        } catch (e: TimeoutCancellationException) {
+            // Our patience, not an outer cancellation: withTimeout's own timeout leaves this coroutine active,
+            // an outer withTimeout or job cancellation does not.
+            currentCoroutineContext().ensureActive()
+            throw SocketTimeoutException(
+                "the in-flight load this caller joined did not complete in $joinPatienceMs ms; " +
+                    "the joiner gave up, the shared load keeps running (gkrost/unidrive-cli#74)",
+            )
         } catch (_: CancellationException) {
             // Our own cancellation propagates; the starter's does not.
             currentCoroutineContext().ensureActive()

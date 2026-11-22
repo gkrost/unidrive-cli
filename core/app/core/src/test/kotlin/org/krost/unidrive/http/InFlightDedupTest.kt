@@ -64,7 +64,8 @@ class InFlightDedupTest {
             //    counter once;
             //  - the 99 losers are parked on `winner.await()` inside
             //    InFlightDedup.load.
-            testScheduler.advanceUntilIdle()
+            // runCurrent, not advanceUntilIdle: the latter skips virtual time and would run out the joiners' patience.
+            testScheduler.runCurrent()
             assertEquals(
                 1,
                 loaderInvocations.get(),
@@ -105,7 +106,7 @@ class InFlightDedupTest {
                 }
 
             // All 10 callers parked: 1 on gate.await(), 9 on winner.await().
-            testScheduler.advanceUntilIdle()
+            testScheduler.runCurrent()
             assertEquals(1, loaderInvocations.get(), "exactly one caller entered the loader pre-gate")
 
             gate.complete(Unit)
@@ -270,5 +271,64 @@ class InFlightDedupTest {
             assertEquals(2, result, "the joiner runs its own load once the shared one was cancelled")
             assertEquals(2, loaderInvocations.get())
             assertEquals(0, dedup.inFlightCount())
+        }
+
+    // gkrost/unidrive-cli#74: three invariants of the joiner's bounded wait.
+
+    @Test
+    fun `joiner whose leader hangs gives up after the patience with a retryable timeout`() =
+        runTest {
+            val dedup = InFlightDedup<String, Int>(joinPatienceMs = 1_000L)
+            val never = CompletableDeferred<Int>()
+            val leader = async { dedup.load("k") { never.await() } }
+            testScheduler.runCurrent()
+            val joiner = async { runCatching { dedup.load("k") { 0 } } }
+            testScheduler.advanceTimeBy(999L)
+            testScheduler.runCurrent()
+            assertTrue(!joiner.isCompleted, "still waiting before the patience elapses")
+            testScheduler.advanceTimeBy(2L)
+            testScheduler.runCurrent()
+            val failure = joiner.await().exceptionOrNull()
+            assertTrue(failure is java.net.SocketTimeoutException, "typed timeout, was $failure")
+            assertTrue(HttpRetryBudget.isRetriableIoException(failure as java.io.IOException), "classified retryable")
+            never.complete(7)
+            assertEquals(7, leader.await())
+        }
+
+    @Test
+    fun `joiner timing out does not cancel the leader for other joiners`() =
+        runTest {
+            val dedup = InFlightDedup<String, Int>(joinPatienceMs = 1_000L)
+            val gate = CompletableDeferred<Int>()
+            val leader = async { dedup.load("k") { gate.await() } }
+            testScheduler.runCurrent()
+            val impatient = async { runCatching { dedup.load("k") { 0 } } }
+            testScheduler.runCurrent()
+            testScheduler.advanceTimeBy(1_001L)
+            testScheduler.runCurrent()
+            assertTrue(impatient.await().isFailure)
+            // A joiner arriving later is still attached to the same, live load.
+            val late = async { dedup.load("k") { error("must join, not start") } }
+            testScheduler.runCurrent()
+            assertEquals(1, dedup.inFlightCount(), "entry survives the joiner's timeout")
+            gate.complete(42)
+            assertEquals(42, leader.await())
+            assertEquals(42, late.await())
+            assertEquals(0, dedup.inFlightCount())
+        }
+
+    @Test
+    fun `joiner of a leader that completes in time gets the value unchanged`() =
+        runTest {
+            val dedup = InFlightDedup<String, Int>(joinPatienceMs = 1_000L)
+            val gate = CompletableDeferred<Int>()
+            val leader = async { dedup.load("k") { gate.await() } }
+            testScheduler.runCurrent()
+            val joiner = async { dedup.load("k") { 0 } }
+            testScheduler.runCurrent()
+            testScheduler.advanceTimeBy(500L)
+            gate.complete(5)
+            assertEquals(5, leader.await())
+            assertEquals(5, joiner.await())
         }
 }
