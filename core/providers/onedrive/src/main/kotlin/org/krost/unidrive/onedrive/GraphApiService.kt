@@ -79,6 +79,7 @@ class GraphApiService(
 
     private val json = org.krost.unidrive.UnidriveJson
     private val sessionStore = UploadSessionStore(config.tokenPath)
+    internal val uploadReservations = UploadReservationStore(config.tokenPath)
 
     private val deltaSafetyFile: Path get() = config.tokenPath.resolve("delta_last_seen")
     private val cursorAgeWarned = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -1059,6 +1060,7 @@ class GraphApiService(
         }
         // Graph removes a completed session itself: only the record goes.
         sessionStore.delete(remotePath)
+        uploadReservations.release(remotePath)
         downloadUrls.invalidate(itemId ?: uploadedItem.id)
         return uploadedItem
     }
@@ -1348,6 +1350,7 @@ class GraphApiService(
         // The store keeps one session per path: the one this replaces would be lost to the store, so it is cancelled.
         sessionStore.getSession(remotePath)?.uploadUrl?.takeIf { it != url }?.let { cancelUploadSession(remotePath, it) }
         sessionStore.put(remotePath, url, expiresAt, fileSize, localMtimeMillis, ifMatchETag, conflictBehavior)
+        if (conflictBehavior == "fail" && itemId == null) recordReservedItem(remotePath)
         log.info("Upload session created: {} ({} bytes, conflictBehavior={})", remotePath, fileSize, conflictBehavior)
         return url to 0L
     }

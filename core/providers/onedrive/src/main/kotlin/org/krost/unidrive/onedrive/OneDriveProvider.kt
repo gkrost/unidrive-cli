@@ -569,11 +569,10 @@ class OneDriveProvider(
         return existing.toCloudItem()
     }
 
-    // A chunked create collided with an empty file at its name. An upload that was cut short can leave exactly that
-    // (the item an earlier session of the same upload reserved), and a chunked upload only exists for files that are
-    // not empty, so the empty item holds no bytes a replace could destroy. The upload completes into it under its
-    // eTag: a change since the lookup is a 412 and falls back to keeping both. Null when the colliding item is not
-    // such an empty file, or when completing into it was refused.
+    // A chunked create collided with an empty file at its name. An upload that was cut short can leave exactly that:
+    // the item an earlier session of this profile reserved (#69: OneDrive creates it with the session). Only that item,
+    // known by the id recorded with the session and still empty, is completed into, under its eTag (a change since the
+    // lookup is a 412 and keeps both); someone else's empty file at the name is never overwritten. Null otherwise.
     private suspend fun completeIntoEmptyItem(
         remotePath: String,
         fileSize: Long,
@@ -592,9 +591,9 @@ class OneDriveProvider(
             }
         val eTag = existing.eTag
         val emptyFile = !existing.isFolder && existing.file != null && existing.size == 0L
-        if (!emptyFile || eTag == null) return null
+        if (!emptyFile || eTag == null || !graphApi.uploadReservations.holds(remotePath, existing.id)) return null
         log.info(
-            "Create-collision on '{}': the item at this path is empty, the shape an earlier session of this upload leaves; " +
+            "Create-collision on '{}': the item at this path is the empty item an earlier upload session of this profile reserved; " +
                 "completing the upload into it instead of keeping a second copy.",
             remotePath,
         )
