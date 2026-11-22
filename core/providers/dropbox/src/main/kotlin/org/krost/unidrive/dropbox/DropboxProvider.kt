@@ -39,6 +39,7 @@ import org.krost.unidrive.PermanentUploadFailureException
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.QuotaInfo
 import org.krost.unidrive.RemoteConflictException
+import org.krost.unidrive.RemoteItemNotFoundException
 import org.krost.unidrive.ScanContext
 import org.krost.unidrive.ShareInfo
 import org.krost.unidrive.TokenRevocation
@@ -224,7 +225,7 @@ class DropboxProvider(
         } catch (e: DropboxApiException) {
             // Dropbox answers a missing path with HTTP 409 `path/not_found`, which no caller reads as absence. The typed
             // not-found message and a 404 are what the engine's one rule (RemoteErrors.isNotFound) recognises.
-            if (e.isA("path/not_found")) throw ProviderException("Item not found: $path", cause = e, requestId = e.requestId, httpStatus = HTTP_NOT_FOUND)
+            if (e.isA("path/not_found")) throw RemoteItemNotFoundException("Item not found: $path", e, e.requestId)
             throw e
         }
     }
@@ -581,9 +582,18 @@ class DropboxProvider(
         from: String,
         to: String,
     ): CloudItem =
-        items.toCloudItem(
-            api.rpc("files/move_v2", obj("from_path" to from, "to_path" to to, "autorename" to false))["metadata"]!!.jsonObject,
-        )
+        try {
+            items.toCloudItem(
+                api.rpc("files/move_v2", obj("from_path" to from, "to_path" to to, "autorename" to false))["metadata"]!!.jsonObject,
+            )
+        } catch (e: DropboxApiException) {
+            // move_v2 answers 409 with a typed reason: the source is gone, or the target name is taken.
+            throw when {
+                e.isA("from_lookup/not_found") -> RemoteItemNotFoundException("Item not found: $from", e, e.requestId)
+                e.isA("to/conflict") -> RemoteConflictException("'$to' already exists on Dropbox", e, e.requestId)
+                else -> e
+            }
+        }
 
     override suspend fun delta(
         cursor: String?,
@@ -783,7 +793,6 @@ class DropboxProvider(
     }
 
     companion object {
-        private const val HTTP_NOT_FOUND = 404
         private const val LIST_LIMIT = 2000
         private const val FULL_LISTING_PREFIX = "full:"
 
