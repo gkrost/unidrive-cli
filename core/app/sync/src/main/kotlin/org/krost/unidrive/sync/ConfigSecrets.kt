@@ -56,11 +56,20 @@ object ConfigSecrets {
         configPath: Path,
         protector: CredentialProtector? = CredentialProtectors.atRestDefaultOrNull(),
     ): RawProvider? {
-        if (rp == null || protector == null) return rp
+        if (rp == null) return rp
         val id = identity(configPath)
+
+        fun foreign(field: String): Nothing =
+            throw CredentialProtectionException(
+                "the $field of profile '$profileName' in config.toml was protected on another computer and " +
+                    "cannot be decrypted here; it is not treated as plaintext or as a missing credential — " +
+                    "re-enter it on this computer",
+            )
 
         fun one(value: String?, field: String): String? {
             if (value.isNullOrEmpty()) return value
+            val knownReference = CredentialProtectors.REFERENCE_PREFIXES.any { value.startsWith(it) }
+            if (protector == null) return if (knownReference) foreign(field) else value
             val data =
                 try {
                     protector.decode(id, value)
@@ -71,7 +80,9 @@ object ConfigSecrets {
                         e,
                     )
                 }
-            return if (data.protected) data.plaintext else value
+            if (data.protected) return data.plaintext
+            if (knownReference) foreign(field)
+            return value
         }
 
         return rp.copy(
