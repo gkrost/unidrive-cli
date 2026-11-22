@@ -313,8 +313,9 @@ open class SyncEngine(
                 org.krost.unidrive.sync.ignore.CacheIgnoreSource(
                     hydrationCacheRoot(cacheRoot ?: defaultHydrationCacheRoot(), cacheKey),
                     inCloud = { path -> db.getEntry(path)?.let { !it.isFolder && it.remoteId != null } == true },
-                    // gkrost/unidrive-cli#775: a never-uploaded row that says its bytes are here, while the cache has no copy.
+                    // gkrost/unidrive-cli#775: a never-uploaded row that says its bytes are here; its rule file is kept outside the cache.
                     lost = { path -> db.getEntry(path)?.let { !it.isFolder && it.remoteId == null && it.isHydrated } == true },
+                    kept = org.krost.unidrive.sync.ignore.LocalRuleFiles.under(ignoreRuleFilesRoot(cacheRoot ?: defaultHydrationCacheRoot(), cacheKey), db, settings.maxRuleFileBytes),
                     fetched =
                         org.krost.unidrive.sync.ignore.CloudRuleFiles(
                             dir = ignoreRuleFilesRoot(cacheRoot ?: defaultHydrationCacheRoot(), cacheKey),
