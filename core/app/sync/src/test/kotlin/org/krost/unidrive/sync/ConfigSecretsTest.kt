@@ -92,6 +92,44 @@ class ConfigSecretsTest {
 
     // ── decode ───────────────────────────────────────────────────────────────
 
+    private fun rawWith(secret: String) =
+        RawProvider(type = "s3", access_key_id = "plain-key-id", secret_access_key = secret)
+
+    private fun assertForeignFailsClosed(reference: String, protector: CredentialProtector?) {
+        val e =
+            assertFailsWith<CredentialProtectionException> {
+                ConfigSecrets.decode(rawWith(reference), "bench", configPath, protector)
+            }
+        assertContains(e.message!!, "bench")
+        assertContains(e.message!!, "secret_access_key")
+        assertContains(e.message!!, "another computer")
+        assertContains(e.message!!, "re-enter")
+        assertFalse(e.message!!.contains(reference), "the error must never contain the value")
+        assertFalse(e.message!!.contains("AAAA"), "the error must never contain the value")
+    }
+
+    @Test
+    fun `a DPAPI reference on a host without a protector fails closed`() =
+        assertForeignFailsClosed("unidrive-dpapi-v1:AAAAsecretblob", null)
+
+    @Test
+    fun `a Keychain reference on a host without a protector fails closed`() =
+        assertForeignFailsClosed("unidrive-keychain-v1:AAAArev", null)
+
+    @Test
+    fun `a Secret Service reference on a host without a protector fails closed`() =
+        assertForeignFailsClosed("unidrive-secret-service-v1:AAAArev", null)
+
+    @Test
+    fun `another platform's reference on a host with a protector that does not recognize it fails closed`() =
+        assertForeignFailsClosed("unidrive-dpapi-v1:AAAAsecretblob", FakeProtector())
+
+    @Test
+    fun `plain values pass through decode on a host without a protector`() {
+        val rp = rawWith("plain-secret")
+        assertEquals(rp, ConfigSecrets.decode(rp, "bench", configPath, null))
+    }
+
     @Test
     fun `legacy plaintext values pass through decode unchanged`() {
         val rp = SyncConfig.parseRaw(plaintextConfig).providers.getValue("bench")!!

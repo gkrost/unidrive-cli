@@ -63,7 +63,7 @@ class MacKeychainCredentialProtector : CredentialProtector {
     private fun keyFor(id: String): String =
         HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(id.toByteArray(StandardCharsets.UTF_8)))
 
-    private companion object {
+    companion object {
         const val STORED_PREFIX = "unidrive-keychain-v1:"
     }
 }
@@ -308,7 +308,7 @@ private class MacKeychain {
         }
     }
 
-    private companion object {
+    companion object {
         const val SERVICE = "org.krost.unidrive.provider-credentials"
         const val UTF8_ENCODING = 0x08000100
         const val ERR_SEC_SUCCESS = 0

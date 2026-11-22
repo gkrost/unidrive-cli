@@ -150,7 +150,7 @@ class WindowsDpapiCredentialProtector : CredentialProtector {
 
     private fun entropy(id: String): ByteArray = MessageDigest.getInstance("SHA-256").digest(id.toByteArray(StandardCharsets.UTF_8))
 
-    private companion object {
+    companion object {
         const val PREFIX = "unidrive-dpapi-v1:"
         const val UI_FORBIDDEN = 0x1
         val JAVA_INT = ValueLayout.JAVA_INT
