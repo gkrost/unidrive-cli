@@ -26,6 +26,18 @@ class RemoteErrorsTest {
     }
 
     @Test
+    fun `a typed RemoteItemNotFoundException is absence whatever its message says`() {
+        assertTrue(RemoteErrors.isNotFound(org.krost.unidrive.RemoteItemNotFoundException("the thing vanished")))
+        assertTrue(RemoteErrors.isAlreadyGone(org.krost.unidrive.RemoteItemNotFoundException("reworded")))
+    }
+
+    @Test
+    fun `a provider exception that merely contains not found is not absence`() {
+        assertFalse(RemoteErrors.isNotFound(ProviderException("upstream said: item not found, try later")))
+        assertFalse(RemoteErrors.isNotFound(ProviderException("Bucket entry not found", httpStatus = 500)))
+    }
+
+    @Test
     fun `an HTTP 404 on a provider exception is absence, whatever the provider calls the field`() {
         // S3Exception, GraphApiException, InternxtApiException and DropboxApiException all pass their status as httpStatus.
         assertTrue(RemoteErrors.isNotFound(ProviderException("S3 has nothing at /k", httpStatus = 404)))

@@ -26,7 +26,7 @@ class DropboxNotFoundSignalTest {
         runTest {
             fake.on("files/get_metadata") { Answer(409, """{"error_summary":"path/not_found/..","error":{".tag":"path","path":{".tag":"not_found"}}}""") }
 
-            val failure = assertFailsWith<ProviderException> { provider.getMetadata("/missing.txt") }
+            val failure = assertFailsWith<org.krost.unidrive.RemoteItemNotFoundException> { provider.getMetadata("/missing.txt") }
 
             assertTrue(failure.message.orEmpty().startsWith("Item not found: "), failure.message)
             assertEquals(404, failure.httpStatus)
@@ -49,5 +49,33 @@ class DropboxNotFoundSignalTest {
             fake.json("files/get_metadata", file("/a.txt", "id:1"))
 
             assertTrue(provider.getMetadata("/a.txt").path.endsWith("a.txt"))
+        }
+
+    @Test
+    fun `a move whose source is gone is the typed not-found`() =
+        runTest {
+            fake.on("files/move_v2") { Answer(409, """{"error_summary":"from_lookup/not_found/..","error":{".tag":"from_lookup","from_lookup":{".tag":"not_found"}}}""") }
+
+            val failure = assertFailsWith<org.krost.unidrive.RemoteItemNotFoundException> { provider.move("/a.txt", "/b.txt") }
+
+            assertTrue(failure.cause is DropboxApiException, "the Dropbox answer stays the cause")
+        }
+
+    @Test
+    fun `a move onto a taken name is a remote conflict`() =
+        runTest {
+            fake.on("files/move_v2") { Answer(409, """{"error_summary":"to/conflict/file/..","error":{".tag":"to","to":{".tag":"conflict"}}}""") }
+
+            val failure = assertFailsWith<org.krost.unidrive.RemoteConflictException> { provider.move("/a.txt", "/b.txt") }
+
+            assertTrue(failure.cause is DropboxApiException)
+        }
+
+    @Test
+    fun `another move refusal is passed through as it came`() =
+        runTest {
+            fake.on("files/move_v2") { Answer(409, """{"error_summary":"to/malformed_path/..","error":{".tag":"to","to":{".tag":"malformed_path"}}}""") }
+
+            assertEquals(409, assertFailsWith<DropboxApiException> { provider.move("/a.txt", "/b.txt") }.status)
         }
 }
