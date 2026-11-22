@@ -11,7 +11,8 @@
 #   scripts/dev/log-watch.sh --json       # machine-readable summary (skill / CI)
 #
 # `--summary` and `--anomalies` and `--json` work across all rolled
-# files for today (`unidrive.log` + `unidrive.YYYY-MM-DD.N.log`); the
+# files for today (`unidrive.YYYY-MM-DD.log`, `unidrive-<profile>.log` and
+# its rolled `unidrive-<profile>.YYYY-MM-DD.N.log`, gkrost/unidrive-cli#897); the
 # legacy live-tail (`follow`) and `--last` only operate on the live tail.
 #
 # Override the live-log path with UNIDRIVE_LOG, the rolled-log glob with
@@ -42,6 +43,12 @@ default_log_path() {
   esac
 }
 LOG="${UNIDRIVE_LOG:-$(default_log_path)}"
+# gkrost/unidrive-cli#897: the shared log is dated (unidrive.YYYY-MM-DD.log) and each long-running
+# profile writes unidrive-<profile>.log; with no unidrive.log, follow the most recently written one.
+if [[ -z "${UNIDRIVE_LOG:-}" && ! -f "$LOG" ]]; then
+  newest="$(ls -t "$(dirname "$LOG")"/unidrive*.log 2>/dev/null | head -n1 || true)"
+  [[ -n "$newest" ]] && LOG="$newest"
+fi
 # UD-282-style log analysis (proposal 2026-04-29): glob today's rolled
 # set so summary/anomalies don't miss WARNs that already rolled out of
 # the live tail. The glob deliberately matches `unidrive.log` plus any

@@ -50,7 +50,7 @@ class LogFileCharsetTest {
             context.getLogger("org.krost.unidrive.test").warn("upload failed for /_INBOX/{}.txt", unicode)
             context.stop()
 
-            assertUtf8Line(dir.resolve("unidrive.log"))
+            assertUtf8Line(sharedLog(dir))
         } finally {
             dir.toFile().deleteRecursively()
         }
@@ -75,6 +75,9 @@ class LogFileCharsetTest {
             dir.toFile().deleteRecursively()
         }
     }
+
+    /** The shared log of the day (prudent mode: unidrive.<yyyy-MM-dd>.log, gkrost/unidrive-cli#897). */
+    private fun sharedLog(dir: Path): Path = Files.list(dir).use { s -> s.toList().single { it.fileName.toString().startsWith("unidrive.") } }
 
     private fun assertUtf8Line(file: Path) {
         val bytes = Files.readAllBytes(file)

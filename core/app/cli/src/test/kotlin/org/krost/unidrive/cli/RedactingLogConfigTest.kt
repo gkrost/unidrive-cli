@@ -42,7 +42,7 @@ class RedactingLogConfigTest {
             context.stop()
 
             val status = context.statusManager.copyOfStatusList.joinToString(System.lineSeparator()) { it.toString() }
-            val text = Files.readString(dir.resolve("unidrive.log"))
+            val text = Files.readString(Files.list(dir).use { s -> s.toList().single { it.fileName.toString().startsWith("unidrive.") } })
             val shown = "log:${System.lineSeparator()}$text${System.lineSeparator()}status:${System.lineSeparator()}$status"
             assertFalse("SECRET" in text, shown)
             assertTrue("download failed: Request timeout has expired [url=https://x/y?<redacted>, request_timeout=600000 ms]" in text, shown)

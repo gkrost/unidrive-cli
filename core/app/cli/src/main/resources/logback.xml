@@ -34,14 +34,20 @@
         </encoder>
     </appender>
 
+    <!-- gkrost/unidrive-cli#897: this file is shared by every unidrive process that does not own a log of its
+         own (one-shot commands, and the first lines of every start). A RollingFileAppender is not multi-process
+         safe, so the shared file is the one setup that is: prudent mode (file locking on every write) with a
+         time-based policy, the only rolling prudent mode supports. A day's file is
+         unidrive.<yyyy-MM-dd>.log. A long-running process (daemon run, sync)
+         leaves this file for unidrive-<profile>.log once its profile is known: see LogOwnership. -->
     <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
-        <file>${LOG_DIR}/unidrive.log</file>
+        <!-- No <file>: in prudent mode the live file IS the dated one, unidrive.<yyyy-MM-dd>.log. -->
+        <prudent>true</prudent>
         <!-- UD-251: no ThresholdFilter here. `org.krost.unidrive` logger is set
              to DEBUG below so scan-progress and similar DEBUG events still
              reach disk; a threshold of INFO would silently drop them. -->
-        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
-            <fileNamePattern>${LOG_DIR}/unidrive.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
-            <maxFileSize>10MB</maxFileSize>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/unidrive.%d{yyyy-MM-dd}.log</fileNamePattern>
             <maxHistory>5</maxHistory>
             <totalSizeCap>50MB</totalSizeCap>
         </rollingPolicy>

@@ -343,7 +343,7 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
             staleMounts.forEach { System.err.println("  fusermount3 -u $it") }
         }
 
-        val profile = parent.resolveCurrentProfile()
+        val profile = parent.resolveCurrentProfile().also { if (watch) LogOwnership.claim(it.name) } // #897: a watch owns its log
         // Owner-only credentials and profile folder before the provider reads them (StoragePermissions);
         // a dry run skips it (see restrictProfileForSync).
         restrictProfileForSync(dryRun, parent.providerConfigDir())
