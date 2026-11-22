@@ -129,6 +129,11 @@ Daemon log: `~/.local/share/unidrive/unidrive.log`. Quick triage: `scripts/dev/l
 - `mount` — start the Linux FUSE co-daemon for a profile ([`unidrive-mount-linux`](https://github.com/gkrost/unidrive-mount-linux)); needs a running `daemon run`
 - `migrate` — one-time conversion of a legacy profile to a fixed mirror or mount mode ([independent-profiles](docs/adr/independent-profiles.md)): `inventory` (read-only dry run), `convert --mode mount|mirror`, and `upload-quarantined` for the files a mount conversion set aside
 
+If OneDrive Personal refused large uploads with “Invalid request” before the engine was updated, an unchanged file
+can still be deferred on restart for up to six hours. After updating, use the mount client's upload-queue retry to
+resubmit the cached file without changing it. A new client `hydration.open_write` submission clears the old refusal
+for that file. The transfer-history retry keeps the refusal in force until it expires.
+
 ### Storage
 - `ls` — list a remote folder (no recursion; `--live` forces a provider query)
 - `get` — download file content (hydrate)
