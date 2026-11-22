@@ -152,6 +152,7 @@ class DaemonRunCommand : Runnable {
         val parent = daemonCmd.parent
         applyPositionalProfile(parent, profilePositional)
         val profile = parent.resolveCurrentProfile()
+        LogOwnership.claim(profile.name)
         // archive#603 (U4): the hosting contract. The daemon serves both modes, but a profile without a mode is
         // refused before any provider write, token rotation or mutable startup recovery.
         val mode = parent.requireAnyProfileMode(profile, "daemon run")

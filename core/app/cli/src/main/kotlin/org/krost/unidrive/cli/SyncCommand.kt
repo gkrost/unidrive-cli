@@ -344,6 +344,8 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
         }
 
         val profile = parent.resolveCurrentProfile()
+        // gkrost/unidrive-cli#897: a watch runs for days; it writes its own rolling log, never the shared one.
+        if (watch) LogOwnership.claim(profile.name)
         // Owner-only credentials and profile folder before the provider reads them (StoragePermissions);
         // a dry run skips it (see restrictProfileForSync).
         restrictProfileForSync(dryRun, parent.providerConfigDir())

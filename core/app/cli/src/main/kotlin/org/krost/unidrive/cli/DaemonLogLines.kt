@@ -9,7 +9,7 @@ import kotlinx.coroutines.slf4j.MDCContext
 
 /**
  * The log context of everything a daemon runs: the `profile` and `build` MDC keys the log pattern prints, kept across
- * suspensions and thread hops by [MDCContext]. Two daemons write one unidrive.log; a line without them reads `[*]` and
+ * suspensions and thread hops by [MDCContext]. Two daemons write two logs, unidrive-<profile>.log, and a line without them can still reach the shared one; a line without them reads `[*]` and
  * cannot be told apart (gkrost/unidrive-cli#225). A child coroutine inherits it; a thread the daemon's code starts
  * itself carries it with [org.krost.unidrive.MdcSnapshot].
  */

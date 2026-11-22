@@ -1,8 +1,17 @@
 # Engine log
 
-The engine writes `unidrive.log` (Windows: `%LOCALAPPDATA%\unidrive\unidrive.log`; Linux: `~/.local/share/unidrive/unidrive.log`),
-rolled at 10 MB per file, five files, 50 MB in all (`core/app/cli/src/main/resources/logback.xml`). The logger
-`org.krost.unidrive` is at DEBUG; the console shows WARN and above. Every line passes through `UrlRedaction`
+Several unidrive processes can run at once (a daemon per profile, `sync --watch`, one-shot commands), and a logback rolling
+file is not safe for more than one writing process (gkrost/unidrive-cli#897: a process that rolls can replace the rolled
+file of another, and the lines of the replaced file are in no file). So no rolling file has two writers:
+
+| File (Windows: `%LOCALAPPDATA%\unidrive\`; Linux: `~/.local/share/unidrive/`) | Written by | Rolling |
+|---|---|---|
+| `unidrive-<profile>.log` | the one long-running process of that profile (`daemon run`, `sync --watch`), from the moment its profile is resolved | 10 MB per file and per day, five files, 50 MB in all (`unidrive-<profile>.<yyyy-MM-dd>.<n>.log`) |
+| `unidrive.<yyyy-MM-dd>.log` | every other process (one-shot commands) and the first lines of every start, before the profile is known | one file per day, five days, 50 MB in all; logback prudent mode, so any number of processes may write it |
+
+`scripts/dev/log-watch.sh` reads all of them (`unidrive*.log`). The logger
+`org.krost.unidrive` is at DEBUG; the console shows WARN and above (`core/app/cli/src/main/resources/logback.xml`,
+`LogOwnership`). Every line passes through `UrlRedaction`
 (`RedactingMessageConverter`), which keeps scheme, host and path of a URL and drops its query, so a pre-authenticated URL
 that an exception quotes does not reach the file. Every line carries `[build] [profile] [scan]`; a grep of `scan=<id>` or
 `[<id>]` gives the slice of one sync pass.
