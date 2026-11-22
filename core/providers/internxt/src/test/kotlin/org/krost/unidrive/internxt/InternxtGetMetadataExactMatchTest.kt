@@ -146,6 +146,7 @@ class InternxtGetMetadataExactMatchTest {
     fun `a request without the extension does not resolve to the file that has one`() =
         runTest {
             val e = assertFailsWith<ProviderException> { getMetadataAgainst("/x/report", reportJson) }
+            assertTrue(e is org.krost.unidrive.RemoteItemNotFoundException, "a missing leaf is the typed not-found: $e")
             assertTrue(e.message!!.startsWith("Item not found"), e.message)
         }
 

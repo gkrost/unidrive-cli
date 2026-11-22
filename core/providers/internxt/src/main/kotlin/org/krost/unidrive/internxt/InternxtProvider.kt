@@ -541,7 +541,7 @@ class InternxtProvider(
         val namedFile = namedFiles.firstOrNull()
         if (namedFile != null) return namedFile.toCloudItem(parentPath)
 
-        throw ProviderException("Item not found: $path")
+        throw RemoteItemNotFoundException("Item not found: $path")
     }
 
     // Live rows whose full name is exactly [name]: InternxtNames.liveFilesForName (package top level).
@@ -2592,7 +2592,7 @@ class InternxtProvider(
                 if (folderFirst) api.getFileMeta(remoteId).toCloudItem(parentPath) else api.getFolderMeta(remoteId).toCloudItem(parentPath)
             } catch (e2: InternxtApiException) {
                 if (e2.statusCode != 404) throw e2
-                throw ProviderException("Item not found: $path (remoteId=$remoteId)")
+                throw RemoteItemNotFoundException("Item not found: $path (remoteId=$remoteId)")
             }
         }
 
@@ -6353,4 +6353,4 @@ internal class FolderNotFoundException(
     path: String,
     /** The path of the first folder of [path] that the walk did not find. */
     val missingFolder: String,
-) : ProviderException("Folder not found: $segment in $path")
+) : RemoteItemNotFoundException("Folder not found: $segment in $path")

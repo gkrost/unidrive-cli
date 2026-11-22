@@ -1817,7 +1817,7 @@ class HydrationImpl(
     private val localCopyVerdicts = PendingUploads.LocalCopyVerdicts() // kept across snapshots: the queue is long and mostly unchanged
 
     fun pendingUploadSplit(): PendingUploads.Split {
-        val hasCopy = PendingUploads.localCopyCheck(mount.hydrationCacheDir(), mount.localRoot(), localCopyVerdicts)
+        val hasCopy = mount.pendingLocalCopyCheck(localCopyVerdicts)
         return PendingUploads.split(stateDb.pendingUploadRows(), { skipsReplay(it) || refusedForTwin(it) }, hasCopy)
     }
 

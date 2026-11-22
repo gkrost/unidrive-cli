@@ -1,11 +1,10 @@
 name: detekt
 
+# Manual only for now: commits land faster than detekt's findings can be worked off, and the job cost runner time on
+# every PR and push to main. Run it from the Actions tab (or `gh workflow run detekt.yml --ref <branch>`), or locally
+# with `./gradlew detekt` in core/. Back on PRs: restore the push and pull_request triggers.
 on:
-  push:
-    branches: [main]
-    paths-ignore: ["**.md", "docs/**"]
-  pull_request:
-    paths-ignore: ["**.md", "docs/**"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,8 +15,8 @@ concurrency:
 
 # Advisory static analysis, like gitleaks, semgrep and CodeQL: continue-on-error, and never a
 # required merge check — `check` (and `windows-security`) stay the only gates. detekt is off
-# `check` (see the detekt block in core/build.gradle.kts), so this job is where a new finding
-# shows up in the PR that introduces it. `./gradlew detekt` runs the detekt task in every module.
+# `check` (see the detekt block in core/build.gradle.kts); while this workflow is manual-only a new finding shows
+# up only when someone runs it. `./gradlew detekt` runs the detekt task in every module.
 # Linux only; there is no macOS job (macOS is not a supported or tested platform).
 jobs:
   detekt:

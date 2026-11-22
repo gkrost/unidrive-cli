@@ -40,6 +40,7 @@ import org.krost.unidrive.sync.EnumerationStatus
 import org.krost.unidrive.sync.EnumerationTracker
 import org.krost.unidrive.sync.HashVerifier
 import org.krost.unidrive.sync.PathNormalizer
+import org.krost.unidrive.sync.PendingUploads
 import org.krost.unidrive.sync.RowHashProof
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.EntryStatus
@@ -210,6 +211,16 @@ class MountEngine private constructor(
 
     /** See [RemoteOperationGuard.keepsLocal]. */
     fun keepsLocal(path: String): Boolean = guard.keepsLocal(path)
+
+    /**
+     * #86's test of a pending row's file ([PendingUploads.localCopyCheck] over the cache and [localRoot]), except that a rule
+     * file the keep-local rules hold here is never gone with its cache copy (gkrost/unidrive-cli#775): its row is what keeps its
+     * rules in force (read from its kept copy, or its folder held back), so a wiped cache must not drop it.
+     */
+    fun pendingLocalCopyCheck(verdicts: PendingUploads.LocalCopyVerdicts): ((path: String) -> Boolean)? {
+        val check = PendingUploads.localCopyCheck(hydrationCacheDir(), localRoot(), verdicts) ?: return null
+        return { path -> check(path) || (guard.isIgnoreRuleFile(path) && guard.keepsLocal(path)) }
+    }
 
     /** The views of the profile: which virtual folders exist and where (see [RemoteOperationGuard.views]). */
     val viewNamespaces: ViewNamespaces get() = guard.views

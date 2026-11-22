@@ -137,7 +137,7 @@ class ExcludePatternAgreementTest {
         assertEquals(0, verifyExit, verifyOut)
 
         // get / ls (and, through the same guard, the pending-upload gate): excluded exactly where sync held back.
-        val guard = cliExclusionGuard(config, profile, ProfileMode.MIRROR, inCloud = { false })
+        val guard = cliExclusionGuard(config, profile, ProfileMode.MIRROR, lost = { false }, inCloud = { false })
         val keepsLocal = PendingGate.keepsLocalRule(patterns, config.syncPaths)
         for (path in localFiles.filter { it.startsWith("/In/") }) {
             assertEquals(path in syncExcluded, guard.isExcludedPath(path), "get/ls guard on $path")
