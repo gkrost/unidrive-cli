@@ -227,6 +227,23 @@ class RemoteMergeKeepsStateTest {
         assertNull(row.lastErrorAt)
     }
 
+    // gkrost/unidrive-cli#40: the refresh heal of a row the read could not resolve. The cloud holds the file at the row's path under
+    // another id (re-created or replaced since the row was written); a delivery of it merges into the row at that path: the row
+    // takes the id and its mark ends, and it stays the one row of the path (nothing is removed or re-keyed).
+    @Test
+    fun `a delivery at the row's path under another id heals an unresolvable row`() {
+        seedRow("/ops/benchmark/run.py", "stale-uuid")
+        assertTrue(db.setDownloadQuarantine("stale-uuid", synced))
+
+        gather().updateRemoteEntries(mapOf("/ops/benchmark/run.py" to item("live-uuid", "/ops/benchmark/run.py")))
+
+        val row = assertNotNull(db.getEntry("/ops/benchmark/run.py"))
+        assertEquals("live-uuid", row.remoteId)
+        assertEquals(false, row.downloadQuarantined)
+        assertNull(row.lastErrorAt)
+        assertNull(db.getEntryByRemoteId("stale-uuid"), "no row keeps the stale id")
+    }
+
     @Test
     fun `an ordinary upsert of the row still clears the refusal and the name block`() {
         seedRow("/a.txt", "id-a")

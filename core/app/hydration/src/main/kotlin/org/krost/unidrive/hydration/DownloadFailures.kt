@@ -48,6 +48,23 @@ internal fun TransferHandle?.endDownloadFailed(e: Exception) {
     }
 }
 
+/**
+ * gkrost/unidrive-cli#40: the download by the row's remote id failed as gone, and the item the provider shows at the row's
+ * path cannot stand in for it. [reason] is short and names no file (it is the wire token's tail). It carries no cause on
+ * purpose: the by-id failure is a 404, and the not-found rules walk the cause chain ([RemoteErrors]), so a cause would
+ * make this read as a gone file again wherever a failure is classified.
+ */
+internal class UnresolvableRowException(
+    val reason: String,
+) : Exception("unresolvable row: $reason") {
+    companion object {
+        const val SAME_ID = "the cloud shows the same id at the path"
+        const val FOLDER = "a folder is at the path"
+        const val ANOTHER_ROWS_ID = "the file at the path is another row's"
+        const val LOOKUP_FAILED = "the path could not be looked up"
+    }
+}
+
 // One classification for a failed download, shared by the open_read path and the hydrate verb:
 // a refusal for a pause (archive#778) carries the paused token, a stored object of a different size than the
 // drive reports (archive#536) carries its own token with the numbers, a download whose content failed its
@@ -61,6 +78,8 @@ internal fun downloadFailureOf(e: Exception, fallback: String): HydrationError =
     e is RemoteObjectMissingDownloadException -> HydrationError.RemoteObjectMissing
     e is RemoteContentRefusedDownloadException -> HydrationError.ContentRefused(e.reason)
     e is UnsupportedRemoteObjectDownloadException -> HydrationError.UnsupportedObject(e.reason)
+    // gkrost/unidrive-cli#40: a row the cloud and the state view disagree about; not a gone file.
+    e is UnresolvableRowException -> HydrationError.UnresolvableRow(e.reason)
     DownloadFailures.isNotFound(e) -> HydrationError.NotFound
     else -> HydrationError.Generic(e.message ?: fallback)
 }

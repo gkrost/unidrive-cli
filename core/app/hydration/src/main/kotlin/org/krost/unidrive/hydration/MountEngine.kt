@@ -930,7 +930,7 @@ class MountEngine private constructor(
                     cacheBacked = true,
                     // The cache copy is the cloud's now: a mark left by an edit whose copy is gone (see servesFromLocalCopy) ends.
                     editBase = null,
-                ).adopting(fetched.liveItem).recordingVersionRead(fetched.receipt).stampedRemoteIfVersionMovedFrom(current) // #849: the cloud moved on since the listing
+                ).endingDownloadQuarantine().adopting(fetched.liveItem).recordingVersionRead(fetched.receipt).stampedRemoteIfVersionMovedFrom(current) // #849: the cloud moved on since the listing
                 // The row just adopted the cache copy's stats, so the hash must describe the cache
                 // copy's bytes: keeping a hash recorded for the previous contents would pair stale
                 // bytes with a fresh mtime/size and let a later touch be absorbed as unchanged.
@@ -1022,10 +1022,14 @@ class MountEngine private constructor(
 
     /**
      * archive#796: the row's download by its remote id, and when that fails as a gone item, once the file the
-     * provider shows at the row's path. A listing that resolves by path (`ls --live`) and a read that resolves by the id the
+     * provider shows at the row's path ([fileStandingInFor]). A listing that resolves by path (`ls --live`) and a read that resolves by the id the
      * row keeps can disagree: the row lists, the provider has a file of that name there, and the read used to answer
-     * `not_found`. The file found at the path is read only when it is another id that no other row holds (see
-     * [liveFileReplacing]); the row takes that id with the download ([adopting]). Every other case is the original failure.
+     * `not_found`. The file found at the path is read only when it is another id that no other row holds; the row takes that id with the download ([adopting]).
+     *
+     * gkrost/unidrive-cli#40: a row that is not healed is marked (`download_quarantined`, so `unidrive doctor` names it)
+     * and answered by what the path showed: the original failure (`not_found`) when nothing is there, else
+     * [UnresolvableRowException] (`unresolvable_row`) with the reason the file there cannot stand in. Nothing is deleted
+     * or moved in the cloud on any of these paths: the provider is only read.
      */
     private suspend fun downloadByIdOrLiveItem(
         path: String,
@@ -1038,8 +1042,14 @@ class MountEngine private constructor(
         try {
             return Fetched(Transfers.downloadByIdOrPathWithHash(provider, item, remotePath, staged, tally = tally, retryHistory = downloadEventRetries), liveItem = null)
         } catch (e: Exception) {
-            if (item.id.isEmpty() || !DownloadFailures.isNotFound(e)) throw e
-            val live = liveFileReplacing(path, remotePath, item.id) ?: throw e
+            // The trash namespace is no drive path: its rows are never asked for by path and answer as before.
+            if (item.id.isEmpty() || !DownloadFailures.isNotFound(e) || isReadOnlyPath(path)) throw e
+            val live =
+                when (val atPath = provider.fileStandingInFor(remotePath, item.id, db, path, log)) {
+                    is AtPath.Replacement -> atPath.item
+                    AtPath.Nothing -> throw db.unresolvedRow(path, item.id, e, reason = null, log)
+                    is AtPath.Unusable -> throw db.unresolvedRow(path, item.id, e, atPath.reason, log)
+                }
             log.warn(
                 "#796: {} is not found by the remote id its row keeps; reading the file the provider shows at its path, " +
                     "whose id the row takes",
@@ -1049,30 +1059,6 @@ class MountEngine private constructor(
             // is dropped: a stored object seeds only the id whose answer named it.
             return Fetched(Transfers.downloadByIdOrPathWithHash(provider, item.copy(id = live.id, size = live.size, storedObject = null), remotePath, staged, tally = tally, retryHistory = downloadEventRetries), live)
         }
-    }
-
-    // The file at [remotePath] when it can stand in for a row whose id [staleId] is gone: a file (not a folder, not
-    // deleted) under another id that no row of this profile holds; null otherwise, and when the provider cannot say. The
-    // trash namespace is no drive path and is never asked for by path. The provider fails closed on two items of one name
-    // (archive#402), so a twin is never picked.
-    private suspend fun liveFileReplacing(
-        path: String,
-        remotePath: String,
-        staleId: String,
-    ): CloudItem? {
-        if (isReadOnlyPath(path)) return null
-        val live =
-            try {
-                provider.getMetadata(remotePath)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                log.debug("#796: {} is not found by path either: {}", path, e.javaClass.simpleName)
-                return null
-            }
-        if (live.isFolder || live.deleted) return null
-        val anotherId = live.id.isNotEmpty() && live.id != staleId
-        return live.takeIf { anotherId && db.getEntryByRemoteId(live.id) == null }
     }
 
     // The row with the cloud identity of [live], the item its bytes were read from; unchanged when there is none.

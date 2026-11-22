@@ -682,6 +682,75 @@ class DoctorCommandTest {
 
     // ── Hydration cache size (archive#450) ───────────────────────────────────────
 
+    // ── gkrost/unidrive-cli#40: rows listed but not resolvable ─────────────
+
+    private fun cloudRow(
+        db: StateDatabase,
+        path: String,
+        remoteId: String,
+    ) = db.upsertEntry(
+        SyncEntry(
+            path = path,
+            remoteId = remoteId,
+            remoteHash = null,
+            remoteSize = 5L,
+            remoteModified = Instant.parse("2026-05-18T04:15:00Z"),
+            localMtime = null,
+            localSize = null,
+            isFolder = false,
+            isPinned = false,
+            isHydrated = false,
+            lastSynced = Instant.parse("2026-05-17T08:00:00Z"),
+        ),
+    )
+
+    private fun freshCursors(db: StateDatabase) {
+        db.setSyncState("last_full_scan", Instant.parse("2026-05-17T08:00:00Z").toString())
+        db.setSyncState("pending_cursor_complete", "true")
+        db.setSyncState("quota_fetched_at", Instant.parse("2026-05-17T08:00:00Z").toString())
+    }
+
+    @Test
+    fun `unresolvable-rows check names a listed row whose download by id answered gone`() {
+        seedDb { db ->
+            freshCursors(db)
+            cloudRow(db, "/ops/benchmark/run.py", "stale-uuid")
+            cloudRow(db, "/ops/providers/notes.md", "fine-uuid")
+            db.setDownloadQuarantine("stale-uuid", Instant.parse("2026-05-17T09:00:00Z"))
+        }
+        val check = result(runDoctor(full = true, mode = ProfileMode.MOUNT), "unresolvable-rows")
+        assertEquals(DoctorCommand.Severity.WARN, check.severity)
+        assertTrue(check.summary.startsWith("1 listed file(s)"), check.summary)
+        assertTrue("unidrive refresh" in check.summary, check.summary)
+        assertTrue(check.detail.any { "/ops/benchmark/run.py" in it }, "${check.detail}")
+        assertFalse(check.detail.any { "notes.md" in it }, "a row that resolves is not named: ${check.detail}")
+    }
+
+    @Test
+    fun `unresolvable-rows check is OK when every row resolved`() {
+        seedDb { db ->
+            freshCursors(db)
+            cloudRow(db, "/a.txt", "a-uuid")
+        }
+        assertEquals(DoctorCommand.Severity.OK, result(runDoctor(), "unresolvable-rows").severity)
+    }
+
+    @Test
+    fun `unresolvable-rows check samples the paths and points at --full`() {
+        seedDb { db ->
+            freshCursors(db)
+            for (i in 1..(DoctorCommand.SAMPLE_DETAIL + 2)) {
+                cloudRow(db, "/f$i.txt", "u$i")
+                db.setDownloadQuarantine("u$i", Instant.parse("2026-05-17T09:00:00Z"))
+            }
+        }
+        val sampled = result(runDoctor(), "unresolvable-rows")
+        assertEquals(DoctorCommand.SAMPLE_DETAIL, sampled.detail.size - 1, "${sampled.detail}")
+        assertTrue("--full" in sampled.summary, sampled.summary)
+        val all = result(runDoctor(full = true), "unresolvable-rows")
+        assertEquals(DoctorCommand.SAMPLE_DETAIL + 2, all.detail.size - 1)
+    }
+
     @Test
     fun `hydration-cache check reports size against the budget and warns over it`() {
         val cacheDir = TestScratch.directory("unidrive-doctor-cache")

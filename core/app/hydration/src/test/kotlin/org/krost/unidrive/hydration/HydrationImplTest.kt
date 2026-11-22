@@ -936,6 +936,9 @@ internal class HydrationTestEnv(
 
         fun lastErrorAt(path: String): Instant? = db.getEntry(path)?.lastErrorAt
 
+        /** gkrost/unidrive-cli#40: the mark `unidrive doctor` names a row by (a download by its id that answered gone). */
+        fun isDownloadQuarantined(path: String): Boolean = db.getEntry(path)?.downloadQuarantined == true
+
         /** archive#1070: notes an unsynced cache edit of [path] that started from the cloud version [base]. */
         fun noteEditBase(path: String, base: String) {
             db.getEntry(path)?.let { db.upsertEntry(it.copy(editBase = base)) } ?: error("no row for $path")

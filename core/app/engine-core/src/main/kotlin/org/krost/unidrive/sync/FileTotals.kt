@@ -121,3 +121,23 @@ fun StateDatabase.writeUploadFailedPaths(limit: Int): List<WriteUploadFailedRow>
                 out
             }
     }
+
+/**
+ * gkrost/unidrive-cli#40: the alive rows whose download by their remote id answered "gone" and that no read or delivery has
+ * healed since ([StateDatabase.setDownloadQuarantine]): the state view lists them, the cloud does not resolve them. Path
+ * and the time of the failure, in path order, capped at [limit]. For `doctor`.
+ */
+fun StateDatabase.downloadQuarantinedPaths(limit: Int): List<Pair<String, String?>> =
+    readForReport("downloadQuarantinedPaths") { c ->
+        c
+            .prepareStatement(
+                "SELECT path, last_error_at FROM sync_entries WHERE status='EXISTS' AND download_quarantined=1 " +
+                    "ORDER BY path LIMIT ?",
+            ).use { stmt ->
+                stmt.setInt(1, limit)
+                val rs = stmt.executeQuery()
+                val out = mutableListOf<Pair<String, String?>>()
+                while (rs.next()) out += rs.getString(1) to rs.getString(2)
+                out
+            }
+    }

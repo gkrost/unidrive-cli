@@ -144,6 +144,21 @@ sealed interface HydrationError {
     }
 
     /**
+     * gkrost/unidrive-cli#40: the row lists, the download by the remote id it keeps answered "gone", and the file the
+     * provider shows at the row's path cannot stand in for it (the same id, a folder, an id another row holds, or a path
+     * lookup that failed), so the state view and the cloud disagree about this file. Not [NotFound]: something is at
+     * the path, or the provider could not say. The wire form is the STABLE token `unresolvable_row`, then a short reason
+     * without any file name: `unresolvable_row: <reason>`. A client matches the prefix up to ": " and can say "the file
+     * is in the cloud but the engine cannot resolve it (run refresh)". The row is marked (`download_quarantined`) so
+     * `unidrive doctor` names it until a read or a refresh heals it.
+     */
+    data class UnresolvableRow(
+        val reason: String,
+    ) : HydrationError {
+        override val message: String = "$UNRESOLVABLE_ROW_TOKEN: $reason"
+    }
+
+    /**
      * A client-supplied path the engine does not accept, refused before anything is changed. Which paths: the
      * wire-format notes of [HydrationIpcHandler] and §7 of docs/dev/specs/ipc-write-protocol.md. Its [message] is
      * the STABLE wire token `invalid_path`. Changing this string breaks that cross-repo contract.
@@ -300,6 +315,9 @@ sealed interface HydrationError {
 
         /** Wire token for a listed drive item whose stored object is absent. */
         const val REMOTE_OBJECT_MISSING_TOKEN = "remote_object_missing"
+
+        /** Wire token prefix for [UnresolvableRow]; the short reason follows after ": ". gkrost/unidrive-cli#40. */
+        const val UNRESOLVABLE_ROW_TOKEN = "unresolvable_row"
 
         /** Wire token for [UnknownPath]; shared verbatim with the mount crate. */
         const val UNKNOWN_PATH_TOKEN = "unknown_path"
