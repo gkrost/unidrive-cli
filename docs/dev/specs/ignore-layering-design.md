@@ -135,9 +135,9 @@ one, everywhere the mount asks.
 - A rule file only this computer has (never uploaded, often because it ignores itself, as a venv's own `.gitignore`
   does) is also kept outside the evictable cache (`LocalRuleFiles`, in `local/` below `ignoreRuleFilesRoot`): a copy is
   taken whenever its cache copy is probed with a new size or time, and dropped once its row is gone or the file reached
-  the cloud. When the cache copy is gone (the cache wiped or emptied) while the row still says the bytes are here, the
-  rules are read from that copy, so a wipe changes nothing that is uploaded. With no copy kept (larger than 1 MiB, or
-  wiped before it was ever probed) the folder is held back (fail closed, with the held-back WARN, listed in
+  the cloud. The daemon records the observed generation in state.db before replacing the backup and publishes the bytes
+  with their stamp in one atomic replacement. After a cache wipe, the backup applies only if it matches the recorded
+  generation. An interrupted or failed replacement cannot revive older exclusions. Without a current backup, the folder is held back (fail closed, with the held-back WARN, listed in
   `daemon.status`) until the file is written through the mount again. The start-up drop of pending rows whose file is
   gone keeps the row of a rule file the rules hold here: that row is what keeps its rules in force. The CLI's views of
   the pending uploads (`status --pending`, the `profile remove` / `logout` gate) and `get` / `ls` read the same copies

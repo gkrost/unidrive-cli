@@ -3,6 +3,7 @@ package org.krost.unidrive.cli
 import org.krost.unidrive.engine.RemoteOperationGuard
 import org.krost.unidrive.sync.ProfileMode
 import org.krost.unidrive.sync.Reconciler
+import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.SyncEngine
 import org.krost.unidrive.sync.ignore.CacheIgnoreSource
@@ -22,6 +23,7 @@ internal fun cliExclusionGuard(
     config: SyncConfig,
     profileName: String,
     mode: ProfileMode?,
+    db: StateDatabase? = null,
     lost: (path: String) -> Boolean,
     inCloud: (path: String) -> Boolean,
 ): RemoteOperationGuard =
@@ -31,6 +33,7 @@ internal fun cliExclusionGuard(
         cacheDir = SyncEngine.hydrationCacheRoot(SyncEngine.defaultHydrationCacheRoot(), profileName),
         inCloud = inCloud,
         lost = lost,
+        db = db,
         ignoreRulesDir = SyncEngine.ignoreRuleFilesRoot(SyncEngine.defaultHydrationCacheRoot(), profileName),
     )
 
@@ -40,6 +43,7 @@ internal fun exclusionGuard(
     cacheDir: Path,
     inCloud: (path: String) -> Boolean,
     lost: (path: String) -> Boolean = { false },
+    db: StateDatabase? = null,
     // The profile's folder of downloaded rule files ([SyncEngine.ignoreRuleFilesRoot]): the daemon's kept copies are read from there, never written.
     ignoreRulesDir: Path? = null,
     // The profile's standing sync scope (`sync_path`); empty is the whole drive. A one-shot `get` or `ls` leaves it out, as before.
@@ -47,7 +51,7 @@ internal fun exclusionGuard(
 ): RemoteOperationGuard {
     val ignore =
         ignoreSettings?.let { settings ->
-            val kept = ignoreRulesDir?.let { LocalRuleFiles.under(it, settings.maxRuleFileBytes, writable = false) }
+            val kept = if (ignoreRulesDir != null && db != null) LocalRuleFiles.under(ignoreRulesDir, db, settings.maxRuleFileBytes, writable = false) else null
             UploadIgnore(CacheIgnoreSource(cacheDir, lost = lost, kept = kept, inCloud = inCloud), settings)
         }
     return RemoteOperationGuard(

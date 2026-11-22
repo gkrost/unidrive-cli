@@ -83,6 +83,26 @@ class PendingLostRuleFileTest {
     }
 
     @Test
+    fun `status pending counts a paged backlog in mount and mirror modes`() {
+        val added = 5_000
+        val db = StateDatabase(dir.resolve("lo/state.db"))
+        try {
+            db.initialize()
+            db.batch {
+                repeat(added) { index -> db.upsertEntry(keptLocalRow("/src/file-$index.bin")) }
+            }
+        } finally {
+            db.close()
+        }
+
+        assertTrue(statusPending().contains("Upload:   ${added + 1} file(s)"))
+        val config = dir.resolve("config.toml")
+        Files.writeString(config, Files.readString(config).replace("mode = \"mount\"", "mode = \"mirror\""))
+        out.reset()
+        assertTrue(statusPending().contains("Upload:   ${added + 3} file(s)"))
+    }
+
+    @Test
     fun `the pending gate keeps the files below a lost local-only rule file local`() {
         val split = assertNotNull(PendingGate.split(dir.resolve("lo/state.db"), dir, "lo"))
 
@@ -93,8 +113,14 @@ class PendingLostRuleFileTest {
     @Test
     fun `the rules of the copy the daemon kept apply, without holding the folder back`() {
         // `*.py` does not name the rule file itself: held back, it would be kept local too; read, it awaits its upload.
-        val kept = LocalRuleFiles.under(SyncEngine.ignoreRuleFilesRoot(dir.resolve("cache"), "lo"), CloudRuleFiles.DEFAULT_MAX_BYTES)
-        kept.keep("/venv/.gitignore", RuleFileProbe.Present(5L, 1L)) { "*.py\n".toByteArray() }
+        val db = StateDatabase(dir.resolve("lo/state.db"))
+        try {
+            db.initialize()
+            val kept = LocalRuleFiles.under(SyncEngine.ignoreRuleFilesRoot(dir.resolve("cache"), "lo"), db, CloudRuleFiles.DEFAULT_MAX_BYTES)
+            kept.keep("/venv/.gitignore", RuleFileProbe.Present(5L, 1L)) { "*.py\n".toByteArray() }
+        } finally {
+            db.close()
+        }
 
         val split = assertNotNull(PendingGate.split(dir.resolve("lo/state.db"), dir, "lo"))
 

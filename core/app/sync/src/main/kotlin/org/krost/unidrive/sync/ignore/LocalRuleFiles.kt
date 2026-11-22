@@ -1,150 +1,187 @@
 package org.krost.unidrive.sync.ignore
 
+import org.krost.unidrive.sync.StateDatabase
 import org.slf4j.LoggerFactory
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
+import java.sql.SQLException
 import java.util.HexFormat
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
 
 /**
- * gkrost/unidrive-cli#775: copies of the rule files only this computer has (never uploaded, often because they ignore
- * themselves, as a venv's own `.gitignore` does), kept in [dir] outside the evictable hydration cache. The cache copy is
- * what a mount reads its rules from; when it is gone (the cache wiped or emptied) while the file's row still says the
- * bytes are here, [CacheIgnoreSource] reads the rules from the copy kept here, so a wipe changes nothing that is uploaded.
- *
- * A copy is taken when the cache copy is probed with a new stamp (written through the mount, or seen for the first time
- * after an upgrade) and dropped when the rule file is no longer a local-only one (its row is gone, or it reached the
- * cloud, whose copy is read then). A file larger than [maxBytes] is not kept: its folder is held back after a wipe, as
- * before. [writable] false only reads (a one-shot CLI command). Paths are logical (`/venv/.gitignore`).
+ * Copies of local-only rule files outside the evictable hydration cache. A fallback must match the latest
+ * generation observed in state.db. The copy and its stamp are published together, and recording the new
+ * generation before replacing a copy makes an interrupted replacement fail closed.
  */
 class LocalRuleFiles(
     private val dir: Path,
+    private val state: StateDatabase,
     private val maxBytes: Long = CloudRuleFiles.DEFAULT_MAX_BYTES,
     private val writable: Boolean = true,
 ) {
     private val log = LoggerFactory.getLogger(LocalRuleFiles::class.java)
+    private val kept = mutableMapOf<String, RuleFileProbe.Present>()
+    private val invalid = mutableSetOf<String>()
+    private val announced = mutableSetOf<String>()
 
-    // The stamp of each copy kept (or found) in this process: a probe with the same stamp writes nothing.
-    private val kept = ConcurrentHashMap<String, String>()
-    private val announced = ConcurrentHashMap.newKeySet<String>()
-
-    // The keys of the copies on disk, listed once: a forget for a path with no copy (most probes) touches no file.
+    // Most absent rule files have never had a backup, so forgetting them needs no database or filesystem call.
     private val stored: MutableSet<String> by lazy {
-        ConcurrentHashMap.newKeySet<String>().also { keys ->
-            try {
-                Files.newDirectoryStream(dir, "*.rules").use { files -> files.forEach { keys += it.fileName.toString().removeSuffix(".rules") } }
-            } catch (_: IOException) {
-                // No folder yet (nothing kept), or it cannot be listed: a copy left there is replaced at its next keep.
+        try {
+            Files.newDirectoryStream(dir, "*.rules").use { files ->
+                files.mapTo(mutableSetOf()) { it.fileName.toString().removeSuffix(".rules") }
             }
+        } catch (_: IOException) {
+            mutableSetOf()
         }
     }
 
-    /** Keeps a copy of the rule file [path], whose cache copy was probed as [stamp], read by [read], unless it has one with that stamp. */
+    /** Records [stamp] before reading its bytes. A failed copy must never make the older generation usable. */
+    @Synchronized
     fun keep(
         path: String,
         stamp: RuleFileProbe.Present,
         read: (maxBytes: Long) -> ByteArray?,
     ) {
         if (!writable) return
-        val stampText = "${stamp.size}|${stamp.modified}"
-        if (kept[path] == stampText || storedStamp(path) == stampText) {
-            kept[path] = stampText
+        val key = key(path)
+        if (path !in invalid && (kept[path] == stamp || inspect(key) == stamp)) {
+            kept[path] = stamp
+            stored += key
             return
         }
+
+        invalidate(path)
+        val recorded = record(key, stamp.text())
         try {
-            val bytes = if (stamp.size > maxBytes) null else read(maxBytes)
-            if (bytes == null) {
-                forget(path)
-                return
-            }
-            Files.createDirectories(dir)
-            val partial = Files.createTempFile(dir, "kept", ".part")
-            try {
-                Files.write(partial, bytes)
-                Files.move(partial, copyOf(path), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-            } finally {
-                Files.deleteIfExists(partial)
-            }
-            Files.writeString(stampOf(path), stampText)
-            stored += key(path)
-            kept[path] = stampText
-            announced.remove(path)
+            // Invalidate the disk copy as well, including when state.db is temporarily unwritable.
+            Files.deleteIfExists(copyOf(key))
+            stored -= key
+            if (!recorded || stamp.size !in 0..maxBytes) return
+            val bytes = read(maxBytes) ?: return
+            if (bytes.size.toLong() != stamp.size) return
+            publish(key, stamp, bytes)
+            stored += key
+            kept[path] = stamp
+            invalid -= path
         } catch (e: IOException) {
-            // The cache copy still holds the rules; only a later wipe would find no kept copy (and hold the folder back).
             log.warn("ignore rule file {} could not be kept outside the hydration cache: {}", path, e.toString())
         }
     }
 
-    /** The kept copy of [path] as a probe with the stamp its cache copy had, or null when none is kept. */
+    /** The kept copy as a probe, only while its stamp agrees with the current generation on disk. */
+    @Synchronized
     fun probe(path: String): RuleFileProbe.Present? {
-        val copy = copyOf(path)
-        if (!Files.isRegularFile(copy)) return null
-        val stamp = storedStamp(path)?.split('|')
-        val present =
-            try {
-                stamp?.takeIf { it.size == 2 }?.let { RuleFileProbe.Present(it[0].toLong(), it[1].toLong()) }
-                    ?: RuleFileProbe.Present(Files.size(copy), Files.getLastModifiedTime(copy).to(TimeUnit.NANOSECONDS))
-            } catch (_: IOException) {
-                return null
-            } catch (_: NumberFormatException) {
-                return null
-            }
+        if (path in invalid) return null
+        val present = inspect(key(path)) ?: return null
         if (announced.add(path)) {
             log.info("ignore rule file {} has no copy in the hydration cache; its rules are read from the copy kept in {}", path, dir)
         }
         return present
     }
 
-    /** The kept copy's bytes, or null when it has more than [maxBytes] bytes. */
+    /** Returns the bytes only from a complete, current generation. */
+    @Synchronized
     fun read(
         path: String,
         maxBytes: Long,
     ): ByteArray? {
-        Files.newInputStream(copyOf(path)).use { input ->
-            val limit = maxBytes.coerceAtMost(Int.MAX_VALUE - 1L).toInt()
-            val bytes = input.readNBytes(limit + 1)
-            return if (bytes.size > limit) null else bytes
+        if (path in invalid) return null
+        val key = key(path)
+        return DataInputStream(Files.newInputStream(copyOf(key))).use { input ->
+            val stamp = input.stamp()
+            if (stamp.size !in 0..maxBytes.coerceAtMost(Int.MAX_VALUE - 1L) || !isCurrent(key, stamp)) return null
+            input.readNBytes(stamp.size.toInt() + 1).takeIf { it.size.toLong() == stamp.size }
         }
     }
 
-    /** Drops the kept copy of [path], if there is one. */
+    /** Drops the kept copy when the file disappears or reaches the cloud. */
+    @Synchronized
     fun forget(path: String) {
-        if (!writable || key(path) !in stored) return
-        kept.remove(path)
-        announced.remove(path)
-        stored -= key(path)
+        if (!writable) return
+        val key = key(path)
+        if (key !in stored && path !in invalid) return
+        invalidate(path)
         try {
-            Files.deleteIfExists(copyOf(path))
-            Files.deleteIfExists(stampOf(path))
+            Files.deleteIfExists(copyOf(key))
+            stored -= key
+            invalid -= path
         } catch (e: IOException) {
+            record(key, "")
             log.warn("kept copy of ignore rule file {} could not be removed: {}", path, e.toString())
         }
     }
 
-    private fun storedStamp(path: String): String? =
+    private fun invalidate(path: String) {
+        kept.remove(path)
+        announced.remove(path)
+        invalid += path
+    }
+
+    private fun publish(key: String, stamp: RuleFileProbe.Present, bytes: ByteArray) {
+        Files.createDirectories(dir)
+        val partial = Files.createTempFile(dir, "kept", ".part")
         try {
-            Files.readString(stampOf(path))
+            DataOutputStream(Files.newOutputStream(partial)).use { output ->
+                output.writeLong(stamp.size)
+                output.writeLong(stamp.modified)
+                output.write(bytes)
+            }
+            Files.move(partial, copyOf(key), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+        } finally {
+            Files.deleteIfExists(partial)
+        }
+    }
+
+    private fun inspect(key: String): RuleFileProbe.Present? =
+        try {
+            val copy = copyOf(key)
+            DataInputStream(Files.newInputStream(copy)).use { input ->
+                val stamp = input.stamp()
+                stamp.takeIf { it.size in 0..maxBytes && Files.size(copy) == HEADER_BYTES + it.size && isCurrent(key, it) }
+            }
         } catch (_: IOException) {
             null
         }
 
-    private fun copyOf(path: String): Path = dir.resolve(key(path) + ".rules")
+    private fun record(key: String, stamp: String): Boolean =
+        try {
+            state.trySetSyncStatesWhenIdle(mapOf(stateKey(key) to stamp))
+        } catch (e: SQLException) {
+            log.warn("could not record the current ignore rule generation: {}", e.toString())
+            false
+        }
 
-    private fun stampOf(path: String): Path = dir.resolve(key(path) + ".stamp")
+    private fun isCurrent(key: String, stamp: RuleFileProbe.Present): Boolean =
+        try {
+            state.getSyncState(stateKey(key)) == stamp.text()
+        } catch (_: SQLException) {
+            false
+        }
+
+    private fun DataInputStream.stamp() = RuleFileProbe.Present(readLong(), readLong())
+
+    private fun RuleFileProbe.Present.text() = "$size|$modified"
+
+    private fun stateKey(key: String) = "local-ignore-rule:$key"
+
+    private fun copyOf(key: String) = dir.resolve("$key.rules")
 
     private fun key(path: String): String =
         HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(path.toByteArray(Charsets.UTF_8)))
 
     companion object {
-        /** The store of a profile, in a folder of its own below [ignoreRulesRoot] (where the downloaded cloud rule files live). */
+        private const val HEADER_BYTES = 2L * Long.SIZE_BYTES
+
+        /** The store of a profile, beside its downloaded cloud rule files. */
         fun under(
             ignoreRulesRoot: Path,
+            state: StateDatabase,
             maxBytes: Long,
             writable: Boolean = true,
-        ): LocalRuleFiles = LocalRuleFiles(ignoreRulesRoot.resolve("local"), maxBytes, writable)
+        ): LocalRuleFiles = LocalRuleFiles(ignoreRulesRoot.resolve("local"), state, maxBytes, writable)
     }
 }

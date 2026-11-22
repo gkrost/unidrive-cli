@@ -112,7 +112,7 @@ class MountLostRuleFileTest {
         Files.createDirectories(cacheDir.resolve("venv"))
         Files.writeString(cacheDir.resolve("venv/.gitignore"), "*.py\n")
         assertTrue(assertNotNull(engine.uploadIgnore).isIgnored("/venv/Lib/x.py", false), "the rules in force, from the cache copy")
-        assertEquals(2, keptCopies().size, "a copy and its stamp are kept outside the cache")
+        assertEquals(1, keptCopies().size, "a single stamped copy is kept outside the cache")
 
         cacheDir.toFile().deleteRecursively()
         val ignore = assertNotNull(restart().uploadIgnore)
@@ -141,6 +141,32 @@ class MountLostRuleFileTest {
 
         assertTrue(ignore.isIgnored("/venv/x.txt", false), "the kept copy is the new one")
         assertFalse(ignore.isIgnored("/venv/x.py", false))
+    }
+
+    @Test
+    fun `a failed refresh cannot bring back older exclusions after a wipe and restart`() {
+        val path = "/venv/.gitignore"
+        db.upsertEntry(keptLocalRow(path))
+        val store = LocalRuleFiles(keptDir, db)
+        val rule = cacheDir.resolve("venv/.gitignore")
+        Files.createDirectories(rule.parent)
+        Files.writeString(rule, "*.py\n")
+        store.keep(path, RuleFileProbe.Present(5, 1)) { Files.readAllBytes(rule) }
+        assertNotNull(store.probe(path))
+        val oldCopy = keptDir.resolve(keptCopies().single())
+        val previousGeneration = Files.readAllBytes(oldCopy)
+
+        // The newer rule file was observed, but saving its bytes fails.
+        Files.writeString(rule, "*.txt\n")
+        store.keep(path, RuleFileProbe.Present(6, 2)) { throw java.io.IOException("backup volume is full") }
+        assertTrue(keptCopies().isEmpty(), "the failed replacement invalidated the old copy")
+        // If the old copy survives (for example, deleting it was refused), state.db still disqualifies it.
+        Files.write(oldCopy, previousGeneration)
+        cacheDir.toFile().deleteRecursively()
+
+        val ignore = assertNotNull(restart().uploadIgnore)
+        assertTrue(ignore.isIgnored("/venv/private.txt", false))
+        assertEquals(CacheIgnoreSource.LOST, ignore.heldBack().single().reason)
     }
 
     @Test
@@ -181,17 +207,17 @@ class MountLostRuleFileTest {
         Files.createDirectories(cacheDir.resolve("venv"))
         Files.writeString(cacheDir.resolve("venv/.gitignore"), "*\n")
         val lost: (String) -> Boolean = { it == "/venv/.gitignore" }
-        val oneShot = CacheIgnoreSource(cacheDir, lost = lost, kept = LocalRuleFiles(keptDir, writable = false)) { false }
+        val oneShot = CacheIgnoreSource(cacheDir, lost = lost, kept = LocalRuleFiles(keptDir, db, writable = false)) { false }
         assertTrue(UploadIgnore(oneShot, IgnoreSettings(honorGitignore = true)).isIgnored("/venv/x.py", false))
         assertTrue(keptCopies().isEmpty(), "a one-shot command writes nothing")
 
         assertNotNull(engine.uploadIgnore).isIgnored("/venv/x.py", false) // the daemon keeps the copy
         cacheDir.toFile().deleteRecursively()
-        val after = CacheIgnoreSource(cacheDir, lost = lost, kept = LocalRuleFiles(keptDir, writable = false)) { false }
+        val after = CacheIgnoreSource(cacheDir, lost = lost, kept = LocalRuleFiles(keptDir, db, writable = false)) { false }
         val ignore = UploadIgnore(after, IgnoreSettings(honorGitignore = true))
 
         assertTrue(ignore.isIgnored("/venv/x.py", false))
         assertTrue(ignore.heldBack().isEmpty(), "read from the daemon's copy")
-        assertEquals(2, keptCopies().size, "and left in place")
+        assertEquals(1, keptCopies().size, "and left in place")
     }
 }

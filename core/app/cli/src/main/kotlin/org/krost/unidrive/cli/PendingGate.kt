@@ -30,32 +30,31 @@ internal object PendingGate {
         name: String,
     ): PendingUploads.Split? {
         val db = StateDatabase(stateDb, readOnly = true)
-        val rows =
-            try {
-                db.initialize()
-                db.pendingUploadRows()
-            } catch (_: java.sql.SQLException) {
-                return null
-            } catch (_: IllegalStateException) {
-                return null
-            } catch (_: IllegalArgumentException) {
-                return null
-            } finally {
-                db.close()
-            }
-        val rules = rulesOf(configDir, name, rows.mapTo(HashSet()) { it.path })
-        return PendingUploads.split(rows, rules.keepsLocal, rules.hasLocalCopy)
+        return try {
+            db.initialize()
+            val rows = db.pendingUploadRows()
+            val rules = rulesOf(configDir, name, db)
+            PendingUploads.split(rows, rules.keepsLocal, rules.hasLocalCopy)
+        } catch (_: java.sql.SQLException) {
+            null
+        } catch (_: IllegalStateException) {
+            null
+        } catch (_: IllegalArgumentException) {
+            null
+        } finally {
+            db.close()
+        }
     }
 
     /**
-     * The keep-local rule [split] sorts by, for `status --pending`: [pendingPaths] are the rows awaiting upload
-     * ([StateDatabase.pendingUploadRows]), the never-uploaded files whose bytes are here a lost rule file is judged by.
+     * The keep-local rule [split] sorts by, for `status --pending`. The caller keeps [db] open for indexed
+     * lookups of candidate rule files while scanning its pages.
      */
     fun keepsLocal(
         configDir: Path,
         name: String,
-        pendingPaths: Set<String>,
-    ): (String) -> Boolean = rulesOf(configDir, name, pendingPaths).keepsLocal
+        db: StateDatabase,
+    ): (String) -> Boolean = rulesOf(configDir, name, db).keepsLocal
 
     /**
      * Drops the `local:` rows [gone] from [stateDb] (never a row with a real remote id: [StateDatabase.deleteLocalPendingRow]
@@ -110,7 +109,7 @@ internal object PendingGate {
     private fun rulesOf(
         configDir: Path,
         name: String,
-        pendingPaths: Set<String>,
+        db: StateDatabase,
     ): Rules {
         val none = Rules(keepsLocal = { false }, hasLocalCopy = null)
         return try {
@@ -130,7 +129,8 @@ internal object PendingGate {
                     ignoreSettings = config.ignoreSettings(name),
                     cacheDir = cacheDir,
                     inCloud = { false },
-                    lost = { it in pendingPaths },
+                    lost = { path -> db.getEntry(path)?.let { !it.isFolder && it.isPendingUpload } == true },
+                    db = db,
                     ignoreRulesDir = SyncEngine.ignoreRuleFilesRoot(ProfileRemoveHooks.cacheRoot(), name),
                     standingScope = config.syncPaths,
                 )

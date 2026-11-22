@@ -242,7 +242,7 @@ class StatusCommand : Callable<Int> {
         try {
             db.initialize()
             // The daemon's rule behind `uploads.pending`: a row the exclude patterns or ignore rules keep here is never uploaded.
-            val keepsLocal = PendingGate.keepsLocal(parent.configBaseDir(), profile.name, db.pendingUploadRows().mapTo(HashSet()) { it.path })
+            val keepsLocal = PendingGate.keepsLocal(parent.configBaseDir(), profile.name, db)
             // #841 (#749-8): one pass in steps of rows, not every row as an object at once.
             db.scanAliveRowsOncePerPath { row ->
                 val entry = row.entry().takeUnless { it.isFolder } ?: return@scanAliveRowsOncePerPath
