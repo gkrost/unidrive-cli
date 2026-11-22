@@ -115,7 +115,7 @@ class LsCommand : Callable<Int> {
             }
         try {
             val guard =
-                cliExclusionGuard(config, profile.name, profile.mode) { path ->
+                cliExclusionGuard(config, profile.name, profile.mode, db = db, lost = { path -> db?.getEntry(path)?.let { !it.isFolder && it.isPendingUpload } == true }) { path ->
                     db?.getEntry(path)?.let { !it.isFolder && it.remoteId != null } == true
                 }
             printChildren(listing, guard)

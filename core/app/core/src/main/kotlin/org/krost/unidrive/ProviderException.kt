@@ -278,6 +278,18 @@ open class InsufficientRemoteSpaceException(
     requestId: String? = null,
 ) : ProviderException(message, cause, requestId)
 
+/**
+ * The provider's own answer that the remote item (or a folder on its path) does not exist. The one typed signal behind
+ * `RemoteErrors.isNotFound`: callers match this type, never the message text. [httpStatus] defaults to 404 so the status
+ * report reads it like any other absent item.
+ */
+open class RemoteItemNotFoundException(
+    message: String,
+    cause: Throwable? = null,
+    requestId: String? = null,
+    httpStatus: Int? = 404,
+) : ProviderException(message, cause, requestId, httpStatus)
+
 /** A remote item changed after the caller captured its write token. */
 open class RemoteConflictException(
     message: String,

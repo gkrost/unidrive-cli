@@ -221,11 +221,9 @@ class StatusCommand : Callable<Int> {
     }
 
     /**
-     * Report pending transfers without fetching anything from the network.
-     * Walks state.db for the same row patterns the Reconciler's UD-225 / UD-901
-     * recovery loops surface as DownloadContent / Upload actions:
-     *   - `isHydrated = false` non-folder rows → download pending
-     *   - `remoteId IS NULL` rows  → upload pending (UD-901 pre-write)
+     * Report pending transfers without fetching anything from the network, from the state.db rows the recovery loops
+     * surface as DownloadContent / Upload actions: `isHydrated = false` non-folder rows (download) and `remoteId IS NULL`
+     * rows (upload, UD-901 pre-write) that the keep-local rules do not hold here (gkrost/unidrive-cli#775).
      */
     private fun showPendingReport() {
         val profile = parent.resolveCurrentProfile()
@@ -243,6 +241,8 @@ class StatusCommand : Callable<Int> {
         val refusedUploads = mutableListOf<Pair<String, String>>()
         try {
             db.initialize()
+            // The daemon's rule behind `uploads.pending`: a row the exclude patterns or ignore rules keep here is never uploaded.
+            val keepsLocal = PendingGate.keepsLocal(parent.configBaseDir(), profile.name, db)
             // #841 (#749-8): one pass in steps of rows, not every row as an object at once.
             db.scanAliveRowsOncePerPath { row ->
                 val entry = row.entry().takeUnless { it.isFolder } ?: return@scanAliveRowsOncePerPath
@@ -251,7 +251,7 @@ class StatusCommand : Callable<Int> {
                     downloadBytes += entry.remoteSize
                     return@scanAliveRowsOncePerPath
                 }
-                if (!entry.isPendingUpload) return@scanAliveRowsOncePerPath
+                if (!entry.isPendingUpload || keepsLocal(entry.path)) return@scanAliveRowsOncePerPath
                 // archive#136: hydrated rows use the whole UD-901 predicate; the !isHydrated
                 // branch above already routed sparse partial-downloads to downloads.
                 val refusal = db.uploadRefusal(entry.path)

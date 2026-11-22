@@ -38,7 +38,10 @@ object RemoteErrors {
      * closes the free-text misclassification hole.
      */
     fun isAlreadyGone(e: Throwable): Boolean {
+        if (e is org.krost.unidrive.RemoteItemNotFoundException) return true
         if (e !is ProviderException) return false
+        // Legacy fallback (archive#441 item 15), kept for one release: an untyped ProviderException with the old anchored
+        // wording. Providers throw RemoteItemNotFoundException now; remove this once no fake or provider spells it.
         val msg = e.message ?: return false
         return msg.startsWith("Folder not found: ") || msg.startsWith("Item not found: ")
     }

@@ -142,6 +142,40 @@ class HydrationIgnoreRulesTest {
         }
 
     @Test
+    fun `a wiped hydration cache leaves local-only rule files in force and their files out of the upload queue`() =
+        runTest {
+            // gkrost/unidrive-cli#775: a venv's own `.gitignore` (`*`) ignores itself, so it never uploads and the cache held its only
+            // copy. The cache is wiped from outside, the daemon starts again (the replay drops rows whose file is gone) and the
+            // client hands over files below the venv once more.
+            val env = env(IgnoreSettings(honorGitignore = true))
+            env.stateDb.insertFolderEntry("/venv")
+            env.stateDb.insertFolderEntry("/venv/Lib")
+            env.stateDb.insertFolderEntry("/src")
+            assertTrue(env.write("/venv/.gitignore", "*\n").excluded, "the rule file ignores itself")
+            assertTrue(env.write("/venv/Lib/site.py", "x = 1").excluded)
+            advanceUntilIdle()
+
+            val cacheDir = env.engine.resolveCachePath("/")
+            Files.list(cacheDir).use { it.toList() }.forEach { it.toFile().deleteRecursively() }
+            Files.createDirectories(env.tempDir)
+            env.hydration.replayPendingUploads()
+            val ignore = assertNotNull(env.engine.uploadIgnore)
+            ignore.revalidate()
+
+            assertNotNull(env.stateDb.statusOf("/venv/.gitignore"), "the start-up drop keeps the row that keeps the rules in force")
+            assertTrue(env.write("/venv/Lib/after.py", "y = 2").excluded, "still ignored after the wipe")
+            assertFalse(env.write("/src/main.py", "print()").excluded, "a file no rule names still uploads")
+            advanceUntilIdle()
+            assertNull(env.syncEngine.remoteContentSeen("/venv/Lib/site.py"))
+            assertNull(env.syncEngine.remoteContentSeen("/venv/Lib/after.py"))
+            assertEquals("print()", env.syncEngine.remoteContentSeen("/src/main.py"))
+            assertTrue(ignore.heldBack().isEmpty(), "the rules are read from the kept copy: nothing is held back")
+            assertEquals(IgnoreLayer.GITIGNORE, ignore.explain("/venv/Lib/after.py").layer)
+            val waiting = env.hydration.pendingUploadSplit().waiting.map { it.path }
+            assertTrue(waiting.none { it.startsWith("/venv/") }, "nothing below the venv waits for upload: $waiting")
+        }
+
+    @Test
     fun `a rule file only the cloud holds is downloaded on purpose and applies before it is opened`() =
         runTest {
             val env = env()
