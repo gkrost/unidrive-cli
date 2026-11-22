@@ -6,6 +6,7 @@ import org.krost.unidrive.sync.ProfileMode
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.SyncEngine
+import org.krost.unidrive.sync.ignore.LocalRuleFiles
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -117,8 +118,11 @@ internal object PendingGate {
             val raw = SyncConfig.parseRaw(Files.readString(configPath), configPath.toString())
             val mode = ProfileMode.fromConfig(raw.providers[name]?.mode) ?: return none
             val config = SyncConfig.load(configPath, name)
-            val cacheDir = SyncEngine.hydrationCacheRoot(ProfileRemoveHooks.cacheRoot(), name)
             if (mode != ProfileMode.MOUNT) return Rules(keepsLocalRule(config.effectiveExcludePatterns(name), config.syncPaths), null)
+            val cacheRoot = ProfileRemoveHooks.cacheRoot()
+            val cacheDir = SyncEngine.hydrationCacheRoot(cacheRoot, name)
+            val settings = config.ignoreSettings(name)
+            val kept = LocalRuleFiles.under(SyncEngine.ignoreRuleFilesRoot(cacheRoot, name), db, settings.maxRuleFileBytes, writable = false)
             // A rule file only the cloud has is not known here: its folder is not held back, so its rows still count.
             // The standing scope is the daemon's too: a row outside `sync_path` is kept local there, so it does not block here either.
             // gkrost/unidrive-cli#775: a local-only rule file (one of the pending rows) missing from the cache is read from the copy
@@ -126,12 +130,11 @@ internal object PendingGate {
             val guard =
                 exclusionGuard(
                     patterns = config.effectiveExcludePatterns(name),
-                    ignoreSettings = config.ignoreSettings(name),
+                    ignoreSettings = settings,
                     cacheDir = cacheDir,
                     inCloud = { false },
                     lost = { path -> db.getEntry(path)?.let { !it.isFolder && it.isPendingUpload } == true },
-                    db = db,
-                    ignoreRulesDir = SyncEngine.ignoreRuleFilesRoot(ProfileRemoveHooks.cacheRoot(), name),
+                    kept = kept,
                     standingScope = config.syncPaths,
                 )
             // As the daemon's start-up drop: a rule file the rules keep here is not gone with its cache copy (its row keeps them in force).

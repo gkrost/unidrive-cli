@@ -26,16 +26,24 @@ internal fun cliExclusionGuard(
     db: StateDatabase? = null,
     lost: (path: String) -> Boolean,
     inCloud: (path: String) -> Boolean,
-): RemoteOperationGuard =
-    exclusionGuard(
+): RemoteOperationGuard {
+    val cacheRoot = SyncEngine.defaultHydrationCacheRoot()
+    val settings = if (mode == ProfileMode.MOUNT) config.ignoreSettings(profileName) else null
+    val kept =
+        if (settings != null && db != null) {
+            LocalRuleFiles.under(SyncEngine.ignoreRuleFilesRoot(cacheRoot, profileName), db, settings.maxRuleFileBytes, writable = false)
+        } else {
+            null
+        }
+    return exclusionGuard(
         patterns = config.effectiveExcludePatterns(profileName),
-        ignoreSettings = config.ignoreSettings(profileName).takeIf { mode == ProfileMode.MOUNT },
-        cacheDir = SyncEngine.hydrationCacheRoot(SyncEngine.defaultHydrationCacheRoot(), profileName),
+        ignoreSettings = settings,
+        cacheDir = SyncEngine.hydrationCacheRoot(cacheRoot, profileName),
         inCloud = inCloud,
         lost = lost,
-        db = db,
-        ignoreRulesDir = SyncEngine.ignoreRuleFilesRoot(SyncEngine.defaultHydrationCacheRoot(), profileName),
+        kept = kept,
     )
+}
 
 internal fun exclusionGuard(
     patterns: List<String>,
@@ -43,15 +51,12 @@ internal fun exclusionGuard(
     cacheDir: Path,
     inCloud: (path: String) -> Boolean,
     lost: (path: String) -> Boolean = { false },
-    db: StateDatabase? = null,
-    // The profile's folder of downloaded rule files ([SyncEngine.ignoreRuleFilesRoot]): the daemon's kept copies are read from there, never written.
-    ignoreRulesDir: Path? = null,
+    kept: LocalRuleFiles? = null,
     // The profile's standing sync scope (`sync_path`); empty is the whole drive. A one-shot `get` or `ls` leaves it out, as before.
     standingScope: List<String> = emptyList(),
 ): RemoteOperationGuard {
     val ignore =
         ignoreSettings?.let { settings ->
-            val kept = if (ignoreRulesDir != null && db != null) LocalRuleFiles.under(ignoreRulesDir, db, settings.maxRuleFileBytes, writable = false) else null
             UploadIgnore(CacheIgnoreSource(cacheDir, lost = lost, kept = kept, inCloud = inCloud), settings)
         }
     return RemoteOperationGuard(
