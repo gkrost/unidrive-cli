@@ -43,7 +43,8 @@ import kotlin.coroutines.coroutineContext
  * HttpRetryBudget adds three cross-request levers:
  *
  *  1. **Circuit breaker.** When ≥ [stormThreshold] throttles land inside [stormWindowMs],
- *     [awaitSlot] blocks all new request starts until `max(retryAfter) × 1.2` has elapsed.
+ *     [awaitSlot] blocks all new request starts until `max(retryAfter) × 1.2`, capped at
+ *     [noThrottleWindowMs] (gkrost/unidrive-cli#74, see [recordThrottle]), has elapsed.
  *     Coroutines already past [awaitSlot] run to completion — we don't cancel in-flight work.
  *  2. **Concurrency halving.** Each storm halves [currentConcurrency] once (floor = 1); further throttles inside
  *     [stormWindowMs] of that cut do not halve again. It is the number of
@@ -231,7 +232,16 @@ class HttpRetryBudget(
 
         if (recentThrottles.size >= stormThreshold) {
             val hint = lastRetryAfterInWindowMs.get().coerceAtLeast(minSpacingMs)
-            val backoffMs = (hint * stormBackoffFactor).toLong()
+            // gkrost/unidrive-cli#74: the pause is capped at [noThrottleWindowMs]. The hint is clamped to one hour
+            // only where it is parsed (MAX_RETRY_AFTER_MS), so `hint × stormBackoffFactor` could otherwise pause
+            // every new request start for over an hour — the unbounded wait behind the "slot starvation" stalls
+            // of the issue. The cap reuses the window in which the budget already considers a throttle recent
+            // enough to space request starts ([currentSpacingMs]): the storm's whole answer — pause plus the
+            // post-storm spacing bands — then stays inside the same order as the throttle memory it keeps. A
+            // server that meant a longer pause sees traffic back sooner; the throttles that follow trip the next
+            // storm, which halves concurrency again (floor 1), so the answer degrades instead of looping.
+            val uncappedBackoffMs = (hint * stormBackoffFactor).toLong()
+            val backoffMs = minOf(uncappedBackoffMs, noThrottleWindowMs)
             // A storm is one cut: throttles arriving while it lasts do not halve again. Only one at least
             // [stormWindowMs] after the last cut can (and it then needs a fresh [stormThreshold] in its window).
             val lastCut = lastHalvingAtMs.get()
@@ -240,11 +250,12 @@ class HttpRetryBudget(
             val reduced = if (cut) concurrency.updateAndGet { current -> maxOf(1, current / 2) } else previous
             globalResumeAfter.updateAndGet { maxOf(it, now + backoffMs) }
             log.warn(
-                "UD-232 throttle storm: {} × 429/503 in {}ms — pausing new requests {}ms, " +
+                "UD-232 throttle storm: {} × 429/503 in {}ms — pausing new requests {}ms{}, " +
                     "concurrency {}→{}",
                 recentThrottles.size,
                 stormWindowMs,
                 backoffMs,
+                if (backoffMs < uncappedBackoffMs) " (Retry-After hint ${hint}ms × $stormBackoffFactor clipped to the ${noThrottleWindowMs}ms cap)" else "",
                 previous,
                 reduced,
             )

@@ -509,8 +509,9 @@ class InternxtApiServiceTest {
             //    counter once;
             //  - the 19 losers are parked on `winner.await()` in InFlightDedup.
             // testScheduler.advanceUntilIdle() runs every queued continuation
-            // that has no outstanding wall-clock dependency.
-            testScheduler.advanceUntilIdle()
+            // that has no outstanding wall-clock dependency. runCurrent, not advanceUntilIdle:
+            // the latter skips virtual time and would run out the joiners' patience (#74).
+            testScheduler.runCurrent()
             assertEquals(
                 1,
                 loaderInvocations.get(),

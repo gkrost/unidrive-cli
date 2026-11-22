@@ -190,7 +190,9 @@ class InternxtSeedCacheTest {
 
     @Test
     fun `concurrent transfers share the one derivation`() =
-        runTest {
+        // runBlocking, not runTest: the derivation runs in real time, and virtual time would skip past the
+        // joiners' patience (gkrost/unidrive-cli#74) while it does.
+        kotlinx.coroutines.runBlocking {
             val provider = newProvider()
             try {
                 coroutineScope {
