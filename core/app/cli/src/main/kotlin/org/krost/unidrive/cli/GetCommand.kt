@@ -61,7 +61,7 @@ class GetCommand : Callable<Int> {
         db.initialize()
         // The daemon's own guard, so get leaves alone what the mount treats as keep-local.
         val guard =
-            cliExclusionGuard(config, profile.name, profile.mode) { path ->
+            cliExclusionGuard(config, profile.name, profile.mode, lost = { path -> db.getEntry(path)?.let { !it.isFolder && it.isPendingUpload } == true }) { path ->
                 db.getEntry(path)?.let { !it.isFolder && it.remoteId != null } == true
             }
         var exitCode = 0
