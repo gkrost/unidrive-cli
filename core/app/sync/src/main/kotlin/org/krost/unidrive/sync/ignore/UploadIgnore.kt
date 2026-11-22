@@ -134,33 +134,63 @@ class UploadIgnore(
  * gkrost/unidrive-cli#775: a rule file only this computer has (never uploaded, often because it ignores itself, as a venv's
  * own `.gitignore` does) is known to the engine through its cache copy alone. When that copy is gone while its row still
  * says the bytes are here ([lost], asked with the logical path: a wiped or emptied hydration cache), the rules are not
- * absent but unknown: its directory is held back (fail closed, with the held-back WARN) instead of uploading what they
- * kept local. Writing the file through the mount again ends the hold, and deleting it through the mount drops its row.
+ * absent but unknown. So such a file is also kept outside the cache ([kept], taken while its cache copy is there), and its
+ * rules are read from that copy then. With no copy kept (larger than the cap, or wiped before it was ever probed), its
+ * directory is held back (fail closed, with the held-back WARN) instead of uploading what they kept local. Writing the
+ * file through the mount again ends the hold, and deleting it through the mount drops its row (and its kept copy).
  */
 class CacheIgnoreSource(
     cacheDir: Path,
     private val fetched: CloudRuleFiles? = null,
     private val lost: (path: String) -> Boolean = { false },
+    private val kept: LocalRuleFiles? = null,
     private val inCloud: (path: String) -> Boolean,
 ) : IgnoreFileSource {
     private val files = FileSystemIgnoreSource(cacheDir)
     private val fromCloud = ConcurrentHashMap.newKeySet<String>()
+    private val fromKept = ConcurrentHashMap.newKeySet<String>()
 
     override fun probe(path: String): RuleFileProbe =
         when (val probe = files.probe(path)) {
             RuleFileProbe.Absent ->
                 when {
-                    inCloud("/$path") -> cloudProbe(path)
-                    lost("/$path") -> RuleFileProbe.Unreadable(LOST)
-                    else -> probe
+                    inCloud("/$path") -> cloudProbe(path).also { kept?.forget("/$path") }
+                    lost("/$path") -> keptProbe(path)
+                    else -> probe.also { kept?.forget("/$path") }
                 }
-            else -> probe.also { fromCloud.remove(path) }
+            else ->
+                probe.also {
+                    fromCloud.remove(path)
+                    fromKept.remove(path)
+                    keepOrForget(path, probe)
+                }
         }
 
     override fun read(
         path: String,
         maxBytes: Long,
-    ): ByteArray? = if (path in fromCloud && fetched != null) fetched.read("/$path", maxBytes) else files.read(path, maxBytes)
+    ): ByteArray? =
+        when {
+            path in fromCloud && fetched != null -> fetched.read("/$path", maxBytes)
+            path in fromKept && kept != null -> kept.read("/$path", maxBytes)
+            else -> files.read(path, maxBytes)
+        }
+
+    // A local-only rule file (never uploaded, bytes here) gets a kept copy of its cache copy; any other loses one it had.
+    private fun keepOrForget(
+        path: String,
+        probe: RuleFileProbe,
+    ) {
+        val store = kept ?: return
+        if (probe !is RuleFileProbe.Present) return
+        if (lost("/$path")) store.keep("/$path", probe) { max -> files.read(path, max) } else store.forget("/$path")
+    }
+
+    private fun keptProbe(path: String): RuleFileProbe {
+        val probe = kept?.probe("/$path") ?: return RuleFileProbe.Unreadable(LOST)
+        fromKept.add(path)
+        return probe
+    }
 
     private fun cloudProbe(path: String): RuleFileProbe {
         val probe = fetched?.probe("/$path") ?: return RuleFileProbe.Unreadable(NOT_DOWNLOADED)

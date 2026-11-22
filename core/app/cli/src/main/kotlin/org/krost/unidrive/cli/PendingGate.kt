@@ -6,6 +6,7 @@ import org.krost.unidrive.sync.ProfileMode
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.SyncEngine
+import org.krost.unidrive.sync.ignore.LocalRuleFiles
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -30,22 +31,31 @@ internal object PendingGate {
         name: String,
     ): PendingUploads.Split? {
         val db = StateDatabase(stateDb, readOnly = true)
-        val rows =
-            try {
-                db.initialize()
-                db.pendingUploadRows()
-            } catch (_: java.sql.SQLException) {
-                return null
-            } catch (_: IllegalStateException) {
-                return null
-            } catch (_: IllegalArgumentException) {
-                return null
-            } finally {
-                db.close()
-            }
-        val rules = rulesOf(configDir, name)
-        return PendingUploads.split(rows, rules.keepsLocal, rules.hasLocalCopy)
+        return try {
+            db.initialize()
+            val rows = db.pendingUploadRows()
+            val rules = rulesOf(configDir, name, db)
+            PendingUploads.split(rows, rules.keepsLocal, rules.hasLocalCopy)
+        } catch (_: java.sql.SQLException) {
+            null
+        } catch (_: IllegalStateException) {
+            null
+        } catch (_: IllegalArgumentException) {
+            null
+        } finally {
+            db.close()
+        }
     }
+
+    /**
+     * The keep-local rule [split] sorts by, for `status --pending`. The caller keeps [db] open for indexed
+     * lookups of candidate rule files while scanning its pages.
+     */
+    fun keepsLocal(
+        configDir: Path,
+        name: String,
+        db: StateDatabase,
+    ): (String) -> Boolean = rulesOf(configDir, name, db).keepsLocal
 
     /**
      * Drops the `local:` rows [gone] from [stateDb] (never a row with a real remote id: [StateDatabase.deleteLocalPendingRow]
@@ -100,6 +110,7 @@ internal object PendingGate {
     private fun rulesOf(
         configDir: Path,
         name: String,
+        db: StateDatabase,
     ): Rules {
         val none = Rules(keepsLocal = { false }, hasLocalCopy = null)
         return try {
@@ -107,22 +118,31 @@ internal object PendingGate {
             val raw = SyncConfig.parseRaw(Files.readString(configPath), configPath.toString())
             val mode = ProfileMode.fromConfig(raw.providers[name]?.mode) ?: return none
             val config = SyncConfig.load(configPath, name)
-            val cacheDir = SyncEngine.hydrationCacheRoot(ProfileRemoveHooks.cacheRoot(), name)
+            if (mode != ProfileMode.MOUNT) return Rules(keepsLocalRule(config.effectiveExcludePatterns(name), config.syncPaths), null)
+            val cacheRoot = ProfileRemoveHooks.cacheRoot()
+            val cacheDir = SyncEngine.hydrationCacheRoot(cacheRoot, name)
+            val settings = config.ignoreSettings(name)
+            val kept = LocalRuleFiles.under(SyncEngine.ignoreRuleFilesRoot(cacheRoot, name), db, settings.maxRuleFileBytes, writable = false)
             // A rule file only the cloud has is not known here: its folder is not held back, so its rows still count.
             // The standing scope is the daemon's too: a row outside `sync_path` is kept local there, so it does not block here either.
-            val keepsLocal =
-                if (mode == ProfileMode.MOUNT) {
-                    exclusionGuard(
-                        patterns = config.effectiveExcludePatterns(name),
-                        ignoreSettings = config.ignoreSettings(name),
-                        cacheDir = cacheDir,
-                        inCloud = { false },
-                        standingScope = config.syncPaths,
-                    )::keepsLocal
-                } else {
-                    keepsLocalRule(config.effectiveExcludePatterns(name), config.syncPaths)
+            // gkrost/unidrive-cli#775: a local-only rule file (one of the pending rows) missing from the cache is read from the copy
+            // the daemon kept, or holds its folder back, as in the daemon.
+            val guard =
+                exclusionGuard(
+                    patterns = config.effectiveExcludePatterns(name),
+                    ignoreSettings = settings,
+                    cacheDir = cacheDir,
+                    inCloud = { false },
+                    lost = { path -> db.getEntry(path)?.let { !it.isFolder && it.isPendingUpload } == true },
+                    kept = kept,
+                    standingScope = config.syncPaths,
+                )
+            // As the daemon's start-up drop: a rule file the rules keep here is not gone with its cache copy (its row keeps them in force).
+            val hasCopy =
+                PendingUploads.localCopyCheck(cacheDir, config.syncRoot)?.let { check ->
+                    { path: String -> check(path) || (guard.isIgnoreRuleFile(path) && guard.keepsLocal(path)) }
                 }
-            Rules(keepsLocal = keepsLocal, hasLocalCopy = if (mode == ProfileMode.MOUNT) PendingUploads.localCopyCheck(cacheDir, config.syncRoot) else null)
+            Rules(keepsLocal = guard::keepsLocal, hasLocalCopy = hasCopy)
         } catch (_: Exception) {
             // The config could not be read or parsed (its message can quote a credential, so nothing of it is kept).
             none

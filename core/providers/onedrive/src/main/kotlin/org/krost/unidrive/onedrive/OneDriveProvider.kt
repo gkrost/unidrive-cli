@@ -794,7 +794,7 @@ class OneDriveProvider(
         if (isInvalidRequest() || statusCode == 403 && path.contains("_vti_", ignoreCase = true)) {
             val reason = issue ?: if (statusCode == 403) "name contains the reserved _vti_ token" else "Graph rejected this name or path as invalidRequest"
             throw PermanentUploadFailureException(
-                "OneDrive rejected '$path': $reason${if (isInvalidRequest()) " (invalidRequest)" else " (403 accessDenied)"}",
+                "OneDrive rejected '$path': $reason${if (isInvalidRequest()) " (invalidRequest)" else " (403 accessDenied)"}; Graph said: $message",
                 cause = this,
             )
         }

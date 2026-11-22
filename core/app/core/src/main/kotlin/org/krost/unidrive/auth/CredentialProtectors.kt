@@ -5,6 +5,14 @@ import java.util.Locale
 
 /** Selects a native at-rest credential backend; unsupported systems fail closed. */
 object CredentialProtectors {
+    /** The on-disk reference prefix of every native protector; a stored value starting with one is a reference, never plaintext. */
+    val REFERENCE_PREFIXES: List<String> =
+        listOf(
+            WindowsDpapiCredentialProtector.PREFIX,
+            MacKeychainCredentialProtector.STORED_PREFIX,
+            LinuxSecretServiceCredentialProtector.STORED_PREFIX,
+        )
+
     fun forCurrentPlatform(): CredentialProtector =
         forPlatform(
             System.getProperty("os.name"),

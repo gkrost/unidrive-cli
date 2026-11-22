@@ -136,7 +136,7 @@ class LinuxSecretServiceCredentialProtector(
     private fun keyFor(id: String): String =
         HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(id.toByteArray(StandardCharsets.UTF_8)))
 
-    private companion object {
+    companion object {
         const val STORED_PREFIX = "unidrive-secret-service-v1:"
     }
 }

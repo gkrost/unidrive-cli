@@ -1304,8 +1304,9 @@ class GraphApiService(
             buildJsonObject {
                 putJsonObject("item") {
                     put("@microsoft.graph.conflictBehavior", conflictBehavior)
-                    // #16: the expected size lets OneDrive check the quota before a byte is sent (507 at the create, not mid-upload).
-                    put("fileSize", fileSize)
+                    // No item.fileSize (#16 sent it for an early quota check): OneDrive Personal answers every session create
+                    // that carries it with 400 invalidRequest, measured 2026-11-22 (with it 400, without it 200, same file and
+                    // path). A full drive still refuses typed: a 507 from a chunk is InsufficientRemoteSpaceException.
                     if (fileSystemInfo != null) {
                         putJsonObject("fileSystemInfo") {
                             fileSystemInfo.createdDateTime?.let { put("createdDateTime", it) }
