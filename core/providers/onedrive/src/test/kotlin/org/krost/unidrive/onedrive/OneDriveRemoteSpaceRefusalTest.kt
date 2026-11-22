@@ -10,8 +10,6 @@ import io.ktor.http.headersOf
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.long
 import org.krost.unidrive.InsufficientRemoteSpaceException
 import org.krost.unidrive.testing.TestScratch
 import java.nio.file.Files
@@ -21,6 +19,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -88,12 +87,12 @@ class OneDriveRemoteSpaceRefusalTest {
     private fun chunkPuts() = requests.count { it.startsWith("PUT upload.example") }
 
     @Test
-    fun `the upload session asks OneDrive for a quota check with the file's size`() =
+    fun `the upload session create carries no fileSize, which OneDrive Personal refuses as invalidRequest`() =
         runTest {
             service().use { it.uploadLargeFile(localFile, "/big.bin") }
 
             val item = Json.parseToJsonElement(sessionBody!!).jsonObject["item"]!!.jsonObject
-            assertEquals(1234L, item["fileSize"]?.jsonPrimitive?.long, "the create names the size: $sessionBody")
+            assertNull(item["fileSize"], "a create with item.fileSize is a 400 on OneDrive Personal: $sessionBody")
         }
 
     @Test
