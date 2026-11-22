@@ -67,7 +67,8 @@ class OneDriveLostFinalChunkTest {
                     request.method == HttpMethod.Get && request.url.toString() == uploadUrl ->
                         respond("", HttpStatusCode.NotFound)
                     request.method == HttpMethod.Get && request.url.encodedPath.endsWith("/drive/root:/big.bin") -> {
-                        itemGets++
+                        // The lookup right after the `fail` session create (#69: the reserved item's id) is not the resolution.
+                        if (puts > 0) itemGets++
                         respond(itemJson(fileSize, eTag = "committed-etag", quickXorHash = localHash), HttpStatusCode.OK, jsonHeaders())
                     }
                     else -> respond("{}", HttpStatusCode.OK, jsonHeaders())

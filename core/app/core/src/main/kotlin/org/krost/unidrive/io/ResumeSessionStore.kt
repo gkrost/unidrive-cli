@@ -30,9 +30,10 @@ class ResumeSessionStore<T : Any>(
     private val storeDir: Path,
     private val serializer: KSerializer<T>,
     private val json: Json = Json { ignoreUnknownKeys = true },
+    private val fileName: String = FILE_NAME,
 ) {
     private val log = LoggerFactory.getLogger(ResumeSessionStore::class.java)
-    private val storeFile: Path get() = storeDir.resolve(FILE_NAME)
+    private val storeFile: Path get() = storeDir.resolve(fileName)
     private val mapSerializer = MapSerializer(String.serializer(), serializer)
 
     /** The stored sessions, expired or not; empty when none are stored or the file was moved aside as unreadable. */
@@ -88,7 +89,7 @@ class ResumeSessionStore<T : Any>(
 
     // The unreadable file goes next to where it was, with its bytes, instead of being overwritten silently.
     private fun quarantine(cause: Throwable) {
-        val aside = storeFile.resolveSibling("$FILE_NAME.torn-${System.currentTimeMillis()}")
+        val aside = storeFile.resolveSibling("$fileName.torn-${System.currentTimeMillis()}")
         val moved = runCatching { Files.move(storeFile, aside) }.isSuccess
         log.warn(
             "upload session store {} is unreadable ({}) and {} as {}; the resumable sessions it held are lost and the next upload starts over",

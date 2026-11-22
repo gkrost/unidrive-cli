@@ -112,6 +112,8 @@ class OneDriveCreateReplaySessionTest {
     fun `a replayed create resumes the session it completed into the empty item with`() =
         runTest {
             val script = Script(chunk, fileSize, existingSize = 0, stubETag = stubETag)
+            // The empty item is the one an earlier session of this profile reserved (#69: only that one is completed into).
+            UploadReservationStore(tokenDir).record("/big.bin", "existing-id")
             val provider = providerWith(script.engine())
             val local = localFile()
             try {
