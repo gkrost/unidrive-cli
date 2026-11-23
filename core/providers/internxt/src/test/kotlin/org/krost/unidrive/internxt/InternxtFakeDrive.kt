@@ -500,6 +500,9 @@ internal class FakeMoveDrive(
     val legs = CopyOnWriteArrayList<String>()
     val renamePlains = CopyOnWriteArrayList<String>()
     val refused = CopyOnWriteArrayList<String>()
+
+    // Every GET the drive was sent, as its path below /drive, in order.
+    val reads = CopyOnWriteArrayList<String>()
     val failNext = ConcurrentHashMap<String, Int>()
     private val clock = AtomicInteger()
 
@@ -556,6 +559,7 @@ internal class FakeMoveDrive(
             fun field(name: String) = body?.let { Json.parseToJsonElement(it).jsonObject[name]?.jsonPrimitive?.contentOrNull }
             fun answer(reply: Pair<HttpStatusCode, String>) = respond(reply.second, reply.first, fakeJsonHeaders)
             val segments = path.removePrefix("/drive/").split('/')
+            if (request.method == HttpMethod.Get) reads += path.removePrefix("/drive/")
             when {
                 request.method == HttpMethod.Get && segments.size == 5 &&
                     segments[0] == "folders" && segments[1] == "v2" && segments[2] == "content" -> {
