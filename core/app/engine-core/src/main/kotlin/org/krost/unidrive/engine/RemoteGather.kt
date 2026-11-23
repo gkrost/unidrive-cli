@@ -333,6 +333,13 @@ class RemoteGather(
      * @return the item now holding the key (the winner), so callers can tell whether
      *   [item] survived.
      */
+    /** #745 finding 6: the admit of one gather that keeps the last occurrence of a repeated id (the streaming gather's too). */
+    fun idIndex(
+        changes: MutableMap<String, CloudItem>,
+        keyToPath: MutableMap<String, String>,
+        collisions: MutableMap<String, CollisionRecord>,
+    ) = GatherIdIndex(changes, keyToPath, collisions, ::gatherKey) { admit(changes, keyToPath, collisions, it) }
+
     fun admit(
         changes: MutableMap<String, CloudItem>,
         keyToPath: MutableMap<String, String>,
@@ -654,7 +661,7 @@ class RemoteGather(
         loadTwins()
         val collisions = HashMap<String, CollisionRecord>()
         // #745 finding 6: of an id delivered more than once, the gather keeps the last occurrence (GatherIdIndex).
-        val ids = GatherIdIndex(changes, keyToPath, collisions, ::gatherKey) { admit(changes, keyToPath, collisions, it) }
+        val ids = idIndex(changes, keyToPath, collisions)
         fun admitChange(item: CloudItem) {
             val resolved = resolveItemPath(item)
             if (resolved != null) ids.admitLatest(resolved) else ids.unplacedTombstone(item)

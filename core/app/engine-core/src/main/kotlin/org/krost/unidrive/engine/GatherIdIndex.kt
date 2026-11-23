@@ -14,22 +14,22 @@ import org.krost.unidrive.CloudItem
  * the item at the new one are already consistent. Id-less items (Dropbox tombstones) and the namespaces' own folders
  * (one root id per page, under a name that can change between pages) are never collapsed.
  */
-internal class GatherIdIndex(
+class GatherIdIndex internal constructor(
     private val changes: MutableMap<String, CloudItem>,
     private val keyToPath: MutableMap<String, String>,
     private val collisions: MutableMap<String, RemoteGather.CollisionRecord>,
     private val gatherKey: (String) -> String,
-    private val admit: (CloudItem) -> Unit,
+    private val admit: (CloudItem) -> CloudItem,
 ) {
     private val keyById = HashMap<String, String>()
 
-    /** Admits [item] (resolved, keyed by its path) as the latest occurrence of its id. */
-    fun admitLatest(item: CloudItem) {
+    /** Admits [item] (resolved, keyed by its path) as the latest occurrence of its id; returns the key's winner (see admit). */
+    fun admitLatest(item: CloudItem): CloudItem {
         if (collapses(item.id)) {
             val earlier = keyById.put(item.id, item.path)
             if (earlier != null && gatherKey(earlier) != gatherKey(item.path)) retract(item.id, earlier)
         }
-        admit(item)
+        return admit(item)
     }
 
     /** A tombstone the gather cannot place (its id has no row) still ends the live occurrence of that id. */
@@ -53,7 +53,7 @@ internal class GatherIdIndex(
             if (holder.deleted) return
             changes.remove(holderKey)
             keyToPath.remove(fold)
-            collisions.remove(holderKey)?.let { record -> (record.losers + record.tombstones).forEach(admit) }
+            collisions.remove(holderKey)?.let { record -> (record.losers + record.tombstones).forEach { admit(it) } }
             return
         }
         val record = collisions[holderKey] ?: return

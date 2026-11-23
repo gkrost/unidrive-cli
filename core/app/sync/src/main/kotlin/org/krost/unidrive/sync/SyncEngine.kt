@@ -636,13 +636,6 @@ open class SyncEngine(
 
     private fun markRecentlyUploaded(path: String) = remoteGather.markRecentlyUploaded(path)
 
-    private fun admit(
-        changes: MutableMap<String, CloudItem>,
-        keyToPath: MutableMap<String, String>,
-        collisions: MutableMap<String, RemoteGather.CollisionRecord>,
-        item: CloudItem,
-    ): CloudItem = remoteGather.admit(changes, keyToPath, collisions, item)
-
     private fun reportGatheredCollisions(
         collisions: Map<String, RemoteGather.CollisionRecord>,
         dryRun: Boolean,
@@ -2385,6 +2378,8 @@ open class SyncEngine(
         // the buffered gather (see gatherRemoteChanges).
         val keyToPath = HashMap<String, String>()
         val collisions = HashMap<String, RemoteGather.CollisionRecord>()
+        // #745 finding 6: of an id delivered at more than one path, the gather keeps the last occurrence (GatherIdIndex).
+        val latestOfId = remoteGather.idIndex(changes, keyToPath, collisions)
         // archive#403: the twin rows of state.db, for the winner rule and placeTwins.
         remoteGather.loadTwins()
         val buffer = StreamingReconcileBuffer()
@@ -2765,7 +2760,7 @@ open class SyncEngine(
                             // the key's winner only when THIS page's item is it — a twin that
                             // lost to an earlier page's winner was already reconciled on that
                             // page, and the collision is recorded by the admit itself.
-                            val winner = admit(changes, keyToPath, collisions, item.resolved)
+                            val winner = latestOfId.admitLatest(item.resolved)
                             if (winner.id == item.resolved.id) {
                                 slice[winner.path] = winner
                             }
