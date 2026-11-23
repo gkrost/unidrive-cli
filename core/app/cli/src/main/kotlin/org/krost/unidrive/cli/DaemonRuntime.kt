@@ -109,6 +109,8 @@ class DaemonRuntime(
     // issue#72: how long a hydration-cache file stays un-evictable after its last use (profile key `cache_access_grace_ms`).
     private val cacheAccessGraceMs: Long = HydrationImpl.CACHE_ACCESS_GRACE_MS,
     private val tombstoneRetentionDays: Int = DEFAULT_TOMBSTONE_RETENTION_DAYS, // #863
+    // gkrost/unidrive-cli#508: the cold downloads' no-progress limit (profile key `download_stall_timeout`) and its source.
+    private val downloadStallTimeout: org.krost.unidrive.sync.DownloadStallTimeout = org.krost.unidrive.sync.DownloadStallTimeout.DEFAULT,
     private val deleteGuards: DeleteGuards = DeleteGuards(),
     // archive#603 (U4): the profile's hosting mode, resolved and gated by `daemon run` before this runtime is
     // constructed. A mount daemon serves the hydration verbs, sync.enumerate and the poller, and routes
@@ -425,6 +427,7 @@ class DaemonRuntime(
                 // archive#778: the pause (daemon.pause / daemon.resume); the uploads and downloads of the mount consult it
                 // through the front-end, the enumeration and the refresh through the handlers below.
                 val pause = mount.pause
+                mount.downloadStall.timeoutMs = downloadStallTimeout.seconds * 1000 // gkrost/unidrive-cli#508
                 val wrongModeReply = """{"ok":false,"error":"wrong_mode"}"""
                 val mountMode = profileMode == ProfileMode.MOUNT
                 // archive#652: a mount profile records its transfers; a failure to open the history is logged once and the daemon
@@ -927,6 +930,8 @@ class DaemonRuntime(
                         .put("transfer_budget", mount.downloadBudget.recommended.toString())
                         // gkrost/unidrive-cli#715: the byte-rate cap in KiB/s, explicit null when none. Additive; an engine without it omits it.
                         .put("bandwidth_limit_kib", maxBandwidthKib?.toString() ?: "null")
+                        // gkrost/unidrive-cli#508: the cold downloads' no-progress limit in seconds and its source (default, config).
+                        .put("download_stall_timeout", downloadStallTimeoutJson(downloadStallTimeout))
                         // ipc (gkrost/unidrive-cli#460): the requests each verb's handler served since the daemon started, so a
                         // client's change of verbs can be checked on a live daemon. Additive, read-only, always present.
                         .put("ipc", ipcStatusJson(server.requestCounts()).toString())
@@ -1194,7 +1199,7 @@ class DaemonRuntime(
         // on a breaking change and engine_version does not order dev builds. IpcContractLevelTest pins the IPC surface
         // of each level and fails when the surface changes without a raise. 8 (gkrost/unidrive-cli#851) shipped on main;
         // the history verbs (gkrost/unidrive-cli#848, merged here at their own 8) are the raise to 9 on top of it.
-        const val IPC_CONTRACT_LEVEL: Int = 9
+        const val IPC_CONTRACT_LEVEL: Int = 10
 
         /**
          * Whether a successful `hydration.subscribe` is followed by the one guarded enumerate: only for a

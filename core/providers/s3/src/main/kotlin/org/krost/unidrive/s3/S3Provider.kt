@@ -226,6 +226,13 @@ class S3Provider(
 
     override suspend fun quota(): QuotaInfo = QuotaInfo(0, 0, 0)
 
+    /**
+     * gkrost/unidrive-cli#508: the largest object S3 stores, 5 TiB (AWS, "Amazon S3 multipart upload limits":
+     * https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html, "Maximum object size 5 TiB"). An S3-compatible
+     * endpoint may enforce less; this is the cap of the protocol, not of every server.
+     */
+    override fun maxFileSizeBytes(): Long = 5L * 1024 * 1024 * 1024 * 1024
+
     // ── writing ──
 
     override suspend fun upload(

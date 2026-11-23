@@ -555,6 +555,8 @@ The reply also carries `bandwidth_limit_kib` (additive, gkrost/unidrive-cli#715;
 
 The wait for the line is part of a read's time. A client that bounds a read by a time budget computed from the file's size at an assumed line speed (gkrost/unidrive-cli#508 proposes 5 MB/s) should compute it from `bandwidth_limit_kib` when that is lower, or a large read under a low cap runs out of time.
 
+The reply also carries `download_stall_timeout` (additive, gkrost/unidrive-cli#508; `contract_level` 10): `{"seconds": N, "source": "default" | "config"}`, the no-progress limit of the mount's cold downloads. A download whose staged bytes do not change for that long is abandoned and started again; after three stalled attempts the read fails as an I/O error. A download that keeps writing is never cut, however long it takes. `seconds` is the profile key `download_stall_timeout` (60..86400) when set (`source` `config`), else 600 (`source` `default`). The engine owns this limit, so a client no longer needs a wall-clock budget by file size: one that keeps a budget should set it well above the time the file needs at the slowest line it supports (a day, say), and leave stuck downloads to the engine. A daemon that does not send the field is older than #508 and does not cut a stalled download.
+
 **The `ipc` object** (additive, gkrost/unidrive-cli#460; the protocol version does not change) counts the requests the daemon served, per verb, since it started. A client's choice of verbs can then be checked on a live daemon: a client that reads one row with `hydration.stat` instead of listing the folder with `hydration.list` shows it in these numbers, and a client build that still lists does not. It is always present, on mount and mirror profiles alike.
 
 ```json

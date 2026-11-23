@@ -98,6 +98,12 @@
             "minimum": 0,
             "maximum": 3600000
           },
+          "download_stall_timeout": {
+            "description": "How long a hydration download may write no bytes before it is abandoned and started again, in seconds; after three stalled attempts the read fails. A download that keeps writing is never cut, however long it takes. Mount profiles only. Default 600 (10 min).",
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 86400
+          },
           "tombstone_retention_days": {
             "description": "How many days state.db keeps the record of an item the engine deleted or reaped (a DELETED row, a tombstone) before the daemon's start purges it, together with the one-time rewrite of the file that gives the space back. A record that a pending rename, replace, upload or unsynced edit still names is never purged, and no cloud item and no local file is touched. 0 = keep every one. Default 90.",
             "type": "integer",

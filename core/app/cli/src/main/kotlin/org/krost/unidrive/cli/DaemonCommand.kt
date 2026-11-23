@@ -15,6 +15,7 @@ import org.krost.unidrive.sync.lookupProcess
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.SyncEngine
 import org.krost.unidrive.sync.cacheAccessGraceMs
+import org.krost.unidrive.sync.downloadStallTimeout
 import org.krost.unidrive.sync.tombstoneRetentionDays
 import org.krost.unidrive.sync.maxConcurrentTransfersOverride
 import org.krost.unidrive.sync.uploadQueueDepth
@@ -206,6 +207,7 @@ class DaemonRunCommand : Runnable {
             maxConcurrentTransfersOverride = config.maxConcurrentTransfersOverride(profile.name),
             uploadQueueDepth = config.uploadQueueDepth(profile.name),
             cacheAccessGraceMs = config.cacheAccessGraceMs(profile.name), tombstoneRetentionDays = config.tombstoneRetentionDays(profile.name),
+            downloadStallTimeout = config.downloadStallTimeout(profile.name), // gkrost/unidrive-cli#508
             deleteGuards = deleteGuardsFor(config, profile.name),
             profileMode = mode,
             // archive#655: the quota snapshot's TTL (profile config quota_refresh_minutes, default 15
