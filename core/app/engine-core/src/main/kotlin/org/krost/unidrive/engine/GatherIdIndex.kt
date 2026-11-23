@@ -61,3 +61,10 @@ class GatherIdIndex internal constructor(
         if (record.losers.isEmpty() && record.tombstones.isEmpty()) collisions.remove(holderKey)
     }
 }
+
+/** The admit of one gather that keeps the last occurrence of a repeated id: the buffered gather's and the streaming one's. */
+fun RemoteGather.idIndex(
+    changes: MutableMap<String, CloudItem>,
+    keyToPath: MutableMap<String, String>,
+    collisions: MutableMap<String, RemoteGather.CollisionRecord>,
+) = GatherIdIndex(changes, keyToPath, collisions, ::gatherKey) { admit(changes, keyToPath, collisions, it) }

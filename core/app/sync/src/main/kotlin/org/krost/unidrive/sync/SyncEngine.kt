@@ -37,6 +37,7 @@ import org.krost.unidrive.engine.RemoteGather
 import org.krost.unidrive.engine.ScanTimings
 import org.krost.unidrive.engine.ScopeState
 import org.krost.unidrive.engine.localNameIssue
+import org.krost.unidrive.engine.idIndex
 import org.krost.unidrive.engine.loneSurrogatePathIssue
 import org.krost.unidrive.engine.Transfers
 import org.krost.unidrive.sync.model.*

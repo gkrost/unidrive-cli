@@ -264,7 +264,7 @@ class RemoteGather(
     // writing two rows that are one item at the provider or one file on disk. NFC is already
     // applied by resolveItemPath. The key function is NameKey's, which the virtual folders, the
     // names inside a view and the mirror's planner compare by as well.
-    private fun gatherKey(path: String): String = NameKey.of(path, foldGatherKeys)
+    internal fun gatherKey(path: String): String = NameKey.of(path, foldGatherKeys)
 
     // archive#401: one collision path's winner and the twins it displaced. A later item can still take the key, so the winner
     // moves with it. A tombstone that lost to a live item is kept apart: it is no twin, but it may be the deletion of
@@ -333,13 +333,6 @@ class RemoteGather(
      * @return the item now holding the key (the winner), so callers can tell whether
      *   [item] survived.
      */
-    /** #745 finding 6: the admit of one gather that keeps the last occurrence of a repeated id (the streaming gather's too). */
-    fun idIndex(
-        changes: MutableMap<String, CloudItem>,
-        keyToPath: MutableMap<String, String>,
-        collisions: MutableMap<String, CollisionRecord>,
-    ) = GatherIdIndex(changes, keyToPath, collisions, ::gatherKey) { admit(changes, keyToPath, collisions, it) }
-
     fun admit(
         changes: MutableMap<String, CloudItem>,
         keyToPath: MutableMap<String, String>,
