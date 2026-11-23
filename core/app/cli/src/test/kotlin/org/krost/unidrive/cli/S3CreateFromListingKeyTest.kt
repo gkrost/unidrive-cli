@@ -28,6 +28,28 @@ class S3CreateFromListingKeyTest {
         }
     }
 
+    private fun noHeadUnder(line: String): Boolean {
+        val raw =
+            SyncConfig
+                .parseRaw("[providers.s3]\ntype = \"s3\"\nbucket = \"b\"\naccess_key_id = \"AK\"\nsecret_access_key = \"SK\"\n$line\n")
+                .providers
+                .getValue("s3")
+        val tokenDir = TestScratch.directory("ud-s3-key")
+        val provider = S3ProviderFactory().create(Main().rawProviderToProperties(raw), tokenDir) as S3Provider
+        try {
+            return provider.config.noHead
+        } finally {
+            provider.close()
+            tokenDir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `s3_no_head (574) reaches the config and is off by default`() {
+        assertTrue(noHeadUnder("s3_no_head = true"))
+        assertFalse(noHeadUnder(""))
+    }
+
     @Test
     fun `the key on reaches the provider's config`() {
         assertTrue(createFromListingUnder("s3_create_from_listing = true"))

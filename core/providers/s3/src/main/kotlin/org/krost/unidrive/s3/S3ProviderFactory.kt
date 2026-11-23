@@ -46,7 +46,12 @@ class S3ProviderFactory : ProviderFactory {
                 null -> false
                 else -> raw.toBooleanStrictOrNull() ?: throw ConfigurationException(id, "'s3_create_from_listing' must be true or false, got '$raw'")
             }
-        return S3Provider(S3Config(bucket, region, endpoint, accessKey, secretKey, tokenPath, createFromListing = createFromListing))
+        val noHead =
+            when (val raw = properties["s3_no_head"]?.trim()?.takeIf { it.isNotEmpty() }) {
+                null -> false
+                else -> raw.toBooleanStrictOrNull() ?: throw ConfigurationException(id, "'s3_no_head' must be true or false, got '$raw'")
+            }
+        return S3Provider(S3Config(bucket, region, endpoint, accessKey, secretKey, tokenPath, createFromListing = createFromListing, noHead = noHead))
     }
 
     // The checks `create` would only reach at the first sync: a bucket name S3 cannot have, and the

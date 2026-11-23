@@ -502,6 +502,10 @@ data class RawProvider(
     // object that appeared after the listing, or a key a direct upload never listed, can be replaced. Default off. Threaded into
     // S3Config.createFromListing by S3ProviderFactory.
     val s3_create_from_listing: Boolean? = null,
+    // S3: skip the HEAD after a single-part upload (rclone's `no_head`, gkrost/unidrive-cli#574). The item's modified time is then
+    // the PUT answer's `Date` instead of the object's `Last-Modified`: only for a vendor where the two agree. Default off. Threaded
+    // into S3Config.noHead by S3ProviderFactory.
+    val s3_no_head: Boolean? = null,
     // The sync policy of this profile alone: each key overrides the same-named [general] key for this profile
     // (`unidrive backup add` writes them). Absent = the [general] value, then the default.
     val sync_direction: String? = null,

@@ -132,10 +132,10 @@ class LocalFsProvider(
         // read/write/delete escape through a symlinked directory. Resolve the real path of the
         // deepest existing ancestor and require it to stay within the real root.
         if (Files.exists(rootNorm)) {
-            val realRoot = rootNorm.toRealPath()
+            val realRoot = realPathOf(rootNorm)
             var probe = resolved
             while (!Files.exists(probe) && probe.parent != null) probe = probe.parent
-            val realProbe = probe.toRealPath()
+            val realProbe = realPathOf(probe)
             require(realProbe == realRoot || realProbe.startsWith(realRoot)) {
                 "path escapes localfs root via symlink: $remotePath"
             }
@@ -179,14 +179,23 @@ class LocalFsProvider(
      * symlink-safe filter for enumeration (listChildren / delta), mirroring [toLocal]'s
      * guard for direct operations. False if the path can't be resolved.
      */
-    private fun withinRoot(local: Path): Boolean = runCatching { withinRoot(local, rootNorm.toRealPath()) }.getOrDefault(false)
+    // A test seam: told of every real-path resolution this provider makes (gkrost/unidrive-cli#877 item 7).
+    internal var realPathObserver: ((Path) -> Unit)? = null
+
+    // A test seam: told of each listed child just before its attributes are read (where a child can vanish under a live sync).
+    internal var beforeChildAttributes: ((Path) -> Unit)? = null
+
+    private fun realPathOf(path: Path): Path {
+        realPathObserver?.invoke(path)
+        return path.toRealPath()
+    }
 
     private fun withinRoot(
         local: Path,
         realRoot: Path,
     ): Boolean =
         runCatching {
-            val real = local.toAbsolutePath().normalize().toRealPath()
+            val real = realPathOf(local.toAbsolutePath().normalize())
             real == realRoot || real.startsWith(realRoot)
         }.getOrDefault(false)
 
@@ -218,8 +227,21 @@ class LocalFsProvider(
         withContext(Dispatchers.IO) {
             val dir = toLocal(path)
             if (!Files.isDirectory(dir)) return@withContext emptyList<CloudItem>()
+            // The real root is resolved once per listing, not once per entry; only a link or a reparse point pays a real-path
+            // check of its own (walkedItem), so the symlink-escape guard holds and the cost does not grow with the entry count.
+            val realRoot = realPathOf(rootNorm)
             Files.newDirectoryStream(dir).use { stream ->
-                stream.filter { withinRoot(it) }.map { toItem(it) }
+                // A null is the link check's deliberate exclusion. A child deleted between the directory read and its attributes is no
+                // longer a child (a routine race under a live sync) and is skipped; every other error propagates, because callers take
+                // the list for complete and a dropped child would be a silent undercount.
+                stream.mapNotNull { entry ->
+                    try {
+                        beforeChildAttributes?.invoke(entry)
+                        walkedItem(entry, Files.readAttributes(entry, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS), realRoot)
+                    } catch (_: java.nio.file.NoSuchFileException) {
+                        null
+                    }
+                }
             }
         }
 
@@ -441,7 +463,7 @@ class LocalFsProvider(
             if (!Files.exists(rootNorm)) skips.unreadable(rootNorm, java.nio.file.NoSuchFileException(rootNorm.toString()))
             if (Files.exists(rootNorm)) {
                 // Resolved once per walk, not once per entry: on Windows each toRealPath opens a handle.
-                val realRoot = rootNorm.toRealPath()
+                val realRoot = realPathOf(rootNorm)
                 // walkFileTree instead of Files.walk: a stream throws out of forEach on the
                 // first unreadable directory and aborts the whole listing; the visitor skips
                 // the entry (visitFileFailed) and lets the rest through.

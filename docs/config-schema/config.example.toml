@@ -157,3 +157,9 @@ sync_root = "~/Internxt"
 # per object, but an object written to the bucket by someone else after the listing (or a key a direct upload never listed)
 # can be replaced. Turn it on only where nothing else writes to the bucket. Default false.
 # s3_create_from_listing = false
+
+# S3 only: skip the HEAD after a single-part upload (rclone's no_head), one request fewer per object. The uploaded item's
+# modified time is then the Date of the PUT answer instead of the object's Last-Modified, so turn it on only for a vendor
+# where the two agree (same second); otherwise the next listing can report the object as changed. Multipart uploads keep the
+# HEAD. Default false.
+# s3_no_head = false

@@ -94,6 +94,14 @@ class FakeS3(
     @Volatile
     var repeatTokenResponses: Int = 0
 
+    /** Whether a PUT's answer carries a `Date` equal to the stored object's Last-Modified. */
+    @Volatile
+    var putAnswersDate: Boolean = true
+
+    /** The `x-amz-server-side-encryption` value a PUT's answer names, when set. */
+    @Volatile
+    var putAnswersSse: String? = null
+
     fun put(
         key: String,
         content: String,
@@ -207,7 +215,14 @@ class FakeS3(
                 }
             }
         if (refused != null) return error(refused, "PreconditionFailed")
-        return respond("", HttpStatusCode.OK, headersOf("ETag", "\"${stored.etag}\""))
+        val answer =
+            listOfNotNull(
+                "ETag" to listOf("\"${stored.etag}\""),
+                // Like a vendor whose Date is the object's Last-Modified (what `s3_no_head` assumes, #574).
+                if (putAnswersDate) "Date" to listOf(DateTimeFormatter.RFC_1123_DATE_TIME.format(stored.lastModified.atZone(ZoneOffset.UTC))) else null,
+                putAnswersSse?.let { "x-amz-server-side-encryption" to listOf(it) },
+            )
+        return respond("", HttpStatusCode.OK, headersOf(*answer.toTypedArray()))
     }
 
     /** The 400 S3 answers when a PUT's `Content-MD5` is malformed (`InvalidDigest`) or is not the MD5 of its body (`BadDigest`); null when it is fine or absent. */
