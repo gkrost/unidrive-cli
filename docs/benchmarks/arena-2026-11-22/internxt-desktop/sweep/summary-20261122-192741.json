@@ -1,0 +1,16 @@
+[
+  {
+    "Round": 1,
+    "UploadS": 206.3,
+    "UploadComplete": true,
+    "QuietBeforeUpload": true,
+    "Downloads": "[{\"Readers\":1,\"DownloadS\":296.8,\"Dehydrated\":322,\"Mismatch\":0},{\"Readers\":4,\"DownloadS\":57.5,\"Dehydrated\":322,\"Mismatch\":0},{\"Readers\":8,\"DownloadS\":32.9,\"Dehydrated\":322,\"Mismatch\":0}]"
+  },
+  {
+    "Round": 2,
+    "UploadS": 143.4,
+    "UploadComplete": true,
+    "QuietBeforeUpload": true,
+    "Downloads": "[{\"Readers\":1,\"DownloadS\":243.9,\"Dehydrated\":323,\"Mismatch\":0},{\"Readers\":4,\"DownloadS\":65.4,\"Dehydrated\":323,\"Mismatch\":0},{\"Readers\":8,\"DownloadS\":42.2,\"Dehydrated\":323,\"Mismatch\":0}]"
+  }
+]

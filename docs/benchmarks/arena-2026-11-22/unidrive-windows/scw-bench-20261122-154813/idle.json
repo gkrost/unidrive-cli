@@ -1,0 +1,54 @@
+﻿{
+    "Tag":  "idle",
+    "Kind":  "idle",
+    "T0Ms":  1795359177288,
+    "T1Ms":  1795359237307,
+    "WallMs":  60019,
+    "MBps":  null,
+    "Clean":  true,
+    "Why":  [
+
+            ],
+    "OtherBytes":  792,
+    "OtherUnknownLines":  0,
+    "OtherOpenUploads":  0,
+    "OtherProfiles":  {
+                          "other-1":  {
+                                          "Requests":  2,
+                                          "UpBytes":  0,
+                                          "DnBytes":  62,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  0,
+                                          "OpenUploads":  0
+                                      },
+                          "other-2":  {
+                                          "Requests":  2,
+                                          "UpBytes":  0,
+                                          "DnBytes":  730,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  1,
+                                          "OpenUploads":  0
+                                      }
+                      },
+    "MaxForeignProcess":  "unidrive-tray",
+    "MaxForeignCores":  0.138,
+    "TotalCores":  0.38,
+    "OwnCores":  {
+                     "powershell:51384":  0.002,
+                     "unidrive-win:45660":  0.01,
+                     "java:47212":  0.01
+                 },
+    "WireRxBytes":  523979,
+    "Downloads":  0,
+    "Retries":  null,
+    "Events":  {
+                   "remote_change":  1
+               },
+    "Pass":  null,
+    "Violations":  [
+
+                   ],
+    "Detail":  null
+}

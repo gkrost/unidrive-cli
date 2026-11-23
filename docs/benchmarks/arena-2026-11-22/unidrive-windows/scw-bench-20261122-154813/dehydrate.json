@@ -1,0 +1,52 @@
+﻿{
+    "Tag":  "dehydrate",
+    "Kind":  "dehydrate",
+    "T0Ms":  1795359158051,
+    "T1Ms":  1795359160819,
+    "WallMs":  2768,
+    "MBps":  null,
+    "Clean":  true,
+    "Why":  [
+
+            ],
+    "OtherBytes":  0,
+    "OtherUnknownLines":  0,
+    "OtherOpenUploads":  0,
+    "OtherProfiles":  {
+                          "other-2":  {
+                                          "Requests":  0,
+                                          "UpBytes":  0,
+                                          "DnBytes":  0,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  1,
+                                          "OpenUploads":  0
+                                      }
+                      },
+    "MaxForeignProcess":  "claude",
+    "MaxForeignCores":  0.017,
+    "TotalCores":  4.465,
+    "OwnCores":  {
+                     "powershell:51384":  0.243,
+                     "unidrive-win:45660":  0.982,
+                     "java:47212":  3.172
+                 },
+    "WireRxBytes":  10526,
+    "Downloads":  0,
+    "Retries":  null,
+    "Events":  {
+                   "cache_evict":  280
+               },
+    "Pass":  true,
+    "Violations":  [
+
+                   ],
+    "Detail":  {
+                   "Mode":  "dehydrate",
+                   "Polls":  2,
+                   "TimedOut":  false,
+                   "Files":  323,
+                   "Hydrated":  0,
+                   "Dehydrated":  323
+               }
+}
