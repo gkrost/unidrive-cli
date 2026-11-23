@@ -42,8 +42,8 @@ class RemoteEnumeration(
     // archive#147: how many remote rows one merge transaction upserts. Tests drive chunk
     // boundaries with a handful of items; production uses the companion default.
     private val mergeChunkRows: Int = MERGE_CHUNK_ROWS,
-    // The bulk-disappearance corroboration guard (below). False reaps a bulk disappearance at once: the profile key
-    // `bulk_reap_guard = false` takes this off. Default on.
+    // The bulk-disappearance corroboration guard (below). False reaps a bulk disappearance at once. The constructor
+    // default is on; the profile key `bulk_reap_guard` (default off) is what the daemon passes in.
     private val bulkReapGuard: Boolean = true,
 ) {
     /**

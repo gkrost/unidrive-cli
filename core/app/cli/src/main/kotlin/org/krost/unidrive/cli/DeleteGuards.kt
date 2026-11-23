@@ -24,6 +24,17 @@ fun deleteGuardsFor(
         maxDeletePercentage = config.maxDeletePercentage,
         maxDeleteAbsolute = config.maxDeleteAbsolute,
         maxDeletePerSubtreePercent = config.maxDeletePerSubtreePercent,
-        ignoreTopLevelGuard = !config.topLevelGuard(profileName),
+        ignoreTopLevelGuard = resolveIgnoreTopLevelGuard(flag = false, config = config, profileName = profileName),
         bulkReapGuard = config.bulkReapGuard(profileName),
     )
+
+/**
+ * Whether the top-level-never-hydrated guard is bypassed: the profile's `top_level_guard` (default off, so bypassed),
+ * or `unidrive sync --ignore-top-level-guard` for this one run. The daemon and the standalone sync both resolve it here,
+ * so the same mirror profile gets the same delete rule in either.
+ */
+fun resolveIgnoreTopLevelGuard(
+    flag: Boolean,
+    config: org.krost.unidrive.sync.SyncConfig,
+    profileName: String,
+): Boolean = flag || !config.topLevelGuard(profileName)
