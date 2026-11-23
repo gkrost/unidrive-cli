@@ -943,6 +943,44 @@ class DaemonRuntimeTest {
         assertEquals(kotlinx.serialization.json.JsonNull, reply["bandwidth_limit_kib"], "no cap is an explicit null; got: $reply")
     }
 
+    // gkrost/unidrive-cli#508: daemon.status reports the cold downloads' no-progress limit and where it came from.
+    private fun statusWithStallTimeout(timeout: org.krost.unidrive.sync.DownloadStallTimeout): JsonObject = runBlocking {
+        val runtime = DaemonRuntime(
+            profileMode = ProfileMode.MOUNT,
+            profileName = "test_profile",
+            lockFile = lockFile,
+            dbPath = dbPath,
+            syncRoot = tempDir,
+            socketPath = socketPath,
+            providerFactory = { StubProvider() },
+            downloadStallTimeout = timeout,
+        )
+        val daemonJob = launch { runtime.start() }
+        awaitDaemonSocket(socketPath)
+        try {
+            Json.parseToJsonElement(sendOneRequest("""{"verb":"daemon.status"}""")).jsonObject
+        } finally {
+            runtime.close()
+            daemonJob.join()
+        }
+    }
+
+    @Test
+    fun daemon_status_reports_a_configured_download_stall_timeout_with_source_config() {
+        val reply = statusWithStallTimeout(org.krost.unidrive.sync.DownloadStallTimeout(120, "config"))
+        val field = reply["download_stall_timeout"]?.jsonObject ?: error("daemon.status must carry download_stall_timeout: $reply")
+        assertEquals(120, field.getValue("seconds").jsonPrimitive.int, "seconds; got: $reply")
+        assertEquals("config", field.getValue("source").jsonPrimitive.content, "source; got: $reply")
+    }
+
+    @Test
+    fun daemon_status_reports_the_default_download_stall_timeout_with_source_default() {
+        val reply = statusWithStallTimeout(org.krost.unidrive.sync.DownloadStallTimeout.DEFAULT)
+        val field = reply["download_stall_timeout"]?.jsonObject ?: error("daemon.status must carry download_stall_timeout: $reply")
+        assertEquals(600, field.getValue("seconds").jsonPrimitive.int, "seconds; got: $reply")
+        assertEquals("default", field.getValue("source").jsonPrimitive.content, "source; got: $reply")
+    }
+
     @Test
     fun `daemon_status narrows the transfer budget after the provider throttled`() = runBlocking {
         val provider = ProviderOfType("internxt")

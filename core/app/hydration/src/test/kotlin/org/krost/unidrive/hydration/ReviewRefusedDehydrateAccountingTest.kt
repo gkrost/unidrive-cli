@@ -71,6 +71,8 @@ class ReviewRefusedDehydrateAccountingTest {
             env.db.markUnhydrated("/a.bin") // the copy stays on disk and accounted; the row says placeholder
             env.provider.downloadReached = CompletableDeferred()
             env.provider.downloadRelease = CompletableDeferred()
+            // The download is held while virtual time runs on (advanceUntilIdle): not a stall (gkrost/unidrive-cli#508).
+            MountEngine.over(env.engine).downloadStall.timeoutMs = 0
             val hydrate = async { MountEngine.over(env.engine).ensureHydratedReporting("/a.bin") }
             env.provider.downloadReached?.await() // the hydrate holds the path's lock, mid-download
 
@@ -107,6 +109,8 @@ class ReviewRefusedDehydrateAccountingTest {
             env.provider.downloadWritten = { Files.setLastModifiedTime(it, vettedMtime) }
             env.provider.downloadReached = CompletableDeferred()
             env.provider.downloadRelease = CompletableDeferred()
+            // The download is held while virtual time runs on (advanceUntilIdle): not a stall (gkrost/unidrive-cli#508).
+            MountEngine.over(env.engine).downloadStall.timeoutMs = 0
             val hydrate = async { MountEngine.over(env.engine).ensureHydratedReporting("/a.bin") }
             env.provider.downloadReached?.await()
 

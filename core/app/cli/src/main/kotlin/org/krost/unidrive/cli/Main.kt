@@ -457,6 +457,7 @@ open class Main : Runnable {
             "max_concurrent_transfers" to rp.max_concurrent_transfers?.toString(),
             "upload_queue_depth" to rp.upload_queue_depth?.toString(),
             "cache_access_grace_ms" to rp.cache_access_grace_ms?.toString(),
+            "download_stall_timeout" to rp.download_stall_timeout?.toString(),
             "tombstone_retention_days" to rp.tombstone_retention_days?.toString(),
         )
     }

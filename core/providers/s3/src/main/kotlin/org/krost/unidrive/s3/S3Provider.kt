@@ -226,6 +226,14 @@ class S3Provider(
 
     override suspend fun quota(): QuotaInfo = QuotaInfo(0, 0, 0)
 
+    /**
+     * gkrost/unidrive-cli#508: the largest object a multipart upload to this vendor can build, its part limit times the 5 GiB
+     * part ceiling, the same bound [partSizeFor] refuses beyond. On AWS that is 10,000 parts, 48.8 TiB ("Amazon S3 multipart
+     * upload limits": https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html, "Maximum object size 48.8 TiB");
+     * on Scaleway 1,000 parts. An S3-compatible endpoint may enforce less.
+     */
+    override fun maxFileSizeBytes(): Long = config.vendor.maxParts.toLong() * S3Config.MAX_PART_SIZE
+
     // ── writing ──
 
     override suspend fun upload(

@@ -32,6 +32,10 @@ internal class MemProvider : CloudProvider {
     @Volatile var downloadReached: CompletableDeferred<Unit>? = null
     @Volatile var downloadRelease: CompletableDeferred<Unit>? = null
 
+    // When set, runs before anything is written, with the download's number (1 for the first) and its destination: a
+    // provider that streams into a staging file of its own and stalls (gkrost/unidrive-cli#508).
+    @Volatile var downloadAttempt: (suspend (Int, Path) -> Unit)? = null
+
     // When set, runs on the written staging file before download() returns (e.g. to pin its modification time).
     @Volatile var downloadWritten: ((Path) -> Unit)? = null
 
@@ -122,6 +126,7 @@ internal class MemProvider : CloudProvider {
         downloads += remotePath
         downloadReached?.complete(Unit)
         downloadRelease?.await()
+        downloadAttempt?.invoke(downloads.size, destination)
         Files.createDirectories(destination.parent)
         Files.write(destination, remote.getValue(remotePath))
         downloadWritten?.invoke(destination)

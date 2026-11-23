@@ -712,6 +712,14 @@ class DropboxProvider(
 
     private fun failureWaitMs(failures: Int): Long = (IDLE_POLL_MS shl failures.coerceAtMost(6)).coerceAtMost(MAX_FAILURE_WAIT_MS)
 
+    /**
+     * gkrost/unidrive-cli#508: the largest file Dropbox takes, 2 TB = 2,199,019,061,248 bytes, as the help center states it
+     * for every upload and recommends the API for large files ("What is the Dropbox file size limit?",
+     * https://help.dropbox.com/sync/upload-limitations, updated 2026-06-17). Older API pages and staff posts give 350 GB
+     * or 375 GB per upload session; the help center's current figure is the one taken here.
+     */
+    override fun maxFileSizeBytes(): Long = 2_199_019_061_248L
+
     override suspend fun quota(): QuotaInfo {
         val usage = api.rpc("users/get_space_usage")
         val used = usage["used"]?.jsonPrimitive?.longOrNull ?: 0
