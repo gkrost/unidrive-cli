@@ -108,9 +108,9 @@ jobs:
 
   # Signs and publishes the artefacts the build job uploaded. This is the only
   # job with write access; it runs no Gradle, so nothing from the dependency
-  # tree executes with the write token. The `release` environment is where the
-  # GPG secrets belong once provisioned (GPG_PRIVATE_KEY, GPG_KEY_FINGERPRINT):
-  # scope them to this environment, protected by a required reviewer.
+  # tree executes with the write token. The `release` environment holds the signing
+  # access secrets (TS_OAUTH_*, BASTION_DEPLOY_KEY, SIGNER_DEPLOY_KEY, GPG_PUBLIC_KEY,
+  # GPG_KEY_FINGERPRINT): scope them to this environment, protected by a required reviewer.
   publish:
     needs: build
     runs-on: ubuntu-24.04
@@ -124,50 +124,67 @@ jobs:
           name: release-staging
           path: release-staging
 
-      - name: Import signing key
+      # The host's SSH is Tailscale-only, so the runner joins the tailnet as tag:ci.
+      # The signing key never leaves pkg-signer; this job holds SSH keys and the
+      # PUBLIC key only (krost-infra docs/ci-signing-access.md).
+      - name: Join the tailnet
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Check out the signing script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/release
+          path: src
+
+      - name: Sign artefacts via pkg-signer
         env:
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          BASTION_DEPLOY_KEY: ${{ secrets.BASTION_DEPLOY_KEY }}
+          SIGNER_DEPLOY_KEY: ${{ secrets.SIGNER_DEPLOY_KEY }}
         run: |
           set -euo pipefail
-          if [ -z "${GPG_PRIVATE_KEY:-}" ]; then
-            echo "ERROR: GPG_PRIVATE_KEY secret is not set on this repo." >&2
-            echo "  This key is provisioned by Plan P3 (the release signing setup)." >&2
-            echo "  Add it under Settings -> Secrets and variables -> Actions before retrying." >&2
-            exit 1
-          fi
-          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
-          gpg --list-secret-keys --keyid-format LONG
+          for v in BASTION_DEPLOY_KEY SIGNER_DEPLOY_KEY; do
+            if [ -z "${!v:-}" ]; then
+              echo "ERROR: secret $v is not set (see krost-infra docs/ci-signing-access.md)." >&2
+              exit 1
+            fi
+          done
+          umask 077
+          keys=$(mktemp -d)
+          trap 'rm -rf "$keys"' EXIT
+          printf '%s\n' "$BASTION_DEPLOY_KEY" > "$keys/bastion"
+          printf '%s\n' "$SIGNER_DEPLOY_KEY" > "$keys/signer"
+          BASTION_SSH_KEY="$keys/bastion" SIGNER_SSH_KEY="$keys/signer" \
+            src/scripts/release/sign-via-signer.sh release-staging "${GITHUB_REF_NAME#v}"
+          ls -1 release-staging
 
-      - name: Sign artefacts
+      # Verify with the public key only; a signature that does not verify fails the release.
+      - name: Verify signatures
         env:
+          GPG_PUBLIC_KEY: ${{ secrets.GPG_PUBLIC_KEY }}
           GPG_KEY_FINGERPRINT: ${{ secrets.GPG_KEY_FINGERPRINT }}
         run: |
           set -euo pipefail
-          if [ -z "${GPG_KEY_FINGERPRINT:-}" ]; then
-            echo "ERROR: GPG_KEY_FINGERPRINT secret is not set on this repo." >&2
+          if [ -z "${GPG_PUBLIC_KEY:-}" ] || [ -z "${GPG_KEY_FINGERPRINT:-}" ]; then
+            echo "ERROR: GPG_PUBLIC_KEY and GPG_KEY_FINGERPRINT secrets are required." >&2
             exit 1
           fi
+          printf '%s\n' "$GPG_PUBLIC_KEY" | gpg --batch --import
           ver="${GITHUB_REF_NAME#v}"
           cd release-staging
-          gpg --batch --yes --pinentry-mode loopback \
-              --local-user "$GPG_KEY_FINGERPRINT" \
-              --armor --detach-sign \
-              --output "unidrive-${ver}.jar.asc" \
-              "unidrive-${ver}.jar"
-          gpg --batch --yes --pinentry-mode loopback \
-              --local-user "$GPG_KEY_FINGERPRINT" \
-              --armor --detach-sign \
-              --output "unidrive-${ver}.jar.sha256.asc" \
-              "unidrive-${ver}.jar.sha256"
-          ls -1
-
-      - name: Verify signatures
-        run: |
-          set -euo pipefail
-          ver="${GITHUB_REF_NAME#v}"
-          cd release-staging
-          gpg --verify "unidrive-${ver}.jar.asc" "unidrive-${ver}.jar"
-          gpg --verify "unidrive-${ver}.jar.sha256.asc" "unidrive-${ver}.jar.sha256"
+          for f in "unidrive-${ver}.jar" "unidrive-${ver}.jar.sha256"; do
+            out=$(gpg --batch --status-fd 1 --verify "$f.asc" "$f" 2>&1)
+            echo "$out" | grep -q "^\[GNUPG:\] VALIDSIG ${GPG_KEY_FINGERPRINT}" || {
+              echo "$out" >&2
+              echo "ERROR: $f.asc is not a valid signature by ${GPG_KEY_FINGERPRINT}" >&2
+              exit 1
+            }
+          done
+          echo "signatures verified"
 
       - name: Create GitHub Release
         # Pinned by SHA like every action here; the trailing comment names the
