@@ -1,6 +1,7 @@
 package org.krost.unidrive.cli
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.krost.unidrive.sync.IpcEndpoint
@@ -62,18 +63,35 @@ internal fun printDaemonPending(
     return true
 }
 
-/** Prints the `quota` block from a `daemon.status` [reply]; false when the reply carries no usable account quota (the caller asks the provider). */
+/**
+ * Prints the `quota` block from a `daemon.status` [reply]; false when the reply carries no usable account quota (the caller asks the
+ * provider). A snapshot the daemon could not refresh (`stale`, with the failed refresh's `error`) is labelled cached and dated, as
+ * the offline path of `quota` does: its numbers are the last good ones, not a live reading.
+ */
 internal fun printDaemonQuota(
     reply: String,
     out: PrintStream = System.out,
+    err: PrintStream = System.err,
+    nowMs: Long = System.currentTimeMillis(),
 ): Boolean {
-    val quota = objectOf(reply, "quota") ?: return false
+    val root = runCatching { Json.parseToJsonElement(reply) as? JsonObject }.getOrNull() ?: return false
+    val quota = root["quota"] as? JsonObject ?: return false
     val used = quota.long("used_bytes") ?: return false
     val total = quota.long("total_bytes") ?: return false
-    val name = (Json.parseToJsonElement(reply) as JsonObject)["provider_name"].let { (it as? JsonPrimitive)?.content }
-    out.println("Storage Quota (${name ?: "daemon"}):")
+    val name = (root["provider_name"] as? JsonPrimitive)?.content ?: "daemon"
+    val stale = (quota["stale"] as? JsonPrimitive)?.content == "true"
+    val fetchedAt = quota.long("fetched_at_ms")
+    if (stale) {
+        val why = (quota["error"] as? JsonPrimitive)?.takeUnless { it is JsonNull }?.content
+        val ago = fetchedAt?.let { "${((nowMs - it).coerceAtLeast(0)) / 60_000}m ago" } ?: "an unknown time"
+        err.println("Warning: live quota unavailable${why?.let { " ($it)" } ?: ""}; showing the daemon's cached value as of $ago.")
+    }
+    out.println("Storage Quota ($name${if (stale) ", cached" else ""}):")
     out.println("  Used:      ${CliProgressReporter.formatSize(used)}")
     out.println("  Total:     ${CliProgressReporter.formatSize(total)}")
     out.println("  Remaining: ${CliProgressReporter.formatSize((total - used).coerceAtLeast(0))}")
+    if (stale && fetchedAt != null) {
+        out.println("  As of:     ${java.time.Instant.ofEpochMilli(fetchedAt).atZone(java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME)}")
+    }
     return true
 }

@@ -70,6 +70,30 @@ class DaemonStatusReadsTest {
         assertTrue("Remaining: ${CliProgressReporter.formatSize(3072)}" in text, text)
     }
 
+    // Invariant: a snapshot the daemon could not refresh is labelled cached, dated and carries the failure; a fresh one is not.
+    @Test
+    fun `quota report labels a stale daemon snapshot as cached with its time and failure`() {
+        val stale = reply(quota = """{"used_bytes":1024,"total_bytes":4096,"fetched_at_ms":1700000000000,"stale":true,"error":"HTTP 503"}""")
+        val errBuf = ByteArrayOutputStream()
+        val (ok, text) = capture { printDaemonQuota(stale, it, PrintStream(errBuf, true, Charsets.UTF_8), nowMs = 1_700_000_000_000L + 7 * 60_000) }
+        assertTrue(ok)
+        assertTrue(text.startsWith("Storage Quota (Fake Drive, cached):"), text)
+        assertTrue("As of:" in text, text)
+        assertTrue("Used:      ${CliProgressReporter.formatSize(1024)}" in text, text)
+        val warning = errBuf.toString(Charsets.UTF_8)
+        assertTrue("HTTP 503" in warning && "7m ago" in warning, warning)
+    }
+
+    @Test
+    fun `quota report prints a fresh daemon snapshot without a cached label`() {
+        val fresh = reply(quota = """{"used_bytes":1024,"total_bytes":4096,"fetched_at_ms":1700000000000,"stale":false,"error":null}""")
+        val errBuf = ByteArrayOutputStream()
+        val (ok, text) = capture { printDaemonQuota(fresh, it, PrintStream(errBuf, true, Charsets.UTF_8)) }
+        assertTrue(ok)
+        assertFalse("cached" in text || "As of" in text, text)
+        assertEquals("", errBuf.toString(Charsets.UTF_8))
+    }
+
     @Test
     fun `quota report declines a daemon without a usable snapshot so the provider is asked`() {
         for (r in listOf(reply(), reply(quota = """{"used_bytes":null,"total_bytes":null,"stale":false,"error":"x"}"""), "not json")) {
