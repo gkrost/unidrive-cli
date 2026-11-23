@@ -2778,10 +2778,11 @@ open class SyncEngine(
                         // Resolve and stage the new page's items, keyed by remote id or, when the
                         // item carries none, by path: a Dropbox tombstone has an empty id, and
                         // keying it as "" would let the tombstones of one page overwrite each
-                        // other until only the last survives. A null resolve leaves the lookahead.
+                        // other until only the last survives. A null resolve leaves the lookahead; a tombstone with no row still
+                        // ends its id's live occurrence: admitted, held, or earlier on this page.
                         val newItems = LinkedHashMap<String, HeldItem>()
                         for (item in page.items) {
-                            val resolved = resolveItemPath(item) ?: continue
+                            val resolved = resolveItemPath(item) ?: run { latestOfId.unplacedTombstone(item, heldItems, newItems); continue }
                             newItems[resolved.id.ifEmpty { resolved.path }] = HeldItem(resolved, resolved.id)
                         }
 

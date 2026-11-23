@@ -32,9 +32,17 @@ class GatherIdIndex internal constructor(
         return admit(item)
     }
 
-    /** A tombstone the gather cannot place (its id has no row) still ends the live occurrence of that id. */
-    fun unplacedTombstone(item: CloudItem) {
-        if (item.deleted && collapses(item.id)) keyById.remove(item.id)?.let { retract(item.id, it) }
+    /**
+     * A tombstone the gather cannot place (its id has no row) still ends the live occurrence of that id: the admitted one,
+     * and one [staged] by id and not admitted yet (the streaming gather's lookahead, PR #917 review).
+     */
+    fun unplacedTombstone(
+        item: CloudItem,
+        vararg staged: MutableMap<String, *>?,
+    ) {
+        if (!item.deleted || !collapses(item.id)) return
+        keyById.remove(item.id)?.let { retract(item.id, it) }
+        for (map in staged) map?.remove(item.id)
     }
 
     /** Forgets every id, with the maps it indexes (a recovery pass starts the gather over). */

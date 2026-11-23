@@ -4,12 +4,14 @@ import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.sync.model.ConflictPolicy
 import org.krost.unidrive.testing.TestScratch
+import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 
 /**
  * gkrost/unidrive-cli#845 (#745 finding 6, streaming path): one gather can deliver the same remote id at more than one
@@ -48,17 +50,51 @@ class StreamingRepeatedIdTest {
                     listOf(item("X", "/a/x")) to "c3",
                 )
             provider.files["/y"] = ByteArray(3)
-            SyncEngine(
-                provider = provider,
-                db = db,
-                syncRoot = syncRoot,
-                conflictPolicy = ConflictPolicy.KEEP_BOTH,
-                reporter = ProgressReporter.Silent,
-                streamingReconciliation = true,
-            ).syncOnce()
+            streamedPass()
 
             val rows = db.getAllEntries().filter { it.remoteId == "X" }.map { it.path }
             assertEquals(listOf("/a/x"), rows, "the item moved mid-gather: its earlier path is stale")
+        }
+
+    private suspend fun streamedPass() =
+        SyncEngine(
+            provider = provider,
+            db = db,
+            syncRoot = syncRoot,
+            conflictPolicy = ConflictPolicy.KEEP_BOTH,
+            reporter = ProgressReporter.Silent,
+            streamingReconciliation = true,
+        ).syncOnce()
+
+    // PR #917 review: a pathless tombstone for an id with no row resolves to no path. It still ends the live occurrence
+    // the lookahead holds from the page before, which must not be reconciled or downloaded.
+    @Test
+    fun `a pathless tombstone on the next page ends the held live occurrence of an untracked id`() =
+        runTest {
+            provider.files["/n"] = ByteArray(3)
+            provider.deltaPages =
+                listOf(
+                    listOf(item("X", "/n")) to "c1",
+                    listOf(item("X", "").copy(deleted = true)) to "c2",
+                )
+            streamedPass()
+
+            assertEquals(emptyList(), db.getAllEntries().filter { it.remoteId == "X" }.map { it.path }, "no ghost row for X")
+            assertFalse(Files.exists(syncRoot.resolve("n")), "the deleted item is not downloaded")
+        }
+
+    @Test
+    fun `guard - a live occurrence after a pathless tombstone of the same id is kept`() =
+        runTest {
+            provider.files["/n"] = ByteArray(3)
+            provider.deltaPages =
+                listOf(
+                    listOf(item("X", "").copy(deleted = true)) to "c1",
+                    listOf(item("X", "/n")) to "c2",
+                )
+            streamedPass()
+
+            assertEquals(listOf("/n"), db.getAllEntries().filter { it.remoteId == "X" }.map { it.path }, "the last occurrence is live")
         }
 
     private fun item(
