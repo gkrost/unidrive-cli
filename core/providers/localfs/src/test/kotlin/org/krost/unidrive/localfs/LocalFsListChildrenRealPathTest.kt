@@ -47,4 +47,24 @@ class LocalFsListChildrenRealPathTest {
             assertFalse("escape" in names, "a link leaving the root is not listed")
             assertTrue(names.containsAll(setOf("real.txt", "inside")), "a link that stays inside the root is: $names")
         }
+
+    @Test
+    fun `a child whose attributes cannot be read fails the listing instead of being dropped`() =
+        runTest {
+            org.junit.Assume.assumeFalse("POSIX permission bits only", isWindows())
+            val root = TestScratch.directory("localfs-unreadable")
+            val dir = root.resolve("d")
+            Files.createDirectory(dir)
+            Files.writeString(dir.resolve("a.txt"), "x")
+            Files.writeString(dir.resolve("b.txt"), "y")
+            // Readable but not searchable: the names list, stat of each child is denied.
+            Files.setPosixFilePermissions(dir, java.nio.file.attribute.PosixFilePermissions.fromString("r--------"))
+            try {
+                org.junit.Assume.assumeFalse("running as root: permissions do not deny", Files.isReadable(dir.resolve("a.txt")))
+                val p = LocalFsProvider(root)
+                kotlin.test.assertFailsWith<java.io.IOException> { p.listChildren("/d") }
+            } finally {
+                Files.setPosixFilePermissions(dir, java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"))
+            }
+        }
 }

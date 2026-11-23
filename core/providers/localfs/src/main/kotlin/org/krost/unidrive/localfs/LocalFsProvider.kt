@@ -228,8 +228,10 @@ class LocalFsProvider(
             // check of its own (walkedItem), so the symlink-escape guard holds and the cost does not grow with the entry count.
             val realRoot = realPathOf(rootNorm)
             Files.newDirectoryStream(dir).use { stream ->
+                // A null is the link check's deliberate exclusion; an attribute or item error propagates, because callers take the
+                // list for complete and a dropped child would be a silent undercount.
                 stream.mapNotNull { entry ->
-                    runCatching { walkedItem(entry, Files.readAttributes(entry, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS), realRoot) }.getOrNull()
+                    walkedItem(entry, Files.readAttributes(entry, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS), realRoot)
                 }
             }
         }
