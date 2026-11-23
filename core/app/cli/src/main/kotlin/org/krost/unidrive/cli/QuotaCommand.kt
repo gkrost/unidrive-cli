@@ -44,6 +44,9 @@ class QuotaCommand : Runnable {
             if (code != 0) System.exit(code)
             return
         }
+        // gkrost/unidrive-cli#706: a running daemon already holds the quota; a second sign-in beside it is the slow part.
+        val daemonProfile = parent.resolveCurrentProfile()
+        if (runningDaemonStatusReply(daemonProfile.name, parent.configBaseDir().resolve(daemonProfile.name))?.let(::printDaemonQuota) == true) return
         val provider = parent.createProvider()
         // UD-214: cache last-seen quota in state.db so an offline `unidrive quota`
         // run can still surface a useful number with "as of T" instead of failing

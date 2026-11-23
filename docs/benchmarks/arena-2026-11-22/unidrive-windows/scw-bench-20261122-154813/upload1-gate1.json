@@ -1,0 +1,54 @@
+﻿{
+    "Tag":  "upload1-gate1",
+    "Kind":  "gate",
+    "T0Ms":  1795358899006,
+    "T1Ms":  1795358959019,
+    "WallMs":  60013,
+    "MBps":  null,
+    "Clean":  true,
+    "Why":  [
+
+            ],
+    "OtherBytes":  88037,
+    "OtherUnknownLines":  0,
+    "OtherOpenUploads":  0,
+    "OtherProfiles":  {
+                          "other-1":  {
+                                          "Requests":  7,
+                                          "UpBytes":  0,
+                                          "DnBytes":  62684,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  0,
+                                          "OpenUploads":  0
+                                      },
+                          "other-2":  {
+                                          "Requests":  4,
+                                          "UpBytes":  0,
+                                          "DnBytes":  25352.979971387696,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  1,
+                                          "OpenUploads":  0
+                                      }
+                      },
+    "MaxForeignProcess":  "claude",
+    "MaxForeignCores":  0.052,
+    "TotalCores":  0.279,
+    "OwnCores":  {
+                     "powershell:51384":  0.002,
+                     "unidrive-win:45660":  0.01,
+                     "java:47212":  0.008
+                 },
+    "WireRxBytes":  363546,
+    "Downloads":  0,
+    "Retries":  null,
+    "Events":  {
+                   "remote_change":  2
+               },
+    "Pass":  null,
+    "Violations":  [
+
+                   ],
+    "Detail":  null
+}

@@ -261,12 +261,14 @@ class S3Provider(
         val ifMatch = ifMatchETag?.takeIf { config.vendor.conditionalWrites }
         // gkrost/unidrive-cli#57: a create (nothing to replace, no token) must not replace an object that appeared after the plan.
         val create = existingRemoteId == null && ifMatchETag == null
+        var put: S3PutResult? = null
         if (singlePart) {
-            if (create) {
-                createGuarded(key) { api.put(key, localPath, meta, ifNoneMatch = it, contentMd5 = contentMd5) }
-            } else {
-                api.put(key, localPath, meta, ifMatch, contentMd5 = contentMd5)
-            }
+            put =
+                if (create) {
+                    createGuarded(key) { api.put(key, localPath, meta, ifNoneMatch = it, contentMd5 = contentMd5) }
+                } else {
+                    api.put(key, localPath, meta, ifMatch, contentMd5 = contentMd5)
+                }
         } else {
             uploadInParts(localPath, key, sourceStats, meta, digests.partMd5s, onProgress) { uploadId, parts ->
                 if (create) {
@@ -283,11 +285,35 @@ class S3Provider(
             throw ProviderException("'$remotePath' changed while it was uploaded")
         }
         onProgress?.invoke(size, size)
+        // Profile key `s3_no_head` (#574): a single-part upload's item comes from the PUT's answer and the local file, no HEAD.
+        if (config.noHead && put != null) return putItem(key, size, mtime, put)
         // The HEAD stays (#574): the engine records this item's `modified` and compares it with the listing's LastModified in whole
         // seconds (#82 D), and no PUT or CompleteMultipartUpload answer carries that time (the `Date` header is the answer's time,
         // not the object's); the HEAD also tells the encryption kind that decides whether the ETag is an MD5 (`fileItem`).
         return fileItem(api.head(key) ?: throw ProviderException("S3 does not show '$key' right after its upload"))
     }
+
+    /**
+     * The item for an object just PUT, without a HEAD (`s3_no_head`). `modified` is the answer's `Date` in whole seconds, or null
+     * when the answer has none ("unknown": the next listing supplies it); size and mtime are the local file's.
+     */
+    private fun putItem(
+        key: String,
+        size: Long,
+        mtime: Instant,
+        put: S3PutResult,
+    ): CloudItem =
+        fileItem(
+            S3Object(
+                key = key,
+                etag = put.etag,
+                size = size,
+                lastModified = put.serverDate,
+                mtime = mtime,
+                sseKmsOrCustomer = put.sseKmsOrCustomer,
+                encryptionKnown = put.encryptionKnown,
+            ),
+        )
 
     // A test seam: told of every read of a source file this provider makes itself (hash passes), not the transport's body read.
     internal var sourceReadObserver: ((Path) -> Unit)? = null

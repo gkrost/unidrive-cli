@@ -16,6 +16,7 @@ endpoint = "https://s3.fr-par.scw.cloud" # default: AWS in that region
 access_key_id = "..."
 secret_access_key = "..."
 # s3_create_from_listing = false         # see "Creates on a vendor without If-None-Match" below
+# s3_no_head = false                     # see "Skipping the HEAD after an upload" below
 ```
 
 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `S3_BUCKET` fill the same keys from the environment.
@@ -37,6 +38,10 @@ What differs between vendors is read off the endpoint's host (`S3Config.Vendor`)
 A create (a new key, nothing to replace) carries `If-None-Match: *`, so a key that is taken by now answers 412 and is a conflict. Where the vendor refuses the header (a 501, or a 400 that names it), the provider checks that the key is free with a HEAD before the write and stops sending the header for the rest of the process. That is the default, and it holds for every caller, including a mount's direct upload, which has no listing behind it. The HEAD narrows the window in which another writer's object can be replaced; it does not close it.
 
 `s3_create_from_listing = true` (default `false`, gkrost/unidrive-cli#573) leaves that HEAD out for such a vendor and trusts the sync's own listing that the key was free. That is one request fewer per object (PUT, HEAD instead of HEAD, PUT, HEAD). The trade-off is a wider window: an object that someone else put there after the sync's listing is replaced, and so is one a direct upload never looked up. Turn it on only for a bucket nothing else writes to. A vendor that honours `If-None-Match` keeps its atomic guard whichever way the key is set.
+
+## Skipping the HEAD after an upload
+
+By default a single-part upload ends with a HEAD: it supplies the object's `Last-Modified` (whole seconds, which the engine later compares with the listing, #82 D), the ETag and the encryption kind that says whether the ETag is an MD5. `s3_no_head = true` (default `false`, gkrost/unidrive-cli#574, rclone's `no_head`) leaves it out: one request per uploaded object instead of two. The item then takes its ETag and encryption kind from the PUT answer (an answer that names no encryption leaves the content hash unset), its size and mtime from the local file, and its `modified` from the answer's `Date` header in whole seconds (unset when the answer has no `Date`). `Date` is the time of the answer, not of the object, so turn the key on only for a vendor whose `Last-Modified` equals it; where they differ by a second the next listing reports a time the engine did not record. Multipart uploads keep the HEAD.
 
 ## API surface used
 

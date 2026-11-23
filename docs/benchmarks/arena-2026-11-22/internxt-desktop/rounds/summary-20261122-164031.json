@@ -1,0 +1,29 @@
+[
+  {
+    "Round": 1,
+    "UploadS": 180.7,
+    "UploadComplete": true,
+    "Dehydrated": 323,
+    "DownloadS": 61.2,
+    "Mismatch": 0,
+    "QuietBeforeUpload": true
+  },
+  {
+    "Round": 2,
+    "UploadS": 200.8,
+    "UploadComplete": true,
+    "Dehydrated": 323,
+    "DownloadS": 58.3,
+    "Mismatch": 0,
+    "QuietBeforeUpload": true
+  },
+  {
+    "Round": 3,
+    "UploadS": 189.5,
+    "UploadComplete": true,
+    "Dehydrated": 321,
+    "DownloadS": 67.8,
+    "Mismatch": 0,
+    "QuietBeforeUpload": true
+  }
+]

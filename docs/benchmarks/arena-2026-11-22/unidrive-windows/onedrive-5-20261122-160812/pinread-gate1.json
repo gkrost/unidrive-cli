@@ -1,0 +1,54 @@
+﻿{
+    "Tag":  "pinread-gate1",
+    "Kind":  "gate",
+    "T0Ms":  1795360532422,
+    "T1Ms":  1795360592437,
+    "WallMs":  60015,
+    "MBps":  null,
+    "Clean":  true,
+    "Why":  [
+
+            ],
+    "OtherBytes":  62974,
+    "OtherUnknownLines":  0,
+    "OtherOpenUploads":  0,
+    "OtherProfiles":  {
+                          "other-1":  {
+                                          "Requests":  7,
+                                          "UpBytes":  0,
+                                          "DnBytes":  62684,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  0,
+                                          "OpenUploads":  0
+                                      },
+                          "other-2":  {
+                                          "Requests":  1,
+                                          "UpBytes":  0,
+                                          "DnBytes":  290,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  0,
+                                          "OpenUploads":  0
+                                      }
+                      },
+    "MaxForeignProcess":  "java",
+    "MaxForeignCores":  0.009,
+    "TotalCores":  0.123,
+    "OwnCores":  {
+                     "powershell:42432":  0.001,
+                     "java:32896":  0.004,
+                     "unidrive-win:40484":  0.007
+                 },
+    "WireRxBytes":  545061,
+    "Downloads":  0,
+    "Retries":  0,
+    "Events":  {
+
+               },
+    "Pass":  null,
+    "Violations":  [
+
+                   ],
+    "Detail":  null
+}

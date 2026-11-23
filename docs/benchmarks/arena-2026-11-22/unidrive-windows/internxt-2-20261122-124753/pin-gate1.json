@@ -1,0 +1,54 @@
+﻿{
+    "Tag":  "pin-gate1",
+    "Kind":  "gate",
+    "T0Ms":  1795348474734,
+    "T1Ms":  1795348534741,
+    "WallMs":  60007,
+    "MBps":  null,
+    "Clean":  true,
+    "Why":  [
+
+            ],
+    "OtherBytes":  611,
+    "OtherUnknownLines":  0,
+    "OtherOpenUploads":  0,
+    "OtherProfiles":  {
+                          "other-1":  {
+                                          "Requests":  1,
+                                          "UpBytes":  0,
+                                          "DnBytes":  290,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  0,
+                                          "OpenUploads":  0
+                                      },
+                          "other-2":  {
+                                          "Requests":  1,
+                                          "UpBytes":  0,
+                                          "DnBytes":  321,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  0,
+                                          "OpenUploads":  0
+                                      }
+                      },
+    "MaxForeignProcess":  "grep",
+    "MaxForeignCores":  0.102,
+    "TotalCores":  0.418,
+    "OwnCores":  {
+                     "powershell:48624":  0.002,
+                     "unidrive-win:41756":  0.002,
+                     "java:20032":  0.004
+                 },
+    "WireRxBytes":  693713,
+    "Downloads":  0,
+    "Retries":  0,
+    "Events":  {
+
+               },
+    "Pass":  null,
+    "Violations":  [
+
+                   ],
+    "Detail":  null
+}

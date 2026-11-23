@@ -426,4 +426,24 @@ class HydrationUploadHealthTest {
         val later = env.hydration.uploadHealth()
         assertTrue(later.asOfMs != null && later.asOfMs >= first.asOfMs, "a later read never moves the stamp back")
     }
+
+    // gkrost/unidrive-cli#706: `daemon.status` uploads.cloud_only is what `status --pending` prints in place of a state.db scan.
+    // If this test is removed or loosened, a mount profile's cloud-only placeholders silently count as pending downloads again.
+    @Test
+    fun `cloud-only counts the unhydrated file rows and nothing else (706)`() = runTest {
+        val env = HydrationTestEnv(recoveryUploadScope = this)
+        fun row(path: String, folder: Boolean, hydrated: Boolean) =
+            org.krost.unidrive.sync.model.SyncEntry(
+                path = path, remoteId = "rid$path", remoteHash = null, remoteSize = 10L, remoteModified = since,
+                localMtime = null, localSize = null, isFolder = folder, isPinned = false, isHydrated = hydrated, lastSynced = since,
+            )
+        env.stateDb.upsert(row("/d", folder = true, hydrated = false))
+        env.stateDb.upsert(row("/d/a.bin", folder = false, hydrated = false))
+        env.stateDb.upsert(row("/d/b.bin", folder = false, hydrated = false))
+        env.stateDb.upsert(row("/d/c.bin", folder = false, hydrated = true))
+
+        val health = env.hydration.uploadHealth()
+        assertEquals(2, health.cloudOnly, "two placeholders; the folder and the hydrated file are not cloud-only")
+        assertEquals(0, health.pending, "a placeholder is no pending transfer")
+    }
 }

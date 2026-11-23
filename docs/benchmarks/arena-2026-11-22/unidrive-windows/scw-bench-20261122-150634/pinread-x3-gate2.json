@@ -1,0 +1,54 @@
+﻿{
+    "Tag":  "pinread-x3-gate2",
+    "Kind":  "gate",
+    "T0Ms":  1795357362092,
+    "T1Ms":  1795357422107,
+    "WallMs":  60015,
+    "MBps":  null,
+    "Clean":  true,
+    "Why":  [
+
+            ],
+    "OtherBytes":  366,
+    "OtherUnknownLines":  0,
+    "OtherOpenUploads":  0,
+    "OtherProfiles":  {
+                          "other-1":  {
+                                          "Requests":  2,
+                                          "UpBytes":  0,
+                                          "DnBytes":  45.246805111821089,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  0,
+                                          "OpenUploads":  0
+                                      },
+                          "other-2":  {
+                                          "Requests":  1,
+                                          "UpBytes":  0,
+                                          "DnBytes":  321,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  0,
+                                          "OpenUploads":  0
+                                      }
+                      },
+    "MaxForeignProcess":  "claude",
+    "MaxForeignCores":  0.126,
+    "TotalCores":  0.735,
+    "OwnCores":  {
+                     "unidrive-win:27152":  0.007,
+                     "java:32632":  0.005,
+                     "powershell:43740":  0.003
+                 },
+    "WireRxBytes":  1711691,
+    "Downloads":  0,
+    "Retries":  0,
+    "Events":  {
+
+               },
+    "Pass":  null,
+    "Violations":  [
+
+                   ],
+    "Detail":  null
+}

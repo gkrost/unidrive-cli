@@ -5010,13 +5010,13 @@ class InternxtProvider(
                 currentUuid = cached
                 continue
             }
-            val content = api.getFolderContents(currentUuid)
+            val subfolders = api.getChildFoldersPaged(currentUuid) // folders only (#441-8): never the 30 MB combined body
             // archive#402: fail closed on two live same-named child folders — a first-match
             // pick would be cached in folderCache and stick for the process lifetime,
             // pinning every operation under this path to an arbitrary twin. Non-live
             // folders do not count: a trashed twin must neither be picked nor make a
             // live folder ambiguous (the same rule as getMetadata and listChildren).
-            val children = content.children.filter { it.isLive() && !api.trashedFolders.contains(it.uuid) && sanitizeName(it.plainName ?: it.name ?: "") == segment }
+            val children = subfolders.filter { it.isLive() && !api.trashedFolders.contains(it.uuid) && sanitizeName(it.plainName ?: it.name ?: "") == segment }
             val child =
                 when (children.size) {
                     0 -> throw FolderNotFoundException(segment, path, "/" + segments.take(index + 1).joinToString("/"))
@@ -5029,7 +5029,7 @@ class InternxtProvider(
             // The walk ran from the drive root by name: every folder it passed, and every live subfolder the consulted
             // listing returned, hangs below the root (#634).
             insideDriveFolders.add(child.uuid)
-            content.children.filter { it.isLive() }.forEach { insideDriveFolders.add(it.uuid) }
+            subfolders.filter { it.isLive() }.forEach { insideDriveFolders.add(it.uuid) }
             currentUuid = child.uuid
         }
         return currentUuid

@@ -1,0 +1,65 @@
+﻿{
+    "Tag":  "upload1",
+    "Kind":  "upload",
+    "T0Ms":  1795408178592,
+    "T1Ms":  1795408294972,
+    "WallMs":  116380,
+    "MBps":  0.93,
+    "Clean":  true,
+    "Why":  [
+
+            ],
+    "OtherBytes":  932,
+    "OtherUnknownLines":  0,
+    "OtherOpenUploads":  0,
+    "OtherProfiles":  {
+                          "other-1":  {
+                                          "Requests":  1,
+                                          "UpBytes":  0,
+                                          "DnBytes":  290,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  0,
+                                          "OpenUploads":  0
+                                      },
+                          "other-2":  {
+                                          "Requests":  2,
+                                          "UpBytes":  0,
+                                          "DnBytes":  642,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  0,
+                                          "OpenUploads":  0
+                                      }
+                      },
+    "MaxForeignProcess":  "explorer",
+    "MaxForeignCores":  0.017,
+    "TotalCores":  0.607,
+    "OwnCores":  {
+                     "powershell:7176":  0.009,
+                     "unidrive-win:40816":  0.161,
+                     "java:57164":  0.318
+                 },
+    "WireRxBytes":  5540548,
+    "Downloads":  0,
+    "Retries":  0,
+    "Events":  {
+                   "hash_done":  323,
+                   "encrypt_done":  323,
+                   "pickup":  323,
+                   "upload_done":  323,
+                   "source_read":  323,
+                   "cache_evict":  29,
+                   "upload_start":  323,
+                   "upload_confirmed":  323
+               },
+    "Pass":  true,
+    "Violations":  [
+
+                   ],
+    "Detail":  {
+                   "Polls":  32,
+                   "TimedOut":  false,
+                   "Failed":  0
+               }
+}

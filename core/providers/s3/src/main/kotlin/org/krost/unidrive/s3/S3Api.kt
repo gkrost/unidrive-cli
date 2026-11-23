@@ -82,6 +82,17 @@ data class S3Object(
     val proofSha256: String? = null,
 )
 
+/**
+ * What a PUT's answer says about the object it stored (gkrost/unidrive-cli#574): the ETag, the server's `Date` in whole seconds
+ * (the time of the answer, not the object's `Last-Modified`), and the encryption kind when the answer names one.
+ */
+data class S3PutResult(
+    val etag: String?,
+    val serverDate: Instant?,
+    val sseKmsOrCustomer: Boolean,
+    val encryptionKnown: Boolean,
+)
+
 data class S3ListPage(
     val objects: List<S3Object>,
     val prefixes: List<String>,
@@ -239,7 +250,7 @@ class S3Api(
 
     /**
      * PUTs [file] (or an empty body) to [key] with [meta]; [ifMatch] makes it conditional, [ifNoneMatch] makes it a create
-     * that a taken key refuses (`If-None-Match: *`). Returns the new ETag.
+     * that a taken key refuses (`If-None-Match: *`). Returns what the answer carries about the new object.
      */
     suspend fun put(
         key: String,
@@ -248,7 +259,7 @@ class S3Api(
         ifMatch: String? = null,
         ifNoneMatch: Boolean = false,
         contentMd5: ByteArray? = null,
-    ): String? {
+    ): S3PutResult {
         val size = file?.let { Files.size(it) } ?: 0L
         // [contentMd5] is the MD5 of the bytes of [file] as they were read before this call: S3 answers 400 BadDigest, and stores
         // nothing, when what it received is not those bytes (the file changed since, or the body was damaged on the way).
@@ -261,7 +272,16 @@ class S3Api(
             } else {
                 send(HttpMethod.Put, key, emptyList(), headers, SigV4Signer.UNSIGNED_PAYLOAD) { ByteArray(0) }
             }
-        return requireOk(response, "PUT").headers["ETag"]?.trim('"')
+        val answer = requireOk(response, "PUT").headers
+        val kms = answer["x-amz-server-side-encryption"]
+        val customer = answer["x-amz-server-side-encryption-customer-algorithm"]
+        return S3PutResult(
+            etag = answer["ETag"]?.trim('"'),
+            serverDate = answer["Date"]?.let(::parseHttpDate),
+            sseKmsOrCustomer = kms?.startsWith("aws:kms") == true || customer != null,
+            // An answer that names no encryption does not prove there is none: only a named kind is known.
+            encryptionKnown = kms != null || customer != null,
+        )
     }
 
     // ── multipart ──

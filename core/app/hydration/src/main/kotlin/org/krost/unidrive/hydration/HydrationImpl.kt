@@ -2343,13 +2343,13 @@ class HydrationImpl(
         val failed: Int,
         val oldestPendingAgeMs: Long?,
         val blocked: BlockedUploads = BlockedUploads(),
-        // archive#747: when the snapshot was taken (epoch ms). A failing state.db keeps the last counts served
-        // for ever, so a front-end needs the stamp to tell fresh from frozen. Null when never read.
+        // archive#747: when the snapshot was taken (epoch ms); a failing state.db keeps the last counts served for ever, so a front-end needs the stamp to tell fresh from frozen. Null when never read.
         val asOfMs: Long? = null,
         val retrying: Int = 0,
         val nextTryAtMs: Long? = null,
         val deferred: Int = 0, // live drive: pending uploads held back for space (local_space, remote_space), not failed
         val conflicts: Int = 0, // conflict copies made since this daemon started (not kept across a restart)
+        val cloudOnly: Int = 0, // gkrost/unidrive-cli#706: file rows not hydrated (cloud-only placeholders), not pending transfers
         // archive#1200: the attempts holding a transfer permit, by name. Read live, not from the cached snapshot.
         val running: RunningUploads = RunningUploads(),
     )
@@ -2430,7 +2430,7 @@ class HydrationImpl(
         }
         return UploadSnapshot(
             pendingPaths.size, uploadsInFlight.get(), failed, oldestSinceMs, System.currentTimeMillis(), takeBlocked(),
-            retryAt.size, retryAt.values.minOrNull(), deferred, conflictCopies.count,
+            retryAt.size, retryAt.values.minOrNull(), deferred, conflictCopies.count, stateDb.cloudOnlyFiles(),
         )
     }
 
