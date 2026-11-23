@@ -93,8 +93,8 @@ val restrictedToMirroredGroups: MavenArtifactRepository.() -> Unit = {
 
 allprojects {
     group = "org.krost.unidrive"
-    // Released: 0.0.1 (greenfield restart baseline), 0.0.2. The tag v<version> on the commit that carries this line makes the release (release.yml).
-    version = "0.0.2"
+    // Released: 0.0.1 (greenfield restart baseline), 0.0.2; 0.0.3 is the first release cut through pkg-signer. The tag v<version> on the commit that carries this line makes the release (release.yml).
+    version = "0.0.3"
 
     repositories {
         // Mirrors before mavenCentral — see the long comment in settings.gradle.kts.
