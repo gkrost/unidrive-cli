@@ -98,4 +98,27 @@ class DeltaFullEnumerationSelectTest {
         println("DELTA_SELECT_MEASURE full=$before B slim=$after B reduction=${"%.1f".format(percent)}%")
         assertTrue(percent >= 30.0, "reduction was $percent%")
     }
+
+    @Test
+    fun `delta_link_returned_after_a_projected_bootstrap_is_saved_without_the_select`() =
+        runTest {
+            val selected = "\$select=id,name"
+            val body =
+                """{"value":[],"@odata.nextLink":"https://graph.microsoft.com/v1.0/me/drive/root/delta?$selected&token=N",""" +
+                    """"@odata.deltaLink":"https://graph.microsoft.com/v1.0/me/drive/root/delta?token=D&$selected"}"""
+            val engine = MockEngine { respond(body, HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json")) }
+            val service = GraphApiService(config = OneDriveConfig(), httpClient = HttpClient(engine), tokenProvider = { _, _ -> "t" })
+            val result = service.getDelta()
+            service.close()
+            assertEquals("https://graph.microsoft.com/v1.0/me/drive/root/delta?token=D", result.deltaLink)
+            assertTrue(result.nextLink!!.contains("select"), "the enumeration walk stays slim: ${result.nextLink}")
+        }
+
+    @Test
+    fun `without_select_leaves_other_links_alone`() {
+        val plain = "https://graph.microsoft.com/v1.0/me/drive/root/delta?token=ABC"
+        assertEquals(plain, withoutDeltaSelect(plain))
+        assertEquals("https://x/delta", withoutDeltaSelect("https://x/delta?%24select=id"))
+        assertEquals("https://x/delta", withoutDeltaSelect("https://x/delta"))
+    }
 }

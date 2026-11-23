@@ -431,7 +431,7 @@ class GraphApiService(
                 return DeltaResult(
                     items = decoded.items,
                     nextLink = parsed.nextLink,
-                    deltaLink = parsed.deltaLink,
+                    deltaLink = parsed.deltaLink?.let(::withoutDeltaSelect),
                     skippedIds = decoded.skippedIds,
                     skippedWithoutId = decoded.skippedWithoutId,
                 )
