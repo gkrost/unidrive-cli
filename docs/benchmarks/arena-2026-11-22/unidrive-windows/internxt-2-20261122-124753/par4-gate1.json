@@ -1,0 +1,54 @@
+﻿{
+    "Tag":  "par4-gate1",
+    "Kind":  "gate",
+    "T0Ms":  1795349028211,
+    "T1Ms":  1795349088219,
+    "WallMs":  60008,
+    "MBps":  null,
+    "Clean":  true,
+    "Why":  [
+
+            ],
+    "OtherBytes":  611,
+    "OtherUnknownLines":  0,
+    "OtherOpenUploads":  0,
+    "OtherProfiles":  {
+                          "other-1":  {
+                                          "Requests":  1,
+                                          "UpBytes":  0,
+                                          "DnBytes":  290,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  0,
+                                          "OpenUploads":  0
+                                      },
+                          "other-2":  {
+                                          "Requests":  1,
+                                          "UpBytes":  0,
+                                          "DnBytes":  321,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  0,
+                                          "OpenUploads":  0
+                                      }
+                      },
+    "MaxForeignProcess":  "grep",
+    "MaxForeignCores":  0.029,
+    "TotalCores":  0.161,
+    "OwnCores":  {
+                     "powershell:48624":  0.002,
+                     "unidrive-win:41756":  0.007,
+                     "java:20032":  0.003
+                 },
+    "WireRxBytes":  271756,
+    "Downloads":  0,
+    "Retries":  0,
+    "Events":  {
+
+               },
+    "Pass":  null,
+    "Violations":  [
+
+                   ],
+    "Detail":  null
+}

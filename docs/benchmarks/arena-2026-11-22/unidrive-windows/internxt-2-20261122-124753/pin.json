@@ -1,0 +1,56 @@
+﻿{
+    "Tag":  "pin",
+    "Kind":  "pin",
+    "T0Ms":  1795348548507,
+    "T1Ms":  1795348584280,
+    "WallMs":  35773,
+    "MBps":  3.02,
+    "Clean":  true,
+    "Why":  [
+
+            ],
+    "OtherBytes":  290,
+    "OtherUnknownLines":  0,
+    "OtherOpenUploads":  0,
+    "OtherProfiles":  {
+                          "other-1":  {
+                                          "Requests":  1,
+                                          "UpBytes":  0,
+                                          "DnBytes":  290,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  0,
+                                          "OpenUploads":  0
+                                      }
+                      },
+    "MaxForeignProcess":  "chrome",
+    "MaxForeignCores":  0.117,
+    "TotalCores":  1.722,
+    "OwnCores":  {
+                     "powershell:48624":  0.202,
+                     "unidrive-win:41756":  0.235,
+                     "java:20032":  0.505
+                 },
+    "WireRxBytes":  116062706,
+    "Downloads":  323,
+    "Retries":  0,
+    "Events":  {
+                   "hash_done":  323,
+                   "download_done":  323,
+                   "download_start":  323,
+                   "cache_store":  323,
+                   "hydrate_served":  323
+               },
+    "Pass":  true,
+    "Violations":  [
+
+                   ],
+    "Detail":  {
+                   "Mode":  "pin",
+                   "Polls":  28,
+                   "TimedOut":  false,
+                   "Files":  323,
+                   "Hydrated":  323,
+                   "Dehydrated":  0
+               }
+}
