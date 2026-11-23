@@ -16,8 +16,8 @@ overwritten in place. A daemon or mount started by hand keeps running the previo
 it so you can restart it. It also warns when no Java 25+ runtime is found.
 
 The co-daemon (`unidrive-mount`) that `unidrive mount` and `unidrive-mount@.service` start is looked up at
-the first executable of `~/.local/lib/unidrive/unidrive-mount` (this installer, the per-user tarball, a
-manual `cargo build` copy) and `/usr/lib/unidrive/unidrive-mount` (deb/rpm/AUR packages), or taken verbatim
+the first executable of `~/.local/lib/unidrive/unidrive-mount` (the co-daemon's own release tarball, a
+manual `cargo build` copy; this installer does not fetch it, it belongs to gkrost/unidrive-mount-linux) and `/usr/lib/unidrive/unidrive-mount` (deb/rpm/AUR packages), or taken verbatim
 from `UNIDRIVE_MOUNT_BIN` (no fallback; a missing file is refused with exit 78 naming the path).
 
 ## Prerequisites

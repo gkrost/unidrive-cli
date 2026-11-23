@@ -186,8 +186,8 @@ status glyphs; useful for CI and log-scraping pipelines.
 Explicit path to the Linux co-daemon binary for `unidrive mount`. Set to a
 non-blank value, it is used as given (an empty or blank value counts as unset): a missing file is refused with exit 78 and no fallback (any
 existing file qualifies, matching `checkBinaryExists`). Unset, the search takes the
-first executable of `~/.local/lib/unidrive/unidrive-mount` (per-user tarball,
-`install.sh`) and `/usr/lib/unidrive/unidrive-mount` (deb/rpm/AUR packages),
+first executable of `~/.local/lib/unidrive/unidrive-mount` (the co-daemon's own
+release tarball) and `/usr/lib/unidrive/unidrive-mount` (deb/rpm/AUR packages),
 and the refusal message names every path tried.
 - **Code:** `core/app/cli/src/main/kotlin/org/krost/unidrive/cli/MountCommand.kt` (`chooseBinary`).
 
