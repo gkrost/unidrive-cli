@@ -228,6 +228,7 @@ class StatusCommand : Callable<Int> {
     private fun showPendingReport() {
         val profile = parent.resolveCurrentProfile()
         val configDir = parent.configBaseDir().resolve(profile.name)
+        if (runningDaemonStatusReply(profile.name, configDir)?.let { printDaemonPending(profile.name, it) } == true) return // #706
         val stateDbPath = configDir.resolve("state.db")
         if (!Files.exists(stateDbPath)) {
             println("No state.db for profile '${profile.name}' — nothing pending.")
@@ -252,8 +253,7 @@ class StatusCommand : Callable<Int> {
                     return@scanAliveRowsOncePerPath
                 }
                 if (!entry.isPendingUpload || keepsLocal(entry.path)) return@scanAliveRowsOncePerPath
-                // archive#136: hydrated rows use the whole UD-901 predicate; the !isHydrated
-                // branch above already routed sparse partial-downloads to downloads.
+                // archive#136: hydrated rows use the whole UD-901 predicate (sparse partial-downloads went to downloads above).
                 val refusal = db.uploadRefusal(entry.path)
                 if (UploadRefusals.holds(refusal, entry.localMtime, entry.localSize)) {
                     refusedUploads += entry.path to UploadRefusals.reason(refusal, entry.localMtime, entry.localSize).orEmpty()

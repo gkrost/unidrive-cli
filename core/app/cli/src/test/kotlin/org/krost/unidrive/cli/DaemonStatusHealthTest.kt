@@ -232,7 +232,7 @@ class DaemonStatusHealthTest {
             val s = status()
 
             val uploads = s.getValue("uploads").jsonObject
-            assertEquals(setOf("pending", "in_flight", "failed", "oldest_pending_age_ms", "as_of_ms", "retrying", "next_try_at_ms"), uploads.keys)
+            assertEquals(setOf("pending", "in_flight", "failed", "oldest_pending_age_ms", "as_of_ms", "retrying", "next_try_at_ms", "cloud_only"), uploads.keys)
             assertEquals(0, uploads.getValue("pending").jsonPrimitive.long)
             assertEquals(0, uploads.getValue("in_flight").jsonPrimitive.long)
             assertEquals(0, uploads.getValue("failed").jsonPrimitive.long)
