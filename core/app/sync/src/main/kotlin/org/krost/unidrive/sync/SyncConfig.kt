@@ -404,8 +404,8 @@ data class RawProvider(
     // writes leave under ~/.cache/unidrive/hydration/<profile>). 0 = unlimited, below 0 = no content cache.
     // Absent = the default (#404: the cache is off).
     val hydration_cache_max_bytes: Long? = null,
-    // Guard switches (default on). `bulk_reap_guard = false` reaps a bulk remote disappearance at once instead of
-    // holding it for a second full listing; `top_level_guard = false` drops the never-hydrated top-level skip.
+    // Guard switches (default off). `bulk_reap_guard = true` holds a bulk remote disappearance for a second full listing
+    // instead of reaping it at once; `top_level_guard = true` keeps the never-hydrated top-level skip.
     val bulk_reap_guard: Boolean? = null,
     val top_level_guard: Boolean? = null,
     // archive#463: how often `daemon run` polls the cloud for changes made elsewhere, in seconds. 0 = off.
@@ -676,8 +676,8 @@ data class SyncConfig(
         val uploadQueueDepth: Int? = null,
         val cacheAccessGraceMs: Long? = null,
         val tombstoneRetentionDays: Int? = null,
-        val bulkReapGuard: Boolean = true,
-        val topLevelGuard: Boolean = true,
+        val bulkReapGuard: Boolean = false,
+        val topLevelGuard: Boolean = false,
         val daemonPollSeconds: Int? = null,
         val honorGitignore: Boolean = false,
         val ignoreRules: List<String> = emptyList(),
@@ -1175,8 +1175,8 @@ data class SyncConfig(
                         uploadQueueDepth = rp.upload_queue_depth,
                         cacheAccessGraceMs = rp.cache_access_grace_ms,
                         tombstoneRetentionDays = rp.tombstone_retention_days,
-                        bulkReapGuard = rp.bulk_reap_guard ?: true,
-                        topLevelGuard = rp.top_level_guard ?: true,
+                        bulkReapGuard = rp.bulk_reap_guard ?: false,
+                        topLevelGuard = rp.top_level_guard ?: false,
                         daemonPollSeconds = rp.daemon_poll_seconds,
                         honorGitignore = rp.honor_gitignore ?: false,
                         ignoreRules = rp.ignore_rules ?: emptyList(),

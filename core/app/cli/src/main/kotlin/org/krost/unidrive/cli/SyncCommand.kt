@@ -598,8 +598,8 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
                 // UD-256: pass --full-tree through to the engine so it clears the
                 // persisted effective_scope and bypasses the bare-bidirectional refusal.
                 allowFullTreeReconciliation = fullTree,
-                // UD-264: opt-out for the top-level-never-hydrated guard.
-                ignoreTopLevelGuard = ignoreTopLevelGuard,
+                // UD-264: opt-out for the top-level-never-hydrated guard: the profile's `top_level_guard` (default off), or the flag.
+                ignoreTopLevelGuard = resolveIgnoreTopLevelGuard(ignoreTopLevelGuard, config, profile.name),
                 skippedOpsLogPath = parent.providerConfigDir().resolve("skipped-ops.jsonl"),
                 streamingReconciliation = effectiveStreaming,
                 // archive#301/#560 U6: a mirror has no hydration uploads to ask about — the cache-eviction
