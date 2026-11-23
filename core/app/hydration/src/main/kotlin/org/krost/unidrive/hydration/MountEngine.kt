@@ -616,9 +616,6 @@ class MountEngine private constructor(
     fun downloadProgress(path: String): DownloadProgress? =
         runningDownloads[path]?.let { DownloadProgress(it.bytesDone(), it.bytesTotal) }
 
-    // The bytes a download has written so far, counting the provider's own staging file (see [HydrationStaging]).
-    private fun stagedBytes(staged: Path): Long = HydrationStaging.stagedBytes(staged)
-
     /**
      * gkrost/unidrive-cli#508: the no-progress limit of the cold downloads; the daemon sets its timeout from the profile key
      * `download_stall_timeout` before the mount serves, and daemon.status reports it.
@@ -825,23 +822,24 @@ class MountEngine private constructor(
         // truncated under it by TRUNCATE_EXISTING (silent short/garbage reads).
         // archive#529: a long cache name stages short; #508: short enough that the provider's own staging name keeps it.
         val staged = cachePath.resolveSibling(HydrationStaging.stagingName(cachePath.fileName.toString()))
+        val download = StagedDownload(staged) // #508: one measure for the pacer, the meter and the watchdog; charges every attempt
         try {
             // archive#778: a download starts only while the daemon is not paused; one running when a pause begins is
             // judged on the bytes the staging file holds so far.
             // gkrost/unidrive-cli#392: and only with a permit of the download budget, by the size the row knows: many small
             // files at once, large ones at the provider's transfer cap, all of them narrow again after a throttle. #715: after the byte-rate cap.
             val fetched =
-                guard.pacedDownload(entry.remoteSize, bytesStaged = { stagedBytes(staged) }) {
+                guard.pacedDownload(entry.remoteSize, bytesStaged = download::bytesMoved) {
                     rememberingRemoteIncomplete(path, entry) {
                         pause.track(path) { transfer ->
                             transfer.begin()
                             // archive#652: a cold download is a transfer from here on (a warm serve and a refusal for a pause never get here).
                             history?.started()
-                            transfer.measuredBy(entry.remoteSize) { stagedBytes(staged) }
+                            transfer.measuredBy(entry.remoteSize, download::bytes)
                             runningDownloads[path] = transfer
                             try {
                                 // gkrost/unidrive-cli#508: an attempt with no byte progress for the stall limit is abandoned and started again.
-                                downloadStall.run(path, { stagedBytes(staged) }) { watchingCredentials { downloadByIdOrLiveItem(path, entry, remoteItem, staged, tally) } }
+                                downloadStall.run(path, download::bytes, download::attemptAbandoned) { watchingCredentials { downloadByIdOrLiveItem(path, entry, remoteItem, staged, tally) } }
                             } finally {
                                 runningDownloads.remove(path, transfer)
                             }

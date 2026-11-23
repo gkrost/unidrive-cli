@@ -29,7 +29,7 @@ class HydrationStagingTest {
         val staged = dir.resolve(HydrationStaging.stagingName("report.pdf"))
         // As writeStagedDownload names it: the mount's name, `.<uuid>`, `.unidrive-tmp`.
         dir.resolve(stagingSiblingName(staged.fileName.toString(), ".${UUID.randomUUID()}.unidrive-tmp")).writeBytes(ByteArray(5))
-        assertEquals(5L, HydrationStaging.stagedBytes(staged))
+        assertEquals(5L, StagedDownload(staged).bytes())
     }
 
     @Test
@@ -37,7 +37,7 @@ class HydrationStagingTest {
         val staged = dir.resolve(HydrationStaging.stagingName("report.pdf"))
         // As the Internxt download names it.
         dir.resolve(staged.fileName.toString() + ".unidrive-tmp").writeBytes(ByteArray(7))
-        assertEquals(7L, HydrationStaging.stagedBytes(staged))
+        assertEquals(7L, StagedDownload(staged).bytes())
     }
 
     @Test
@@ -45,7 +45,7 @@ class HydrationStagingTest {
         val staged = dir.resolve(HydrationStaging.stagingName("report.pdf"))
         val other = dir.resolve(HydrationStaging.stagingName("report.pdf"))
         dir.resolve(other.fileName.toString() + ".${UUID.randomUUID()}.unidrive-tmp").writeBytes(ByteArray(9))
-        assertEquals(0L, HydrationStaging.stagedBytes(staged))
+        assertEquals(0L, StagedDownload(staged).bytes())
     }
 
     @Test
@@ -56,7 +56,41 @@ class HydrationStagingTest {
         val providers = stagingSiblingName(staged.fileName.toString(), ".${UUID.randomUUID()}.unidrive-tmp")
         assertTrue(providers.startsWith(staged.fileName.toString()), "the provider keeps the mount's name: $providers")
         dir.resolve(providers).writeBytes(ByteArray(3))
-        assertEquals(3L, HydrationStaging.stagedBytes(staged))
+        assertEquals(3L, StagedDownload(staged).bytes())
+    }
+
+    @Test
+    fun readers_polling_one_download_list_the_folder_once_however_many_siblings_it_holds() {
+        val staged = dir.resolve(HydrationStaging.stagingName("report.pdf"))
+        repeat(2000) { dir.resolve("cached-$it.bin").writeBytes(ByteArray(1)) }
+        val providers = dir.resolve(staged.fileName.toString() + ".${UUID.randomUUID()}.unidrive-tmp")
+        providers.writeBytes(ByteArray(5))
+        val download = StagedDownload(staged)
+        // Two readers' progress tickers and the watchdog sample the same download, while the provider writes on.
+        repeat(50) { i ->
+            Files.write(providers, ByteArray(1), java.nio.file.StandardOpenOption.APPEND)
+            assertEquals(6L + i, download.bytes(), "reader 1")
+            assertEquals(6L + i, download.bytes(), "reader 2")
+        }
+        assertEquals(1, download.folderListings, "the provider's staging file is found once, then only its size is read")
+    }
+
+    @Test
+    fun an_abandoned_attempts_bytes_are_carried_and_the_next_attempts_file_is_found_anew() {
+        val staged = dir.resolve(HydrationStaging.stagingName("report.pdf"))
+        val first = dir.resolve(staged.fileName.toString() + ".${UUID.randomUUID()}.unidrive-tmp")
+        first.writeBytes(ByteArray(90))
+        val download = StagedDownload(staged)
+        assertEquals(90L, download.bytes())
+        Files.delete(first)
+        download.attemptAbandoned()
+        val second = dir.resolve(staged.fileName.toString() + ".${UUID.randomUUID()}.unidrive-tmp")
+        second.writeBytes(ByteArray(40))
+        assertEquals(40L, download.bytes(), "the current attempt starts from its own bytes")
+        Files.move(second, staged)
+        staged.writeBytes(ByteArray(100))
+        assertEquals(100L, download.bytes())
+        assertEquals(190L, download.bytesMoved(), "every attempt's bytes are moved bytes")
     }
 
     @Test

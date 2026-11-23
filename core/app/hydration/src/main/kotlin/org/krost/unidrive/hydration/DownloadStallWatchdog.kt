@@ -27,10 +27,11 @@ class DownloadStallWatchdog(
 
     private val pollMs: Long get() = (timeoutMs / POLLS_PER_TIMEOUT).coerceIn(1L, MAX_POLL_MS)
 
-    /** Runs [attempt] under the watchdog, again after each stall, and gives its result. */
+    /** Runs [attempt] under the watchdog, again after each stall ([abandoned] first), and gives its result. */
     suspend fun <T> run(
         path: String,
         bytesStaged: () -> Long,
+        abandoned: () -> Unit = {},
         attempt: suspend () -> T,
     ): T {
         if (timeoutMs <= 0) return attempt()
@@ -39,6 +40,7 @@ class DownloadStallWatchdog(
             try {
                 return watched(bytesStaged, attempt)
             } catch (e: DownloadStalledException) {
+                abandoned()
                 if (n >= attempts) throw e
                 log.warn("download of {} made no progress for {} s; abandoned and started again (attempt {} of {})", path, timeoutMs / 1000, n + 1, attempts)
                 n++
