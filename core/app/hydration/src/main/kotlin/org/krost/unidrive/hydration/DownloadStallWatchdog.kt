@@ -16,7 +16,8 @@ import org.slf4j.LoggerFactory
  * use), sampled every [pollMs]; any change of the value counts. The clock starts when the attempt starts, which is after
  * the download budget's permit is held: a read queued behind others has not stalled.
  *
- * [timeoutMs] is set once by the daemon from the profile key `download_stall_timeout` before the mount serves.
+ * [timeoutMs] is set once by the daemon from the profile key `download_stall_timeout` before the mount serves; 0 or less
+ * runs the attempt unwatched (tests that hold a download while virtual time runs on, as for the upload watchdog).
  */
 class DownloadStallWatchdog(
     @Volatile var timeoutMs: Long = DEFAULT_TIMEOUT_MS,
@@ -32,6 +33,7 @@ class DownloadStallWatchdog(
         bytesStaged: () -> Long,
         attempt: suspend () -> T,
     ): T {
+        if (timeoutMs <= 0) return attempt()
         var n = 1
         while (true) {
             try {

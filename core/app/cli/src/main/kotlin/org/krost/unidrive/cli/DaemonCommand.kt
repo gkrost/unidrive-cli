@@ -205,9 +205,8 @@ class DaemonRunCommand : Runnable {
             hydrationCacheMaxBytes = config.hydrationCacheMaxBytes(profile.name),
             // issue#72: the profile's transfer budget, upload queue depth and cache access grace.
             maxConcurrentTransfersOverride = config.maxConcurrentTransfersOverride(profile.name),
-            uploadQueueDepth = config.uploadQueueDepth(profile.name),
+            uploadQueueDepth = config.uploadQueueDepth(profile.name), downloadStallTimeout = config.downloadStallTimeout(profile.name), // #508
             cacheAccessGraceMs = config.cacheAccessGraceMs(profile.name), tombstoneRetentionDays = config.tombstoneRetentionDays(profile.name),
-            downloadStallTimeout = config.downloadStallTimeout(profile.name), // gkrost/unidrive-cli#508
             deleteGuards = deleteGuardsFor(config, profile.name),
             profileMode = mode,
             // archive#655: the quota snapshot's TTL (profile config quota_refresh_minutes, default 15
