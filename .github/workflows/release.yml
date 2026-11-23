@@ -178,7 +178,9 @@ jobs:
           cd release-staging
           for f in "unidrive-${ver}.jar" "unidrive-${ver}.jar.sha256"; do
             out=$(gpg --batch --status-fd 1 --verify "$f.asc" "$f" 2>&1)
-            echo "$out" | grep -q "^\[GNUPG:\] VALIDSIG ${GPG_KEY_FINGERPRINT}" || {
+            # VALIDSIG: field 3 is the signing (sub)key, field 12 the primary key. The pinned
+            # fingerprint is the primary key; the signer signs with its subkey.
+            echo "$out" | awk -v fpr="${GPG_KEY_FINGERPRINT}" '$2 == "VALIDSIG" && ($3 == fpr || $12 == fpr) { ok = 1 } END { exit !ok }' || {
               echo "$out" >&2
               echo "ERROR: $f.asc is not a valid signature by ${GPG_KEY_FINGERPRINT}" >&2
               exit 1
