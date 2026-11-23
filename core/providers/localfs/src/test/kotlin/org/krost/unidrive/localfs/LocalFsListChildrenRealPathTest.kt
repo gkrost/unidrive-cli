@@ -67,4 +67,15 @@ class LocalFsListChildrenRealPathTest {
                 Files.setPosixFilePermissions(dir, java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"))
             }
         }
+
+    @Test
+    fun `a child deleted between the directory read and its attributes is skipped, its siblings are listed`() =
+        runTest {
+            val root = TestScratch.directory("localfs-vanish")
+            Files.writeString(root.resolve("gone.txt"), "x")
+            Files.writeString(root.resolve("stays.txt"), "y")
+            val p = LocalFsProvider(root)
+            p.beforeChildAttributes = { if (it.fileName.toString() == "gone.txt") Files.delete(it) }
+            assertEquals(listOf("stays.txt"), p.listChildren("/").map { it.name })
+        }
 }

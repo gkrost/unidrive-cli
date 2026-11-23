@@ -182,6 +182,9 @@ class LocalFsProvider(
     // A test seam: told of every real-path resolution this provider makes (gkrost/unidrive-cli#877 item 7).
     internal var realPathObserver: ((Path) -> Unit)? = null
 
+    // A test seam: told of each listed child just before its attributes are read (where a child can vanish under a live sync).
+    internal var beforeChildAttributes: ((Path) -> Unit)? = null
+
     private fun realPathOf(path: Path): Path {
         realPathObserver?.invoke(path)
         return path.toRealPath()
@@ -228,10 +231,16 @@ class LocalFsProvider(
             // check of its own (walkedItem), so the symlink-escape guard holds and the cost does not grow with the entry count.
             val realRoot = realPathOf(rootNorm)
             Files.newDirectoryStream(dir).use { stream ->
-                // A null is the link check's deliberate exclusion; an attribute or item error propagates, because callers take the
-                // list for complete and a dropped child would be a silent undercount.
+                // A null is the link check's deliberate exclusion. A child deleted between the directory read and its attributes is no
+                // longer a child (a routine race under a live sync) and is skipped; every other error propagates, because callers take
+                // the list for complete and a dropped child would be a silent undercount.
                 stream.mapNotNull { entry ->
-                    walkedItem(entry, Files.readAttributes(entry, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS), realRoot)
+                    try {
+                        beforeChildAttributes?.invoke(entry)
+                        walkedItem(entry, Files.readAttributes(entry, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS), realRoot)
+                    } catch (_: java.nio.file.NoSuchFileException) {
+                        null
+                    }
                 }
             }
         }
