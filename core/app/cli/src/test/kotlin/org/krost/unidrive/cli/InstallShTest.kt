@@ -1,4 +1,3 @@
-        env.forEach { (k, v) -> pb.environment()[k] = v }
 package org.krost.unidrive.cli
 
 import org.junit.Assume.assumeTrue
