@@ -2,8 +2,8 @@
 # Manual edits can break the build and are not advised.
 # This file is expected to be part of source control.
 # To regenerate this file, run: ./gradlew :providers:localfs:dependencies --write-locks
-ch.qos.logback:logback-classic:1.6.7=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
-ch.qos.logback:logback-core:1.6.7=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
+ch.qos.logback:logback-classic:1.6.8=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
+ch.qos.logback:logback-core:1.6.8=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 com.squareup.okhttp3:okhttp-jvm:5.5.1=runtimeClasspath,testRuntimeClasspath
 com.squareup.okhttp3:okhttp:5.5.1=runtimeClasspath,testRuntimeClasspath
 com.squareup.okio:okio-jvm:3.18.2=runtimeClasspath,testRuntimeClasspath
