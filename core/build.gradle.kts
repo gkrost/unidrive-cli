@@ -910,6 +910,16 @@ tasks.register("checkModuleEdges") {
             }
         }
         edges.keys.sorted().forEach { visit(it, emptyList()) }
+        // #270 item 2: a library module logs through slf4j-api; only the CLI (the application) binds a backend, so an
+        // embedder (the Android app, a test harness) picks its own instead of excluding logback.
+        val mainConfigs = setOf("api", "implementation", "compileOnly", "runtimeOnly")
+        subprojects.filter { it.path != ":app:cli" }.forEach { sp ->
+            sp.configurations.filter { it.name in mainConfigs }.forEach { c ->
+                c.dependencies.filter { it.group == "ch.qos.logback" }.forEach {
+                    violations += "${sp.path} ${c.name}(${it.group}:${it.name}) (a library module depends on slf4j-api; only :app:cli ships logback)"
+                }
+            }
+        }
         if (violations.isNotEmpty()) {
             throw GradleException("Forbidden module dependency edges:\n  " + violations.joinToString("\n  "))
         }

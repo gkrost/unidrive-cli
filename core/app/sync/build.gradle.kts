@@ -23,7 +23,8 @@ dependencies {
     implementation(libs.sqlite.jdbc)
     implementation(libs.ktoml.core)
     implementation(libs.ktoml.file)
-    implementation(libs.logback.classic)
+    implementation(libs.slf4j.api)
+    testImplementation(libs.logback.classic)
 
     // FakeCloudProvider implements the provider SPI and suspends (delay).
     testFixturesApi(project(":app:core"))
