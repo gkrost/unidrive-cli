@@ -413,7 +413,7 @@ class GraphApiService(
         // A preview must not reset the delta-cursor age clock that recordDeltaSeen maintains.
         readOnly: Boolean = false,
     ): DeltaResult {
-        val url = link ?: if (fromLatest) "$baseUrl/me/drive/root/delta?token=latest" else "$baseUrl/me/drive/root/delta"
+        val url = link ?: if (fromLatest) "$baseUrl/me/drive/root/delta?token=latest" else deltaFullEnumerationUrl(baseUrl)
         log.debug("Delta cursor: {}", link?.takeLast(40) ?: if (fromLatest) "(token=latest bootstrap)" else "(initial)")
         if (link != null) checkDeltaCursorAge()
 
@@ -431,7 +431,7 @@ class GraphApiService(
                 return DeltaResult(
                     items = decoded.items,
                     nextLink = parsed.nextLink,
-                    deltaLink = parsed.deltaLink,
+                    deltaLink = parsed.deltaLink?.let(::withoutDeltaSelect),
                     skippedIds = decoded.skippedIds,
                     skippedWithoutId = decoded.skippedWithoutId,
                 )
