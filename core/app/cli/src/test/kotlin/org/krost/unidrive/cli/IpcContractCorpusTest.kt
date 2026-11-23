@@ -488,13 +488,20 @@ class IpcContractCorpusTest {
 
             val (statusRequest, expectedStatus) = pairs[1]
             val expected = Json.parseToJsonElement(expectedStatus) as JsonObject
-            // The enumeration runs after its reply: ask until it has landed (idle, a success instant, the folder placed).
+            // The enumeration runs after its reply: ask until it has landed (idle, a success instant, the folder placed), and
+            // until `uploads` is a reading taken after it: that reading is cached (UPLOAD_SNAPSHOT_TTL_MS), so one taken before
+            // the enumeration saved its rows reports cloud_only 0 (the red main CI of 2026-11-23).
             fun JsonObject.section(key: String): JsonObject = getValue(key) as JsonObject
-            fun landed(reply: JsonObject): Boolean =
-                section in reply &&
-                    (reply.section("enumeration")["state"] as? JsonPrimitive)?.content == "idle" &&
-                    reply.section("enumeration")["last_success_at_ms"].let { it != null && it !is JsonNull } &&
+            fun JsonObject.millis(key: String): Long? = (this[key] as? JsonPrimitive)?.takeUnless { it is JsonNull }?.content?.toLongOrNull()
+            fun landed(reply: JsonObject): Boolean {
+                if (section !in reply) return false
+                val enumeration = reply.section("enumeration")
+                val succeededAt = enumeration.millis("last_success_at_ms") ?: return false
+                val uploadsAsOf = (reply["uploads"] as? JsonObject)?.millis("as_of_ms") ?: return false
+                return (enumeration["state"] as? JsonPrimitive)?.content == "idle" &&
+                    uploadsAsOf > succeededAt &&
                     reply.section("provider_health")["last_contact_ms"].let { it != null && it !is JsonNull }
+            }
             val deadline = System.currentTimeMillis() + 10_000
             var reply: JsonObject
             do {
