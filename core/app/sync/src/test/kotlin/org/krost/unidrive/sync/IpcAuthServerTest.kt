@@ -326,6 +326,101 @@ class IpcAuthServerTest {
         IpcAuthClient.connect(endpoint, IpcAuth.Scope.FULL).close()
     }
 
+    // gkrost/unidrive-cli#926 S4: the auth and clock a slot test runs with; the handshake timeout far away, so only the caps decide.
+    private fun slotServer(
+        maxClients: Int = IpcServer.DEFAULT_MAX_CLIENTS,
+        now: java.util.concurrent.atomic.AtomicLong = java.util.concurrent.atomic.AtomicLong(1_000_000L),
+    ): IpcServer {
+        IpcAuth.issue(profileDir, "p1", "test-engine")
+        val auth =
+            IpcAuth(
+                "p1",
+                IpcAuth.readToken(IpcAuth.tokenFile(profileDir, IpcAuth.Scope.FULL)),
+                IpcAuth.readToken(IpcAuth.tokenFile(profileDir, IpcAuth.Scope.READ)),
+                "test-engine",
+                unauthenticatedTimeoutMs = 3_600_000,
+            )
+        val server = IpcServer(socketPath, auth = auth, maxClients = maxClients, idleTimeoutMs = 60_000, clock = { now.get() })
+        server.registerHandler("daemon.status") { _, _ -> """{"ok":true,"detail":"full status"}""" }
+        server.registerHandler("hydration.list") { _, _ -> """{"ok":true,"entries":[]}""" }
+        server.registerHandler("hydration.unlink") { _, _ -> """{"ok":true}""" }
+        server.registerIdleExemptVerbs(listOf("hydration.list", "hydration.unlink"))
+        servers.add(server)
+        return server
+    }
+
+    @Test
+    fun unauthenticated_connections_cannot_exhaust_client_slots() {
+        val server = slotServer(maxClients = 3).also { it.start(scope) }
+        // Twice the client cap of connections that never send a line.
+        val silent = List(6) { raw() }
+        try {
+            val deadline = System.currentTimeMillis() + 5_000
+            while (server.clientCount < 3 && System.currentTimeMillis() < deadline) Thread.sleep(10)
+            Thread.sleep(200) // the accept loop has seen all six
+
+            val client = IpcAuthClient.connect(endpoint, IpcAuth.Scope.FULL).also { it.configureBlocking(false) }
+            client.use {
+                assertEquals("""{"ok":true,"detail":"full status"}""", it.ask("""{"verb":"daemon.status"}"""), "a real client is served")
+            }
+            assertTrue(server.clientCount <= 3 + IpcClientSlots.MAX_PENDING_HANDSHAKES, "at most the cap plus the handshake cap: ${server.clientCount}")
+        } finally {
+            silent.forEach { runCatching { it.close() } }
+        }
+    }
+
+    @Test
+    fun read_scope_connection_without_handles_is_closed_when_idle() {
+        val now = java.util.concurrent.atomic.AtomicLong(1_000_000L)
+        slotServer(now = now).start(scope)
+        // A read-scope client that ran an exempt (hydration) read verb and holds nothing on its connection.
+        val reader =
+            IpcAuthClient.connect(endpoint, IpcAuth.Scope.READ).also {
+                it.configureBlocking(false)
+                assertEquals("""{"ok":true,"entries":[]}""", it.ask("""{"verb":"hydration.list","prefix":"/"}"""))
+            }
+        // Control: the full-scope connection of a mount stays exempt.
+        val writer =
+            IpcAuthClient.connect(endpoint, IpcAuth.Scope.FULL).also {
+                it.configureBlocking(false)
+                assertEquals("""{"ok":true}""", it.ask("""{"verb":"hydration.unlink","path":"/a"}"""))
+            }
+        try {
+            now.addAndGet(120_000)
+            assertEquals(null, reader.line(), "closed for being idle")
+            Thread.sleep(300)
+            assertEquals("""{"ok":true,"entries":[]}""", writer.ask("""{"verb":"hydration.list","prefix":"/"}"""), "the full one stays")
+        } finally {
+            listOf(reader, writer).forEach { runCatching { it.close() } }
+        }
+    }
+
+    @Test
+    fun read_scope_connection_that_holds_something_stays_open_when_idle() {
+        val now = java.util.concurrent.atomic.AtomicLong(1_000_000L)
+        val held = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val server = slotServer(now = now)
+        server.registerHandler("hydration.subscribe") { connId, _ -> held.add(connId).let { """{"ok":true}""" } }
+        server.registerIdleHold { it in held }
+        server.start(scope)
+        val holder =
+            IpcAuthClient.connect(endpoint, IpcAuth.Scope.READ).also {
+                it.configureBlocking(false)
+                assertEquals("""{"ok":true}""", it.ask("""{"verb":"hydration.subscribe"}"""))
+            }
+        try {
+            now.addAndGet(120_000)
+            Thread.sleep(300)
+            assertEquals("""{"ok":true,"entries":[]}""", holder.ask("""{"verb":"hydration.list","prefix":"/"}"""), "a holding reader stays")
+
+            held.clear() // it gave up what it held: the next idle period closes it
+            now.addAndGet(120_000)
+            assertEquals(null, holder.line(), "closed for being idle")
+        } finally {
+            runCatching { holder.close() }
+        }
+    }
+
     @Test
     fun `a request the gate answers never makes a connection idle-exempt`() {
         // Idle time on a manual clock; the handshake timeout far away, so only the idle rule closes.

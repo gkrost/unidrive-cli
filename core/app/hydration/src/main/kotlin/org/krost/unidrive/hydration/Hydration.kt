@@ -211,6 +211,9 @@ interface Hydration {
      */
     fun onConnectionClosed(connectionId: String)
 
+    /** gkrost/unidrive-cli#926 S4: true while [connectionId] holds an open handle (so its connection is not closed for idling). */
+    fun holdsHandles(connectionId: String): Boolean = false
+
     /**
      * `history.retry` (gkrost/unidrive-cli#848): the admission checks of an upload round for [path] — the
      * row still waits, nothing else is uploading the path, the cache copy is there, the bytes were not
