@@ -16,7 +16,8 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.sqlite.jdbc)
     // slf4j-api for StateDatabase's log lines (same route app:sync takes).
-    implementation(libs.logback.classic)
+    implementation(libs.slf4j.api)
+    testImplementation(libs.logback.classic)
 
     testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.coroutines.test)

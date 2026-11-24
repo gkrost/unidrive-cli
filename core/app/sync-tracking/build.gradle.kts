@@ -14,7 +14,8 @@ dependencies {
 
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.sqlite.jdbc)
-    implementation(libs.logback.classic)
+    implementation(libs.slf4j.api)
+    testImplementation(libs.logback.classic)
 
     testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.coroutines.test)

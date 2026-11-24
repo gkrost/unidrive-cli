@@ -10,7 +10,8 @@ dependencies {
     implementation(project(":app:core"))
 
     implementation(libs.kotlinx.coroutines.core)
-    implementation(libs.logback.classic)
+    implementation(libs.slf4j.api)
+    testRuntimeOnly(libs.logback.classic)
 
     testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.coroutines.test)

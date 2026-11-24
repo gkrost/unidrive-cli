@@ -17,7 +17,8 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
 
     // slf4j-api for the upload-failure WARN line (same route app:sync takes).
-    implementation(libs.logback.classic)
+    implementation(libs.slf4j.api)
+    testImplementation(libs.logback.classic)
 
     testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.coroutines.test)
