@@ -215,6 +215,7 @@ class DropboxProvider(
             val next = page.cursor()
             // A cursor already asked for would page for ever (#82 F): the listing fails as an incomplete one, which
             // the engine retries, and a page cap keeps even fresh cursors from going on for ever.
+            // Counts continuations only: page one is fetched unguarded, so up to MAX_PAGES + 1 requests (Graph counts every fetch).
             pages.follow(next)
             page = api.rpc("files/list_folder/continue", obj("cursor" to next))
         }

@@ -891,7 +891,8 @@ class S3Provider(
     }
 }
 
-// The paging loops of the listing, the delta and the folder deletes (#82 F); see PageGuard.
+// The paging loops of the listing, the delta and the folder deletes (#82 F); see PageGuard. Every loop follows the
+// token of a continuation only (page one is fetched first, without one), so the cap admits 10001 requests, not 10000.
 private fun pageGuard(what: String) =
     PageGuard(
         "$what answered a page token it was already asked for; the listing stopped incomplete",

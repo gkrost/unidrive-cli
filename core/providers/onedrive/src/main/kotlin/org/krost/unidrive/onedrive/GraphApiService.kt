@@ -394,6 +394,7 @@ class GraphApiService(
         while (nextUrl != null) {
             // A link already fetched would page for ever (#82 F): the listing fails as an incomplete one, which the
             // engine retries, and a page cap keeps even fresh links from going on for ever.
+            // Counts every fetch, page one included: at most MAX_PAGES requests (S3 and Dropbox count continuations only).
             pages.follow(nextUrl)
             val response = authenticatedRequest(nextUrl)
             val body = response.bodyAsText()
