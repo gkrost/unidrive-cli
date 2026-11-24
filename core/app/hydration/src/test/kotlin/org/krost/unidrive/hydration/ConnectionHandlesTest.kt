@@ -62,4 +62,18 @@ class ConnectionHandlesTest {
         assertNull(handles.close("other", "one", ownReadOnly = true))
         assertEquals("/file", handles.close("other", "one", ownReadOnly = false))
     }
+
+    @Test
+    fun a_registered_read_handle_does_not_satisfy_the_write_retry_guard() = runBlocking {
+        val wide = ConnectionHandles(limit = 4)
+        suspend fun open(id: String, read: Boolean) =
+            wide.admit("owner", id, { it.message }) {
+                wide.register("owner", id, "/file", read)
+                "ok"
+            }
+        open("r", read = true)
+        open("w", read = false)
+        assertEquals(false, wide.hasWrite("owner", "r", "/file"))
+        assertEquals(true, wide.hasWrite("owner", "w", "/file"))
+    }
 }

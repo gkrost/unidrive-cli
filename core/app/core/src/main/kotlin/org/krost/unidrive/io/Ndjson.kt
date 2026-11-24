@@ -28,4 +28,4 @@ public fun ndjsonLine(quoted: String): String {
     return sb.toString()
 }
 
-private val EXTRA_LINE_BREAKS = charArrayOf('\u0085', ' ', ' ')
+private val EXTRA_LINE_BREAKS = charArrayOf('\u0085', '\u2028', '\u2029')

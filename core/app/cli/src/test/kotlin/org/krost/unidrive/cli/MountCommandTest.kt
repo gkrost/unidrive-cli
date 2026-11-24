@@ -17,9 +17,13 @@ import kotlin.test.assertTrue
 class MountCommandTest {
     @Test
     fun co_daemon_environment_has_no_passphrase_variables() {
-        val env = MountCommand.coDaemonProcess(listOf("unidrive-mount")).environment()
+        val env =
+            MountCommand.coDaemonEnv(
+                mapOf("UNIDRIVE_VAULT_PASS" to "v", "UNIDRIVE_XTRA_PASS" to "x", "PATH" to "/usr/bin"),
+            )
         assertFalse("UNIDRIVE_VAULT_PASS" in env)
         assertFalse("UNIDRIVE_XTRA_PASS" in env)
+        assertEquals("/usr/bin", env["PATH"])
     }
 
     private val cmd = CommandLine(Main())

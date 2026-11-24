@@ -5,7 +5,6 @@ import org.krost.unidrive.io.ndjsonString
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Base64
-import java.util.concurrent.TimeUnit
 
 /**
  * The client side of the unlock helper protocol (docs/dev/specs/unlock-helper-protocol.md): one JSON
@@ -79,29 +78,36 @@ internal object UnlockHelper {
 
     private const val MAX_REPLY_BYTES = 64 * 1024
 
-    // Only read bytes already in the pipe. A grandchild retaining its write end cannot
-    // delay completion after the helper exits or leave a blocked common-pool worker.
+    // One daemon reader thread with bounded, preallocated reads (no available(): unreliable on Windows pipes), joined with
+    // the timeout. The thread scrubs the buffer in its own finally; a timeout or an oversized reply kills the helper.
     private fun readReply(process: Process): Result {
-        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(TIMEOUT_MS)
         val buffer = ByteArray(MAX_REPLY_BYTES + 1)
         var count = 0
-        try {
-            process.inputStream.use { stream ->
-                while (System.nanoTime() < deadline) {
-                    val exited = !process.isAlive
-                    val available = stream.available()
-                    if (available > 0) {
-                        val read = stream.read(buffer, count, minOf(available, buffer.size - count))
-                        if (read > 0) count += read
-                        if (count > MAX_REPLY_BYTES) return Result.Hard("invalid_reply")
-                    } else if (exited) {
-                        return parse(buffer.copyOf(count))
-                    } else {
-                        process.waitFor(10, TimeUnit.MILLISECONDS)
+        var failed = false
+        val reader =
+            Thread {
+                try {
+                    process.inputStream.use { stream ->
+                        while (count < buffer.size) {
+                            val read = stream.read(buffer, count, buffer.size - count)
+                            if (read < 0) break
+                            count += read
+                        }
                     }
+                } catch (_: java.io.IOException) {
+                    failed = true
                 }
-            }
+            }.apply { isDaemon = true }
+        reader.start()
+        reader.join(TIMEOUT_MS)
+        if (reader.isAlive) {
+            process.destroyForcibly()
+            reader.join(1_000)
+            if (!reader.isAlive) buffer.fill(0)
             return Result.Hard("timeout")
+        }
+        return try {
+            if (failed || count > MAX_REPLY_BYTES) Result.Hard("invalid_reply") else parse(buffer.copyOf(count))
         } finally {
             buffer.fill(0)
         }

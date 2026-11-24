@@ -100,7 +100,7 @@ internal class AuthLogoutRpcHandler(
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: CredentialProtectionException) {
-                log.warn("auth.logout: the credential marker of '{}' could not be removed from the secret store: {}", profileDir, e.javaClass.simpleName)
+                log.warn("auth.logout: the credential marker of '{}' could not be removed from the secret store: {}", profileDir, e.message)
                 return CREDENTIAL_PROTECTION
             } catch (e: Exception) {
                 log.warn("auth.logout: revoking the token of '{}' failed: {}", profileDir, e.javaClass.simpleName)
