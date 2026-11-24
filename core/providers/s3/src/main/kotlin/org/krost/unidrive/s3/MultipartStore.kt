@@ -2,6 +2,7 @@ package org.krost.unidrive.s3
 
 import kotlinx.serialization.Serializable
 import org.krost.unidrive.io.ResumeSessionStore
+import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -23,6 +24,7 @@ import java.util.Properties
  */
 internal class MultipartStore(
     private val dir: Path,
+    private val openLegacy: (Path) -> InputStream = { Files.newInputStream(it) },
 ) {
     data class Pending(
         val key: String,
@@ -124,9 +126,9 @@ internal class MultipartStore(
      *   or both, never neither;
      * - an old file whose key already has a record is a leftover of a crashed run: the newer of the two wins, and the old
      *   file goes either way;
-     * - a file that cannot be read is named at WARN and renamed to `<name>.corrupt` (bytes kept), so it neither blocks the
+     * - a file whose contents cannot be parsed is named at WARN and renamed to `<name>.corrupt` (bytes kept), so it neither blocks the
      *   others nor is re-parsed at every start; its upload id is lost with it.
-     * An exception (a record cannot be written) leaves that old file and the ones after it in place; the next call
+     * An I/O exception (a record cannot be read or written) leaves that old file and the ones after it in place; the next call
      * converts them again.
      */
     private fun migrate() {
@@ -159,24 +161,28 @@ internal class MultipartStore(
 
     // The record's age is its file's time, which the old store renewed on every save.
     private fun readLegacy(file: Path): Stored? =
-        runCatching {
-            val props = Properties().apply { Files.newInputStream(file).use { load(it) } }
+        try {
+            val props = Properties().apply { openLegacy(file).use { load(it) } }
             Stored(
-                key = props.getProperty("key"),
-                uploadId = props.getProperty("uploadId"),
-                localPath = props.getProperty("localPath"),
-                size = props.getProperty("size").toLong(),
-                mtimeMillis = props.getProperty("mtimeMillis").toLong(),
-                partSize = props.getProperty("partSize").toLong(),
+                key = requiredProperty(props, "key"),
+                uploadId = requiredProperty(props, "uploadId"),
+                localPath = requiredProperty(props, "localPath"),
+                size = requiredProperty(props, "size").toLong(),
+                mtimeMillis = requiredProperty(props, "mtimeMillis").toLong(),
+                partSize = requiredProperty(props, "partSize").toLong(),
                 proofSha256 = props.getProperty("proofSha256"),
                 savedAtMillis = Files.getLastModifiedTime(file).toMillis(),
             )
-        }.onFailure {
+        } catch (e: IllegalArgumentException) {
             log.warn(
                 "S3 multipart record {} cannot be read ({}) and is set aside; the upload it describes stays open on S3 until a lifecycle rule ends it",
-                file.fileName, it.javaClass.simpleName,
+                file.fileName, e.javaClass.simpleName,
             )
-        }.getOrNull()
+            null
+        }
+
+    private fun requiredProperty(props: Properties, name: String): String =
+        requireNotNull(props.getProperty(name)) { "missing multipart property: $name" }
 
     private fun setAside(file: Path) {
         val aside = file.resolveSibling(file.fileName.toString() + ".corrupt")

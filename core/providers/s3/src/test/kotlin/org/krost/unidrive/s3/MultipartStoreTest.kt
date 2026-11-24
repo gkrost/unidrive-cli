@@ -1,5 +1,6 @@
 package org.krost.unidrive.s3
 
+import java.nio.file.AccessDeniedException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.FileTime
@@ -7,6 +8,7 @@ import java.time.Instant
 import java.util.Properties
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -89,6 +91,26 @@ class MultipartStoreTest {
             MultipartStore(dir).olderThan(Instant.parse("2026-11-02T00:00:00Z")),
             "the record keeps the age of its old file, so the stale sweep still ends it on time",
         )
+    }
+
+    @Test
+    fun transient_legacy_read_failure_retries_the_same_upload() {
+        val record = pending("held")
+        val legacy = writeLegacyRecord(dir, record)
+        var fail = true
+        val reopening = MultipartStore(dir) { file ->
+            if (fail) {
+                fail = false
+                throw AccessDeniedException(file.toString())
+            }
+            Files.newInputStream(file)
+        }
+
+        assertFailsWith<AccessDeniedException> { reopening.find(record.key) }
+        assertTrue(Files.exists(legacy))
+        assertTrue(Files.notExists(recordFile(record.key)))
+        assertEquals(record, reopening.find(record.key))
+        assertTrue(Files.notExists(legacy))
     }
 
     @Test
