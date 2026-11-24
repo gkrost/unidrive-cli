@@ -513,6 +513,9 @@ class DaemonRuntimeTest {
                     // vault.enc, so both answer vault_absent (still a reply).
                     """{"verb":"vault.unlock","passphrase":"x"}""",
                     """{"verb":"vault.lock"}""",
+                    // gkrost/unidrive-cli#860: this runtime persists no scope, so scope.set answers wrong_mode (still a reply).
+                    """{"verb":"scope.get"}""",
+                    """{"verb":"scope.set","included":["/A"],"version":"x"}""",
                     """{"verb":"daemon.shutdown"}""",
                 )
                 // The IPC verb classes (IpcAuth) name exactly these verbs: each reaches a handler below,

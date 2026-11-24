@@ -1,5 +1,6 @@
 package org.krost.unidrive.hydration
 
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.engine.ScopeSwap
@@ -204,16 +205,24 @@ class ScopeSwapTest {
     fun scope_set_waits_for_a_running_enumeration_and_gives_up_busy() =
         runTest {
             enumerated()
-            val held = engine.mountWiring.enumeration.enumerateInFlight
-            assertTrue(held.compareAndSet(false, true), "stands in for a pass in flight")
+            val inDelta = java.util.concurrent.CountDownLatch(1)
+            val release = java.util.concurrent.CountDownLatch(1)
+            fake.duringDelta = {
+                inDelta.countDown()
+                release.await(30, java.util.concurrent.TimeUnit.SECONDS)
+            }
+            val pass = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).async { mount.enumerateRemoteIntoState(reset = false) }
             try {
+                assertTrue(inDelta.await(30, java.util.concurrent.TimeUnit.SECONDS), "a pass is in flight")
                 val outcome = ScopeSwap(engine.mountWiring, maxWaitMs = 200).apply(listOf("/A")) { persisted += it }
                 assertEquals(ScopeSwap.Outcome.Busy, outcome)
-                assertEquals(emptyList(), swap.current())
+                assertEquals(emptyList(), swap.current(), "the scope does not change under a running pass")
                 assertEquals(emptyList(), persisted)
             } finally {
-                held.set(false)
+                release.countDown()
+                pass.await()
             }
+            assertIs<ScopeSwap.Outcome.Applied>(swap.apply(listOf("/A")) { persisted += it }, "after the pass the change goes through")
         }
 
     @Test

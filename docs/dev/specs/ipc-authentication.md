@@ -89,9 +89,9 @@ Classified by the exact wire string; a verb that is not listed is `admin` (defau
 
 | Class | Verbs |
 |---|---|
-| read | `hydration.close_read`, `daemon.status`, `hydration.list`, `hydration.stat`, `hydration.locate`, `hydration.handle_status`, `hydration.last_synced`, `hydration.subscribe`, `sync.subscribe`, `hydration.open_read`, `history.list`, `history.subscribe`, `metrics.query`, `ignore.explain`, `view.page` |
+| read | `hydration.close_read`, `daemon.status`, `hydration.list`, `hydration.stat`, `hydration.locate`, `hydration.handle_status`, `hydration.last_synced`, `hydration.subscribe`, `sync.subscribe`, `hydration.open_read`, `history.list`, `history.subscribe`, `metrics.query`, `ignore.explain`, `view.page`, `scope.get` |
 | write | `hydration.hydrate`, `hydration.dehydrate`, `hydration.create`, `hydration.open_write`, `hydration.open_write_begin`, `hydration.close_handle`, `hydration.mkdir`, `hydration.unlink`, `hydration.rmdir`, `hydration.rename`, `hydration.cancel`, `sync.enumerate`, `hydration.matches_local`, `hydration.refuse_name`, `share.create`, `history.retry` |
-| admin | `daemon.shutdown`, `daemon.pause`, `daemon.resume`, `refresh.run`, `auth.logout`, `auth.begin`, `auth.complete`, `auth.login`, `auth.check`, `vault.unlock`, `vault.lock` |
+| admin | `daemon.shutdown`, `daemon.pause`, `daemon.resume`, `refresh.run`, `auth.logout`, `auth.begin`, `auth.complete`, `auth.login`, `auth.check`, `vault.unlock`, `vault.lock`, `scope.set` |
 
 Scope `full` may call every verb; scope `read` only the read class. A refused request gets
 `{"ok":false,"error":"forbidden","scope":"read"}` and the connection stays open. For a `read`
@@ -110,6 +110,7 @@ Two may ask the provider for a view's list (ipc-write-protocol.md section 4.2): 
 `view.page`. Both are bounded by the view's cache: one request in flight per view, and no new request within its time to live
 for a list no longer than one already asked for (`view.page` rounds its size up to a multiple of 50, at most 1,000 references),
 so a read connection cannot make the daemon ask the provider more than a few times a minute. Neither downloads content.
+`scope.get` with `list_excluded:true` lists the cloud root once and keeps the answer 10 s (ipc-write-protocol.md section 3.10).
 
 **`hydration.matches_local` is a write-class verb although it changes nothing** (archive#1219). It reads a local file the caller names and answers whether that file holds the bytes of a cloud item (`same`, `differs`, `unknown`). On a `read` connection that would be an oracle over any file the user can read ("is this file the cloud copy of X?"), so it needs scope `full`, like the mount's own calls. The reply carries a method token, never a hash.
 

@@ -469,6 +469,50 @@ is listed.
 {"ok":false,"error":"<msg>"}          EIO
 ```
 
+### 3.10 The synced folders (`scope.get`, `scope.set`)
+
+gkrost/unidrive-cli#860, `contract_level` 12. A profile's scope is its `sync_path` set: the remote folders it tracks, the whole drive when
+empty. A mount daemon changes it while it runs, without a restart (owner decision 2026-11-21). `daemon.status` lists `scope.get` in
+`capabilities` on every daemon and `scope.set` only on a mount daemon that changes it. `sync_paths` in `daemon.status` is the scope as it
+stands now.
+
+```
+scope.get [list_excluded:true]                  -> {"ok":true,"included":["/A"],"version":"84c4d41062c7af73"[,"excluded":["/B"]]}
+scope.set {included:[...], version[, dry_run]}  -> {"ok":true,"applied":true|false,"included":[...],"version":"...","previous_version":"...","effect":{...}}
+```
+
+- **`included`** is the set of absolute remote paths, sorted and normalised (NFC, a nested root folds into its parent, `[]` or `["/"]` is
+  the whole drive). **`version`** is an opaque string derived from that set. The same set has the same version in every process, so a
+  change by `unidrive scope set` while the daemon was stopped moves it too. Compare it, never parse it.
+- **`excluded`** (only with `list_excluded:true`): the folders at the cloud root that lie outside the set, from one listing of the root
+  (kept 10 s). Files at the root are left out, and so are the read-only namespaces (trash, backups, views). A client that offers
+  top-level folders as checkboxes lists `included` plus `excluded`. A listing that fails answers `listing_failed`.
+- **`scope.set`** replaces the whole set. The request names the `version` it was read at. When the version is no longer current, the
+  daemon answers `version_conflict` with the current `included` and `version` and changes nothing. `dry_run:true` answers what the
+  change would do, the same reply with `applied:false`, and changes nothing.
+- **What a change does.** Nothing in the cloud is deleted, moved or written. A narrower set makes the engine stop tracking the rows
+  of what leaves, drops the clean cache copies of their files, and sends `view.invalidated` with `full:true`. A wider set lists the
+  drive again (one enumeration starts at once). `sync_path` in config.toml is written before state.db changes, so a crash between the
+  two leaves the next start doing the same transition. A change waits up to 30 s for a running enumeration to end, and answers `busy`
+  when that runs out (nothing changed). Mid-change, a write into a folder that leaves is refused with `outside_scope`.
+- **`effect`** describes what leaves this computer: `leaving` (the top of each subtree that leaves, at most 50, `leaving_more` the
+  rest), `entering` (new roots outside the old set), `remove_locally` (`folders`, `placeholders` for files that are only in the
+  cloud, `offline_copies` for files with a clean copy here, which go from this computer and stay in the cloud), `unsynced` (`count`
+  and the first 10 `paths` of files only this computer holds) and `re_enumerate`. A client removes the placeholders and copies of the
+  folders that left (they are no longer in `hydration.list`) **without journalling any delete**.
+- **Refusal for local-only files** (owner decision 2026-11-24, windows#1277 Q10): when what would leave holds a file only this
+  computer has (never uploaded, an edit not uploaded yet, an upload in flight), `scope.set` answers
+  `{"ok":false,"error":"unsynced_in_removed_scope","effect":{...}}` with `effect.unsynced` naming the count and the first paths, and
+  changes nothing, also for a `dry_run`. The client asks the user to wait for the uploads or to tick the folders again.
+- **Event.** A change that applied goes to the subscribers of both streams (`hydration.subscribe`, numbered like every event, and
+  `sync.subscribe`): `{"event":"scope.changed","included":[...],"version":"..."}`. A dry run and a refusal send none.
+- **Mirror profiles** answer `scope.set` with `wrong_mode`: their planner holds the scope for the run. `unidrive scope set` with the
+  daemon stopped changes it.
+- Request errors: `missing_version`, `invalid_version` (not a string), `missing_included`, `invalid_included` (not an array of
+  absolute remote paths), `invalid_dry_run`, and `invalid_list_excluded` (not a boolean). `write_failed` and `unsupported_layout`:
+  config.toml could not take the new set, and nothing changed. Pinned by `scope.get.ndjson`, `scope.set.ndjson` and
+  `events/scope-changed.ndjson`, at the engine level by `ScopeSwapTest`, and over a live socket by `DaemonScopeVerbsTest`.
+
 ## 4. Events (subscription stream)
 
 | Event | Shape | Meaning |
@@ -483,6 +527,7 @@ is listed.
 | `failed` | `{"event":"failed","path":…,"error":"…"[,"retry_scheduled":true\|false]}` | attempt failed; uploads say whether the daemon will retry |
 | `completed` | `{"event":"completed","path":…,"handle_id":…,"direction":"upload\|download","ok":true\|false[,"error":"…"]}` | handle-scoped outcome — the in-sync signal. An upload that landed (`ok:true`) also carries, additively, `entry` (the row as state.db holds it once the upload's slot is released, in the exact shape of the `hydration.stat` entry: `etag`, `remote_id`, `remote_modified_ms`, `size`, `content_id`, `pending_upload:false`, …) and, when the cloud already held these bytes and nothing was sent, `"skipped":true` (the entry is then the unchanged row). No `entry` for a download, a failure, a kept-both conflict (the row at `path` is then the cloud's version) or a row that cannot be read: a client falls back to `hydration.stat`. A reader that ignores unknown members parses the event as before. Pinned by `events/completed-upload-entry.ndjson` |
 | `view.invalidated` | `{"event":"view.invalidated","paths":[…][,"moved":[{"from":…,"to":…}]]}` or `{"event":"view.invalidated","full":true}` | `full:true` stands alone, without `paths` (more than 256 changed paths, or the tracked scope was reshaped: drop every cache); otherwise `paths` is present. Enumeration changed the view, or `hydration.unlink` / `hydration.rmdir` removed `paths` (a delete through the daemon, e.g. `unidrive rm`, archive#1199); drop readdir/getattr caches |
+| `scope.changed` | `{"event":"scope.changed","included":[…],"version":"…"}` | `scope.set` changed the synced folders (section 3.10); also on `sync.subscribe` |
 | `lost` | `{"event":"lost","since_last":N}` | your queue overflowed; resync from `hydration.list`, or subscribe again with `since_seq` (below) |
 
 **Sequence numbers and replay (gkrost/unidrive-cli#437).** Additive; the shape of `history.subscribe`
@@ -853,6 +898,7 @@ noticed at once, not when the download ends. Requests the client sends while one
 | `missing_handle_id` / `missing_path` / `missing_cache_path` / `missing_old_path` / `missing_new_path` / `missing_local_path` / `missing_prefix` | the hydration verbs that take the member | the member is absent (or, for `cache_path` and `local_path`, empty); nothing was touched. A path that is present but unusable answers `invalid_path` |
 | `wrong_mode` | every hydration verb, `sync.enumerate`, `ignore.explain` | the daemon serves a mirror profile and has no hydration layer (section 1) |
 | `auth_required` / `auth_failed` / `forbidden` | any | not authenticated yet, a refused handshake step, a verb outside the connection's scope ([ipc-authentication.md](ipc-authentication.md)) |
+| `version_conflict` / `unsynced_in_removed_scope` / `busy` | scope.set | the set changed since it was read, what would leave holds a file only this computer has, or an enumeration did not end in time; nothing changed (section 3.10) |
 | `too_many_clients` | connection (no request) | the daemon's connection cap is reached; the line is written once and the connection closed (§1) |
 
 **A short download is not a size change** (gkrost/unidrive-cli#80). A download that returns fewer bytes than the row

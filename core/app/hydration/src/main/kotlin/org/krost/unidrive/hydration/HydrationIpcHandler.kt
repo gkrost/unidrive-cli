@@ -1074,6 +1074,7 @@ fun serialiseHydrationEvent(e: HydrationEvent): String = when (e) {
         if (e.untilMs == null) "$base}" else "$base,\"until_ms\":${e.untilMs}}"
     }
     is HydrationEvent.Resumed -> if (e.reason == null) """{"event":"resumed"}""" else """{"event":"resumed","reason":${jsonEsc(e.reason)}}"""
+    is HydrationEvent.ScopeChanged -> """{"event":"scope.changed","included":[${e.included.joinToString(",") { jsonEsc(it) }}],"version":${jsonEsc(e.version)}}"""
     is HydrationEvent.ViewInvalidated -> {
         if (e.full) {
             """{"event":"view.invalidated","full":true}"""
