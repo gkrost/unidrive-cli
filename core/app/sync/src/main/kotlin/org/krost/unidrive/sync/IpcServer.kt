@@ -51,6 +51,10 @@ class IpcServer(
     // How often start()'s IpcSocketWatcher checks that the socket file is still there and binds it again (0 = never,
     // gkrost/unidrive-cli#794). Not a constructor parameter: the tests set it before start(), like the wait above.
     internal var socketWatchIntervalMs: Long = SOCKET_WATCH_INTERVAL_MS
+    internal val socketProbeSuccesses: Int get() = socketWatcher?.probeSuccesses ?: 0
+
+    // gkrost/unidrive-cli#926 S2: what the watcher takes for the socket file's identity; a test stands in for a file system that reuses an inode.
+    internal var socketFileIdentity: (Path) -> Any? = IpcSocketWatcher::fileIdentity
 
     // Captured at construction so a later companion-object change can't accidentally
     // re-read the env var mid-flight. Multiply once into nanos so writeNonBlocking
@@ -369,13 +373,14 @@ class IpcServer(
             maxClients,
         )
 
+        val probe = IpcSocketProbe(socketPath)
         // The accept loop of one bound listener; the socket watcher starts a new one when it binds the file again.
         fun launchAcceptLoop(listener: ServerSocketChannel): Job =
             scope.launch(transport) {
                 while (isActive) {
                     try {
                         val sc = listener.accept()
-                        if (!admit(sc, scope, transport)) continue
+                        if (probe.accept(sc) || !admit(sc, scope, transport)) continue
                         sc.configureBlocking(false)
                         val connId = java.util.UUID.randomUUID().toString()
                         val entry = ClientEntry(sc, connId).also { it.lastRequestAtMs = clock() }
@@ -469,7 +474,7 @@ class IpcServer(
                 }
             }
         acceptJob = launchAcceptLoop(server)
-        val watcher = IpcSocketWatcher(socketPath, socketWatchIntervalMs, { closing }) { installListener(it) { next -> launchAcceptLoop(next) } }
+        val watcher = IpcSocketWatcher(socketPath, socketWatchIntervalMs, { closing }, socketFileIdentity, probe) { installListener(it) { next -> launchAcceptLoop(next) } }
         socketWatcher = watcher
         if (socketWatchIntervalMs > 0) socketWatchJob = scope.launch(transport) { watcher.run() }
 

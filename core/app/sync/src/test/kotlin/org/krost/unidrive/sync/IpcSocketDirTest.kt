@@ -125,6 +125,50 @@ class IpcSocketDirTest {
         assertFailsWith<IllegalStateException> { IpcSocketDir.ensurePosixFallbackDir(tmp, me) }
     }
 
+    // ── gkrost/unidrive-cli#926 S1/S2: the folder is checked each time it is used ──
+
+    private fun assumePosix() =
+        assumeTrue("POSIX file attributes only", FileSystems.getDefault().supportedFileAttributeViews().contains("posix"))
+
+    @Test
+    fun run_user_dir_with_wrong_owner_or_mode_is_not_used() {
+        assumePosix()
+        val me = OwnerOnly.posixUid()
+        val fallback = tmp.resolve("unidrive-ipc-$me")
+        val runDir = Files.createDirectory(tmp.resolve("run-user"))
+
+        Files.setPosixFilePermissions(runDir, PosixFilePermissions.fromString("rwx------"))
+        assertEquals(runDir, IpcSocketDir.posixSocketDirectory(tmp, me, runDir), "a private one is used")
+
+        Files.setPosixFilePermissions(runDir, PosixFilePermissions.fromString("rwxr-xr-x"))
+        assertEquals(fallback, IpcSocketDir.posixSocketDirectory(tmp, me, runDir), "mode 755")
+
+        assertEquals(fallback, IpcSocketDir.posixSocketDirectory(tmp, me, runDir, FakeOps(existing = good.copy(ownerUid = 0))), "owner 0")
+
+        Files.setPosixFilePermissions(runDir, PosixFilePermissions.fromString("rwx------"))
+        val link = Files.createSymbolicLink(tmp.resolve("run-link"), runDir)
+        assertEquals(fallback, IpcSocketDir.posixSocketDirectory(tmp, me, link), "a link to a private folder")
+    }
+
+    @Test
+    fun rebind_refuses_an_existing_folder_owned_by_someone_else() {
+        assumePosix()
+        val folder = Files.createDirectory(tmp.resolve("ipc"))
+        val socket = folder.resolve("d.sock")
+
+        val e =
+            assertFailsWith<IllegalStateException> {
+                IpcSocketPaths.restoreSocketDirectory(socket, windows = false, ops = FakeOps(existing = good.copy(ownerUid = 0)))
+            }
+        assertTrue(e.message!!.contains("uid 0"), e.message)
+
+        Files.setPosixFilePermissions(folder, PosixFilePermissions.fromString("rwxrwxrwx"))
+        assertFailsWith<IllegalStateException> { IpcSocketPaths.restoreSocketDirectory(socket, windows = false) }
+
+        Files.setPosixFilePermissions(folder, PosixFilePermissions.fromString("rwx------"))
+        IpcSocketPaths.restoreSocketDirectory(socket, windows = false) // our own private folder is fine
+    }
+
     // ── Windows folder ──────────────────────────────────────────────────────
 
     private fun assumeWindows() = assumeTrue("Windows ACLs only", WindowsAclProbe.isWindows)
