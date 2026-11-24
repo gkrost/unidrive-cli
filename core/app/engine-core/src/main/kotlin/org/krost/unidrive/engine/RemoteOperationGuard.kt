@@ -86,13 +86,21 @@ class RemoteOperationGuard(
     /** The namespaces whose items are rows placed under a root of their own: the trash, then the backups (which yield to it). */
     val placedNamespaces: List<PlacedNamespace> get() = listOf(trash, backups)
 
+    // gkrost/unidrive-cli#860: the tracked scope and its ancestors, one snapshot, swapped whole by `scope.set` ([ScopeSwap]).
+    @Volatile
+    private var tracked: Pair<List<String>, Set<String>> =
+        (if (standingScope.isEmpty()) emptyList() else SyncScope.normalize(standingScope + syncPaths)).let { it to SyncScope.ancestors(it) }
+
     /** The normalised tracked scope; empty means the whole drive. */
-    val trackScope: List<String> =
-        if (standingScope.isEmpty()) emptyList() else SyncScope.normalize(standingScope + syncPaths)
-    private val trackAncestors: Set<String> = SyncScope.ancestors(trackScope)
+    val trackScope: List<String> get() = tracked.first
 
     /** True when state.db tracks [remotePath]: inside the scope, or a folder leading to it. */
-    fun isTracked(remotePath: String): Boolean = SyncScope.contains(remotePath, trackScope) || remotePath in trackAncestors
+    fun isTracked(remotePath: String): Boolean = tracked.let { (scope, ancestors) -> SyncScope.contains(remotePath, scope) || remotePath in ancestors }
+
+    /** gkrost/unidrive-cli#860: replaces the tracked scope ([scope] normalised); the next gather applies the transition. */
+    internal fun swapTrackScope(scope: List<String>) {
+        tracked = scope to SyncScope.ancestors(scope)
+    }
 
     /**
      * True when [path] lies outside the standing sync scope (config

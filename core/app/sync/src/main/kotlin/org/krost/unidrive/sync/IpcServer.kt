@@ -179,6 +179,12 @@ class IpcServer(
     }
 
     private val idleExemptVerbs = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val idleHolds = CopyOnWriteArrayList<(String) -> Boolean>()
+
+    /** gkrost/unidrive-cli#926 S4: [holds] says whether a connection holds something (a subscription, open handles), see [IpcClientSlots.idleExempt]. */
+    fun registerIdleHold(holds: (connectionId: String) -> Boolean) {
+        idleHolds.add(holds)
+    }
 
     /**
      * A connection that has sent a request for one of [verbs] (and a handler took it) is never
@@ -368,11 +374,7 @@ class IpcServer(
                 while (isActive) {
                     try {
                         val sc = listener.accept()
-                        if (clients.size >= maxClients) {
-                            log.warn("IPC: max clients ({}) reached, refusing connection", maxClients)
-                            refuse(sc, scope, transport)
-                            continue
-                        }
+                        if (!admit(sc, scope, transport)) continue
                         sc.configureBlocking(false)
                         val connId = java.util.UUID.randomUUID().toString()
                         val entry = ClientEntry(sc, connId).also { it.lastRequestAtMs = clock() }
@@ -840,8 +842,28 @@ class IpcServer(
     private fun idleExpired(entry: ClientEntry): Boolean =
         idleTimeoutMs > 0 &&
             clock() - entry.lastRequestAtMs >= idleTimeoutMs &&
-            !entry.idleExempt &&
-            entry.id !in syncSubscribers
+            !idleExempt(entry)
+
+    private fun idleExempt(entry: ClientEntry): Boolean =
+        IpcClientSlots.idleExempt(entry.idleExempt, scopeOf(entry.id) == IpcAuth.Scope.READ.wire, entry.id in syncSubscribers || idleHolds.any { it(entry.id) })
+
+    // gkrost/unidrive-cli#926 S4: false when the connection was refused; a connection still in its handshake may close an older one.
+    private fun admit(
+        sc: SocketChannel,
+        scope: CoroutineScope,
+        transport: CoroutineDispatcher,
+    ): Boolean =
+        when (val a = IpcClientSlots.admission(clients.map { it.id }, { id -> authSessions[id]?.let { it.scope == null } == true }, maxClients)) {
+            IpcClientSlots.Admission.Admit -> true
+            IpcClientSlots.Admission.Refuse -> false.also {
+                log.warn("IPC: max clients ({}) reached, refusing connection", maxClients)
+                refuse(sc, scope, transport)
+            }
+            is IpcClientSlots.Admission.EvictThenAdmit -> true.also {
+                log.info("IPC: {} connections wait for their handshake; closing the oldest id={}", IpcClientSlots.MAX_PENDING_HANDSHAKES, a.oldest)
+                clients.firstOrNull { it.id == a.oldest }?.let { clients.remove(it); closeChannel(it.channel) }
+            }
+        }
 
     // Closes a connection from outside its reader and wakes the reader, which would otherwise sleep
     // until data arrives (closing a channel does not interrupt the selector).
@@ -861,10 +883,11 @@ class IpcServer(
     ): Long? {
         val handshake = if (authSessions[connId]?.let { it.scope == null } == true) HANDSHAKE_RECHECK_MS else null
         val idle =
-            if (idleTimeoutMs > 0 && !entry.idleExempt && connId !in syncSubscribers) {
-                (idleTimeoutMs - (clock() - entry.lastRequestAtMs)).coerceIn(1L, IDLE_RECHECK_MS)
-            } else {
-                null
+            when {
+                idleTimeoutMs <= 0 -> null
+                !idleExempt(entry) -> (idleTimeoutMs - (clock() - entry.lastRequestAtMs)).coerceIn(1L, IDLE_RECHECK_MS)
+                idleHolds.isNotEmpty() -> IDLE_RECHECK_MS // a hold (a subscription, a handle) can end between requests
+                else -> null
             }
         return if (handshake != null && idle != null) minOf(handshake, idle) else handshake ?: idle
     }
@@ -895,7 +918,7 @@ class IpcServer(
         }
         if (lingeringRefusals.incrementAndGet() <= MAX_LINGERING_REFUSALS) {
             try {
-                val job = scope.launch(transport) { drainUntilEofOrDeadline(sc, refusalLingerMs) }
+                val job = scope.launch(transport) { IpcRefusalDrain.untilEofOrDeadline(sc, refusalLingerMs, MAX_REQUEST_BYTES) }
                 // Runs on every end of the job, including a cancellation before it started (server stop).
                 job.invokeOnCompletion {
                     lingeringRefusals.decrementAndGet()
@@ -907,41 +930,8 @@ class IpcServer(
             }
         }
         lingeringRefusals.decrementAndGet()
-        runCatching { drainAvailable(sc) }
+        runCatching { IpcRefusalDrain.available(sc, MAX_REQUEST_BYTES) }
         runCatching { sc.close() }
-    }
-
-    // Reads and drops what the refused peer sends until it closes (end of stream), a reset, the cap on
-    // what is worth reading (MAX_REQUEST_BYTES) or [lingerMs]. A read that finds nothing yields the thread.
-    private suspend fun drainUntilEofOrDeadline(
-        sc: SocketChannel,
-        lingerMs: Long,
-    ) {
-        val deadline = System.nanoTime() + lingerMs * 1_000_000L
-        val sink = ByteBuffer.allocate(4096)
-        var drained = 0
-        try {
-            while (drained < MAX_REQUEST_BYTES && System.nanoTime() < deadline) {
-                sink.clear()
-                val n = sc.read(sink)
-                if (n < 0) return
-                if (n == 0) delay(REFUSAL_LINGER_POLL_MS) else drained += n
-            }
-        } catch (_: IOException) {
-            // A reset ends the wait like an end of stream does.
-        }
-    }
-
-    // What has already arrived, without waiting (the fallback when too many refusals are lingering).
-    private fun drainAvailable(sc: SocketChannel) {
-        val sink = ByteBuffer.allocate(4096)
-        var drained = 0
-        while (drained < MAX_REQUEST_BYTES) {
-            sink.clear()
-            val n = sc.read(sink)
-            if (n <= 0) break
-            drained += n
-        }
     }
 
     // Writes all of [buf]. The write timeout is a deadline on progress: it starts again whenever bytes go out, so a large
@@ -995,7 +985,6 @@ class IpcServer(
         // How long a refused connection is kept open, reading and dropping its input, for the peer's end of
         // stream (see refuse), and how many may wait at once.
         internal const val REFUSAL_LINGER_MS = 200L
-        private const val REFUSAL_LINGER_POLL_MS = 10L
         private const val MAX_LINGERING_REFUSALS = 64
 
         // Idle timeout (UNIDRIVE_IPC_IDLE_TIMEOUT_MS, docs/env-vars.md): 30 min by default, 0 = off,
