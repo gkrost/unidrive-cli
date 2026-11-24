@@ -1,9 +1,17 @@
 package org.krost.unidrive.hydration
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import org.krost.unidrive.CloudItem
+import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.engine.ScopeSwap
+import org.krost.unidrive.engine.ScopeWriteGate
 import org.krost.unidrive.sync.FakeCloudProvider
 import org.krost.unidrive.sync.ProgressReporter
 import org.krost.unidrive.sync.StateDatabase
@@ -36,8 +44,36 @@ class ScopeSwapTest {
     private lateinit var engine: SyncEngine
     private lateinit var mount: MountEngine
     private lateinit var swap: ScopeSwap
-    private val persisted = mutableListOf<List<String>>()
+    private val persisted = java.util.Collections.synchronizedList(mutableListOf<List<String>>())
     private val t0 = Instant.parse("2026-11-01T10:00:00Z")
+
+    // The hold the daemon puts the mount's row-adding verbs under (DaemonRuntime registers them through it).
+    private val gate = ScopeWriteGate()
+
+    // Runs before a cloud move, so a test can hold a rename after it passed its scope check.
+    @Volatile
+    private var beforeMove: (suspend () -> Unit)? = null
+
+    private inner class Provider(
+        private val inner: FakeCloudProvider,
+    ) : CloudProvider by inner {
+        override suspend fun move(
+            fromPath: String,
+            toPath: String,
+        ): CloudItem {
+            beforeMove?.invoke()
+            return inner.move(fromPath, toPath)
+        }
+
+        override suspend fun moveById(
+            remoteId: String,
+            fromPath: String,
+            toPath: String,
+        ): CloudItem {
+            beforeMove?.invoke()
+            return inner.moveById(remoteId, fromPath, toPath)
+        }
+    }
 
     @BeforeTest
     fun setUp() {
@@ -47,7 +83,7 @@ class ScopeSwapTest {
         for (item in fake.deltaItems.filter { !it.isFolder }) fake.files[item.path] = "bytes".toByteArray()
         engine =
             SyncEngine(
-                provider = fake,
+                provider = Provider(fake),
                 db = db,
                 syncRoot = TestScratch.directory("scope-swap-root"),
                 conflictPolicy = ConflictPolicy.KEEP_BOTH,
@@ -55,7 +91,7 @@ class ScopeSwapTest {
                 cacheRoot = TestScratch.directory("scope-swap-cache"),
             )
         mount = MountEngine.over(engine)
-        swap = ScopeSwap(engine.mountWiring)
+        swap = ScopeSwap(engine.mountWiring, writeGate = gate)
     }
 
     @AfterTest
@@ -223,6 +259,52 @@ class ScopeSwapTest {
                 pass.await()
             }
             assertIs<ScopeSwap.Outcome.Applied>(swap.apply(listOf("/A")) { persisted += it }, "after the pass the change goes through")
+        }
+
+    /**
+     * Owner decision 2026-11-24: a write the mount accepted just before a narrowing (its scope check passed under the old set)
+     * and that adds its row only after the check for local-only files must not slip past that check. Here a rename of a file
+     * with an edit not uploaded yet moves it into a folder that leaves; the cloud move is held until the narrowing has started.
+     * Either the check counts the file (the change is refused) or the rename is refused against the new set. The row is never
+     * left outside the scope, where nothing would upload it again.
+     */
+    @Test
+    fun write_accepted_before_narrowing_is_counted_or_refused_never_dropped() =
+        runBlocking {
+            assertTrue(mount.enumerateRemoteIntoState(reset = false).ok)
+            offlineCopy("/A/a.txt")
+            val row = assertNotNull(db.getEntry("/A/a.txt"))
+            Files.write(engine.mountWiring.cachePathOf("/A/a.txt"), "edited here".toByteArray())
+            db.upsertEntry(row.copy(editBase = row.remoteHash ?: "base"))
+            val hydration = HydrationImpl(mount, db, recoveryUploadScope = CoroutineScope(Dispatchers.IO))
+
+            val moving = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            beforeMove = {
+                moving.complete(Unit)
+                release.await()
+            }
+            val rename = async(Dispatchers.IO) { gate.write { hydration.rename("/A/a.txt", "/B/a.txt") } }
+            withTimeout(30_000) { moving.await() }
+            val narrowing = async(Dispatchers.IO) { swap.apply(listOf("/A")) { persisted += it } }
+            delay(300) // the narrowing is under way while the rename still waits for the cloud
+            release.complete(Unit)
+            val renamed = withTimeout(30_000) { rename.await() }
+            val outcome = withTimeout(30_000) { narrowing.await() }
+
+            val moved = db.getEntry("/B/a.txt")
+            when (outcome) {
+                is ScopeSwap.Outcome.Refused -> {
+                    assertNotNull(moved, "the rename went through: $renamed")
+                    assertTrue("/B/a.txt" in outcome.effect.unsynced, "the check counted the moved file: ${outcome.effect}")
+                    assertEquals(emptyList(), swap.current(), "the refused narrowing changed nothing")
+                }
+                is ScopeSwap.Outcome.Applied -> {
+                    assertNull(moved, "no row of the edited file was left outside the new scope (rename: $renamed)")
+                    assertNotNull(db.getEntry("/A/a.txt"), "the rename was refused against the new scope; the file keeps its row")
+                }
+                ScopeSwap.Outcome.Busy -> error("the narrowing gave up although the write ended at once")
+            }
         }
 
     @Test
