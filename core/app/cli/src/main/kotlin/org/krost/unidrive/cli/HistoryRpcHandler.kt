@@ -268,7 +268,7 @@ internal class HistoryRpcHandler(
         val h = history ?: return unavailable(unavailableReason)
         return withContext(readDispatcher) {
             try {
-                HistoryReportVerb.answer(h, readerFor(h), clock(), jsonRequest)
+                HistoryReportVerb.answer(h, clock(), jsonRequest)
             } catch (e: SQLException) {
                 log.warn("history.report: reading telemetry.db failed ({}: {})", e.javaClass.simpleName, e.message)
                 dropReader()

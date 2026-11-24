@@ -261,6 +261,12 @@ class TransferHistory private constructor(
         )
     }
 
+    internal fun writeHostReport(
+        row: TransferRow,
+        errorFingerprint: String,
+        timeoutMs: Long,
+    ): HostReportWrite = writer.recordHostReport(row, errorFingerprint, timeoutMs)
+
     internal fun enqueue(row: TransferRow) = writer.offer(row)
     internal fun replace(row: TransferRow, previousId: String) = writer.replace(row, previousId)
 

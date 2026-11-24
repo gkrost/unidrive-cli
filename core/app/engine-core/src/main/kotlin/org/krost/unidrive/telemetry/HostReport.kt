@@ -1,5 +1,10 @@
 package org.krost.unidrive.telemetry
 
+import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
+import java.security.MessageDigest
+import java.util.HexFormat
+
 /**
  * One operation the mount host reports to the engine's history (`history.report`, gkrost/unidrive-cli#848 item 3), after
  * the verb validated it: the host's own work (a journal replay, a placeholder or pin action) that no engine transfer
@@ -19,16 +24,14 @@ class HostReport(
     val errorMessage: String?,
 )
 
-/**
- * Writes [report] as one finished row (direction `other`, its source and operation named) through the history's own
- * writer, and answers true only when the row is on file when this returns: a full queue or a failed write is false, so
- * the verb never says "recorded" for a row that was dropped.
- */
+enum class HostReportWrite { RECORDED, REPLAYED, CONFLICT, NOT_RECORDED }
+
+/** Writes or compares [report] on the history writer before the caller acknowledges it. */
 fun TransferHistory.recordHostReport(
     report: HostReport,
     timeoutMs: Long = 10_000L,
-): Boolean {
-    enqueue(
+): HostReportWrite {
+    val row =
         TransferRow(
             operationId = report.operationId,
             profile = profileName,
@@ -44,8 +47,18 @@ fun TransferHistory.recordHostReport(
             errorMessage = HistorySanitizer.message(report.errorMessage),
             source = report.source,
             operation = report.operation,
-        ),
-    )
-    if (!flush(timeoutMs)) return false
-    return openReader().use { it.row(report.operationId) != null }
+        )
+    return writeHostReport(row, report.errorFingerprint(), timeoutMs)
+}
+
+// Preserve exact error-field equality without retaining the unsanitized text.
+private fun HostReport.errorFingerprint(): String {
+    val bytes = ByteArrayOutputStream()
+    DataOutputStream(bytes).use { encoded ->
+        listOf(errorClass, errorMessage).forEach { value ->
+            encoded.writeBoolean(value != null)
+            if (value != null) encoded.writeUTF(value)
+        }
+    }
+    return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes.toByteArray()))
 }

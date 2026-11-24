@@ -4,11 +4,10 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.longOrNull
-import org.krost.unidrive.telemetry.HistoryReader
 import org.krost.unidrive.telemetry.HostReport
+import org.krost.unidrive.telemetry.HostReportWrite
 import org.krost.unidrive.telemetry.TransferHistory
 import org.krost.unidrive.telemetry.TransferResult
-import org.krost.unidrive.telemetry.TransferRow
 import org.krost.unidrive.telemetry.recordHostReport
 import java.util.UUID
 
@@ -42,17 +41,17 @@ internal object HistoryReportVerb {
 
     fun answer(
         history: TransferHistory,
-        reader: HistoryReader,
         nowMs: Long,
         jsonRequest: String,
     ): String {
         val parsed = parse(jsonRequest, nowMs)
         if (parsed is Parsed.Refused) return error(parsed.token)
         parsed as Parsed.Ok
-        reader.row(parsed.report.operationId)?.let { stored ->
-            return if (sameReport(stored, parsed.report)) okReply(parsed) else error("idempotency_conflict", parsed.requestId)
+        return when (history.recordHostReport(parsed.report)) {
+            HostReportWrite.RECORDED, HostReportWrite.REPLAYED -> okReply(parsed)
+            HostReportWrite.CONFLICT -> error("idempotency_conflict", parsed.requestId)
+            HostReportWrite.NOT_RECORDED -> error("report_not_recorded", parsed.requestId)
         }
-        return if (history.recordHostReport(parsed.report)) okReply(parsed) else error("report_not_recorded", parsed.requestId)
     }
 
     private fun okReply(parsed: Parsed.Ok): String =
@@ -72,19 +71,6 @@ internal object HistoryReportVerb {
             put("error", JsonPrimitive(token))
             requestId?.let { put("request_id", JsonPrimitive(it)) }
         }.toString()
-
-    // The stored row is this report: the members that name the event (not the free text, which the history sanitises).
-    private fun sameReport(
-        stored: TransferRow,
-        report: HostReport,
-    ): Boolean =
-        stored.source == report.source &&
-            stored.operation == report.operation &&
-            stored.path == report.path &&
-            stored.result == report.result &&
-            stored.finishedAt == report.finishedAtMs &&
-            stored.startedAt == report.startedAtMs &&
-            stored.bytesDone == report.bytes
 
     private fun parse(
         jsonRequest: String,

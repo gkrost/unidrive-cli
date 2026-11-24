@@ -4,6 +4,9 @@ import org.krost.unidrive.testing.TestScratch
 import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.DriverManager
+import java.util.concurrent.CyclicBarrier
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.io.path.deleteIfExists
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -28,6 +31,8 @@ class HostReportTest {
         id: String = "00000000-0000-0000-0000-000000000001",
         path: String = "/docs/a.txt",
         result: TransferResult = TransferResult.SUCCESS,
+        errorClass: String? = null,
+        errorMessage: String? = null,
     ) = HostReport(
         operationId = id,
         source = "windows-host",
@@ -37,8 +42,8 @@ class HostReportTest {
         startedAtMs = 1_700_000_000_000L,
         finishedAtMs = 1_700_000_000_500L,
         bytes = 42,
-        errorClass = null,
-        errorMessage = null,
+        errorClass = errorClass,
+        errorMessage = errorMessage,
     )
 
     @BeforeTest
@@ -57,7 +62,7 @@ class HostReportTest {
     fun `a host report is one row that names its source and operation`() {
         val history = open()
 
-        assertTrue(history.recordHostReport(report()), "true means the row is on file")
+        assertEquals(HostReportWrite.RECORDED, history.recordHostReport(report()))
 
         val row = history.rows().single()
         assertEquals("00000000-0000-0000-0000-000000000001", row.operationId)
@@ -74,11 +79,53 @@ class HostReportTest {
     fun `the same report twice is still one row`() {
         val history = open()
 
-        assertTrue(history.recordHostReport(report()))
-        assertTrue(history.recordHostReport(report()))
+        assertEquals(HostReportWrite.RECORDED, history.recordHostReport(report()))
+        assertEquals(HostReportWrite.REPLAYED, history.recordHostReport(report()))
 
         assertEquals(1, history.rows().size)
     }
+
+    @Test
+    fun `concurrent identical reports record one row and replay the rest`() {
+        val history = open()
+        val reports = List(4) { report() }
+        val results = submitTogether(history, reports)
+
+        assertEquals(1, results.count { it == HostReportWrite.RECORDED })
+        assertEquals(3, results.count { it == HostReportWrite.REPLAYED })
+        assertEquals(1, history.rows().size)
+        assertEquals(1L, history.tailSeq)
+    }
+
+    @Test
+    fun `concurrent conflicting error payloads leave the first committed row intact`() {
+        val history = open()
+        val reports = listOf(
+            report(errorClass = "Network", errorMessage = "first failure"),
+            report(errorClass = "Timeout", errorMessage = "first failure"),
+            report(errorClass = "Network", errorMessage = "first  failure"),
+        )
+        val results = submitTogether(history, reports)
+
+        val winner = reports[results.indexOf(HostReportWrite.RECORDED)]
+        assertEquals(2, results.count { it == HostReportWrite.CONFLICT })
+        val stored = history.rows().single()
+        assertEquals(HistorySanitizer.errorClass(winner.errorClass), stored.errorClass)
+        assertEquals(HistorySanitizer.message(winner.errorMessage), stored.errorMessage)
+        assertEquals(HostReportWrite.REPLAYED, history.recordHostReport(winner))
+        assertEquals(1L, history.tailSeq)
+    }
+
+    private fun submitTogether(history: TransferHistory, reports: List<HostReport>): List<HostReportWrite> =
+        Executors.newFixedThreadPool(reports.size).use { workers ->
+            val start = CyclicBarrier(reports.size)
+            reports.map { report ->
+                workers.submit<HostReportWrite> {
+                    start.await(5, TimeUnit.SECONDS)
+                    history.recordHostReport(report)
+                }
+            }.map { it.get(20, TimeUnit.SECONDS) }
+        }
 
     @Test
     fun `an engine row has no source`() {
@@ -114,7 +161,7 @@ class HostReportTest {
         }
 
         val history = open()
-        assertTrue(history.recordHostReport(report()))
+        assertEquals(HostReportWrite.RECORDED, history.recordHostReport(report()))
 
         val byPath = history.rows().associateBy { it.path }
         assertNull(byPath.getValue("/old/a.bin").source)

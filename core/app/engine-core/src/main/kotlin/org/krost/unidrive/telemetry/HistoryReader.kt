@@ -272,6 +272,7 @@ class HistoryReader internal constructor(
     /**
      * Whether a later row of [path] exists than the one at ([sortMs], [operationId]) — later in the same sort
      * the default order pages by, so a row that a later success, conflict or rename has superseded is found.
+     * Host reports are advisory and do not supersede engine rows.
      */
     @Synchronized
     fun hasLaterRow(
@@ -280,7 +281,7 @@ class HistoryReader internal constructor(
         operationId: String,
     ): Boolean {
         connection().prepareStatement(
-            "SELECT 1 FROM transfers WHERE path = ? AND (${TelemetryStore.SORT_TIME}, operation_id) > (?, ?) LIMIT 1",
+            "SELECT 1 FROM transfers WHERE path = ? AND source IS NULL AND (${TelemetryStore.SORT_TIME}, operation_id) > (?, ?) LIMIT 1",
         ).use { ps ->
             ps.setString(1, path)
             ps.setLong(2, sortMs)
