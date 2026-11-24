@@ -1,0 +1,6 @@
+{"verb":"scope.get"}
+{"ok":true,"included":[],"version":"3ee0eece94cc2da7"}
+{"verb":"scope.get","list_excluded":"yes"}
+{"ok":false,"error":"invalid_list_excluded"}
+{"verb":"scope.get","list_excluded":true}
+{"ok":true,"included":[],"version":"3ee0eece94cc2da7","excluded":[]}

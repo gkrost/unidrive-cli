@@ -126,30 +126,33 @@ internal object UnlockHelper {
             }
         if (reply !is kotlinx.serialization.json.JsonObject) return Result.Hard("invalid_reply")
         val secret = (reply["secret"] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content
-        if (secret != null) {
-            val bytes =
-                try {
-                    Base64.getDecoder().decode(secret)
-                } catch (_: IllegalArgumentException) {
-                    return Result.Hard("invalid_reply")
-                }
-            // The JSON parser retains immutable encoded text; wipe the mutable plaintext buffers.
-            return try {
-                val decoded = Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes))
-                try {
-                    Result.Secret(CharArray(decoded.remaining()).also { decoded.get(it) })
-                } finally {
-                    if (decoded.hasArray()) decoded.array().fill('\u0000')
-                }
-            } catch (_: java.nio.charset.CharacterCodingException) {
-                Result.Hard("invalid_reply")
-            } finally {
-                bytes.fill(0)
-            }
-        }
+        if (secret != null) return decodeSecret(secret)
         val error = (reply["error"] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content
             ?: return Result.Hard("invalid_reply")
         return if (error in SOFT_CODES) Result.Soft(error) else Result.Hard(error)
+    }
+
+    // The reply's base64 secret as a char array; every intermediate buffer is wiped.
+    private fun decodeSecret(secret: String): Result {
+        val bytes =
+            try {
+                Base64.getDecoder().decode(secret)
+            } catch (_: IllegalArgumentException) {
+                return Result.Hard("invalid_reply")
+            }
+        // The JSON parser retains immutable encoded text; wipe the mutable plaintext buffers.
+        return try {
+            val decoded = Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes))
+            try {
+                Result.Secret(CharArray(decoded.remaining()).also { decoded.get(it) })
+            } finally {
+                if (decoded.hasArray()) decoded.array().fill('\u0000')
+            }
+        } catch (_: java.nio.charset.CharacterCodingException) {
+            Result.Hard("invalid_reply")
+        } finally {
+            bytes.fill(0)
+        }
     }
 
     /** The chain's guard, not a silent skip: a configured helper that is not a regular file is a hard error. */
