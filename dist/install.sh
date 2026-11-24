@@ -245,5 +245,6 @@ echo "  unidrive autostart                              # start the selected pro
 echo "  systemctl --user enable --now unidrive.service   # auto-start on login (default profile)"
 echo "  systemctl --user enable --now unidrive@<profile>.service         # ... or one unit per profile"
 echo "  systemctl --user enable --now unidrive-mount@<profile>.service   # FUSE mount, see dist/README.md"
+echo "      (needs the unidrive-mount binary, not installed here: get it from the gkrost/unidrive-mount-linux release)"
 echo "  systemctl --user status unidrive.service         # check daemon status"
 echo "  journalctl --user -u unidrive.service -f         # follow logs"
