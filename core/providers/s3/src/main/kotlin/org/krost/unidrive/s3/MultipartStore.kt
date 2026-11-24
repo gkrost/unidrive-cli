@@ -13,12 +13,13 @@ import java.util.Properties
  * parts S3 already holds. An entry is only reused for the same local file, unchanged (size, mtime and plaintext
  * digest), split the same way (part size).
  *
- * The records live in one JSON map keyed by the S3 key, in the shared [ResumeSessionStore] (atomic owner-only write, a
- * torn file moved aside; #441 item 14). The map is read once and then served from memory, so a lookup stays O(1)
- * (#676) however many uploads the profile has left open.
+ * One record per upload, each its own [ResumeSessionStore] file `<sha256(key)[0,32]>.json` under [dir] (atomic
+ * owner-only write, a torn file moved aside; #441 item 14), so a damaged record costs that one upload. The file name is
+ * derived from the key, so a lookup reads its own record and no other (#676). The key inside is compared too, so a
+ * digest prefix two keys share can never hand one key's upload to the other.
  *
- * Before #441 item 14 each record was its own `<sha256(key)>.upload` properties file under [dir]. The first use of the
- * store converts those (see [migrate]); an open upload keeps resuming across the upgrade.
+ * Before #441 item 14 each record was a `<sha256(key)>.upload` properties file in the same folder. The first use of the
+ * store converts those, one record at a time (see [migrate]); an open upload keeps resuming across the upgrade.
  */
 internal class MultipartStore(
     private val dir: Path,
@@ -33,7 +34,7 @@ internal class MultipartStore(
         val proofSha256: String? = null,
     )
 
-    /** What the first use converted: records moved into the store, and old files that could not be read (named, kept aside). */
+    /** What the first use converted: records written, and old files that could not be read (named, kept aside). */
     data class Migration(
         val converted: Int,
         val unreadable: List<String>,
@@ -53,9 +54,7 @@ internal class MultipartStore(
         fun toPending() = Pending(key, uploadId, localPath, size, mtimeMillis, partSize, proofSha256)
     }
 
-    private val store = ResumeSessionStore(dir, Stored.serializer(), fileName = FILE_NAME)
-
-    private var records: MutableMap<String, Stored>? = null
+    private var migrated = false
 
     /** The conversion this instance did, or null when there was nothing to convert. */
     @Volatile
@@ -63,80 +62,94 @@ internal class MultipartStore(
         private set
 
     @Synchronized
-    fun find(key: String): Pending? = loaded()[key]?.toPending()
+    fun find(key: String): Pending? {
+        ensureMigrated()
+        return storeOf(fileNameOf(key)).load()[key]?.toPending()
+    }
 
     @Synchronized
-    fun all(): List<Pending> = loaded().values.map { it.toPending() }
+    fun all(): List<Pending> {
+        ensureMigrated()
+        return records().map { it.toPending() }
+    }
 
     /** The records not written since [cutoff] (a record's time is its last save, which a resumed upload renews). */
     @Synchronized
-    fun olderThan(cutoff: Instant): List<Pending> = loaded().values.filter { it.savedAtMillis < cutoff.toEpochMilli() }.map { it.toPending() }
+    fun olderThan(cutoff: Instant): List<Pending> {
+        ensureMigrated()
+        return records().filter { it.savedAtMillis < cutoff.toEpochMilli() }.map { it.toPending() }
+    }
 
     @Synchronized
     fun save(pending: Pending) {
-        val next = HashMap(loaded())
-        next[pending.key] =
+        ensureMigrated()
+        write(
             Stored(
                 pending.key, pending.uploadId, pending.localPath, pending.size, pending.mtimeMillis, pending.partSize, pending.proofSha256,
                 System.currentTimeMillis(),
-            )
-        persist(next)
+            ),
+        )
     }
 
     @Synchronized
     fun remove(key: String) {
-        val current = loaded()
-        if (key !in current) return
-        persist(HashMap(current).also { it.remove(key) })
+        Files.deleteIfExists(dir.resolve(fileNameOf(key)))
     }
 
-    private fun loaded(): MutableMap<String, Stored> = records ?: migrate().also { records = it }
+    private fun ensureMigrated() {
+        if (migrated) return
+        migrate()
+        migrated = true
+    }
 
-    private fun persist(next: MutableMap<String, Stored>) {
+    private fun fileNameOf(key: String): String = SigV4Signer.sha256Hex(key.toByteArray(Charsets.UTF_8)).take(32) + RECORD_SUFFIX
+
+    // The entries of one record file; a torn file is moved aside by the store (with a WARN) and reads as empty.
+    private fun storeOf(fileName: String) = ResumeSessionStore(dir, Stored.serializer(), fileName = fileName)
+
+    private fun write(record: Stored) {
         Files.createDirectories(dir)
-        store.replace(next)
-        records = next
+        storeOf(fileNameOf(record.key)).replace(mapOf(record.key to record))
+    }
+
+    private fun records(): List<Stored> {
+        if (!Files.isDirectory(dir)) return emptyList()
+        val names = Files.list(dir).use { files -> files.map { it.fileName.toString() }.filter { it.endsWith(RECORD_SUFFIX) }.sorted().toList() }
+        return names.flatMap { storeOf(it).load().values }
     }
 
     /**
-     * Reads the store, then folds the old per-record files into it. Safe to run again at any point:
-     * - the store file is written (atomically) BEFORE any old file is touched, so a crash leaves old files, new file, or
-     *   both, never neither;
-     * - an old file whose key the store already holds is a leftover of a crashed run: the newer of the two wins, and the
-     *   old file goes either way;
+     * Folds the old per-upload files into per-upload records, one file at a time. Safe to run again at any point:
+     * - a record is written (atomically) BEFORE its old file is deleted, so a crash leaves the old file, the new record,
+     *   or both, never neither;
+     * - an old file whose key already has a record is a leftover of a crashed run: the newer of the two wins, and the old
+     *   file goes either way;
      * - a file that cannot be read is named at WARN and renamed to `<name>.corrupt` (bytes kept), so it neither blocks the
      *   others nor is re-parsed at every start; its upload id is lost with it.
-     * An exception (the store cannot be written) leaves every old file in place, and the next call converts again.
+     * An exception (a record cannot be written) leaves that old file and the ones after it in place; the next call
+     * converts them again.
      */
-    private fun migrate(): MutableMap<String, Stored> {
-        val current = HashMap(store.load())
+    private fun migrate() {
         val legacy = legacyFiles()
-        if (legacy.isEmpty()) return current
+        if (legacy.isEmpty()) return
         val unreadable = mutableListOf<Path>()
-        val readable = mutableListOf<Pair<Path, Stored>>()
+        var converted = 0
         for (file in legacy) {
             val record = readLegacy(file)
-            if (record == null) unreadable.add(file) else readable.add(file to record)
-        }
-        var converted = 0
-        for ((_, record) in readable) {
-            val held = current[record.key]
+            if (record == null) {
+                unreadable.add(file)
+                continue
+            }
+            val held = storeOf(fileNameOf(record.key)).load()[record.key]
             if (held == null || held.savedAtMillis < record.savedAtMillis) {
-                current[record.key] = record
+                write(record)
                 converted++
             }
+            Files.deleteIfExists(file)
         }
-        if (converted > 0) {
-            Files.createDirectories(dir)
-            store.replace(current)
-        }
-        readable.forEach { (file, _) -> Files.deleteIfExists(file) }
         unreadable.forEach { setAside(it) }
         migration = Migration(converted, unreadable.map { it.fileName.toString() })
-        if (converted > 0 || unreadable.isNotEmpty()) {
-            log.info("S3 multipart records: {} converted into {}, {} unreadable", converted, FILE_NAME, unreadable.size)
-        }
-        return current
+        log.info("S3 multipart records: {} converted to one file each, {} unreadable", converted, unreadable.size)
     }
 
     private fun legacyFiles(): List<Path> {
@@ -172,7 +185,7 @@ internal class MultipartStore(
     }
 
     private companion object {
-        const val FILE_NAME = "multipart_uploads.json"
+        const val RECORD_SUFFIX = ".json"
         const val LEGACY_SUFFIX = ".upload"
         val log: org.slf4j.Logger = org.slf4j.LoggerFactory.getLogger(MultipartStore::class.java)
     }

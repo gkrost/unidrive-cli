@@ -43,7 +43,8 @@ class MultipartStoreTest {
 
     private fun legacyFiles() = Files.list(dir).use { it.toList() }.filter { it.fileName.toString().endsWith(".upload") }
 
-    private fun storeFile() = dir.resolve("multipart_uploads.json")
+    // One record per upload: <sha256(key)[0,32]>.json, a ResumeSessionStore file holding that one entry.
+    private fun recordFile(key: String) = dir.resolve(SigV4Signer.sha256Hex(key.toByteArray(Charsets.UTF_8)).take(32) + ".json")
 
     @Test
     fun `an entry is found by its key among many others`() {
@@ -80,7 +81,7 @@ class MultipartStoreTest {
         val migrated = MultipartStore(dir)
 
         assertEquals(pending("big.bin"), migrated.find("big.bin"), "the open upload is found by its key")
-        assertTrue(Files.exists(storeFile()), "the record now lives in the shared store's file")
+        assertTrue(Files.exists(recordFile("big.bin")), "the record now lives in its own shared-store file")
         assertTrue(Files.notExists(legacy), "the old file goes once its record is converted")
         assertEquals(pending("big.bin"), MultipartStore(dir).find("big.bin"), "and it is still there after another restart")
         assertEquals(
@@ -96,7 +97,7 @@ class MultipartStoreTest {
         records.forEach { writeLegacyRecord(dir, it) }
         MultipartStore(dir).all() // a full conversion, to have the store file a crashed run would have written
 
-        // Crash after the store was written, before any old file was removed: all three old files are still there.
+        // Crash after the records were written, before any old file was removed: all three old files are still there.
         records.forEach { writeLegacyRecord(dir, it) }
         assertEquals(3, legacyFiles().size)
         assertEquals(records.toSet(), MultipartStore(dir).all().toSet())
@@ -104,18 +105,20 @@ class MultipartStoreTest {
 
         // Crash half-way through removing the old files: one is left, and a temp file of the interrupted write.
         writeLegacyRecord(dir, pending("b"))
-        Files.writeString(dir.resolve("multipart_uploads.json.crashed.tmp"), "{ half")
+        Files.writeString(dir.resolve("${recordFile("b").fileName}.crashed.tmp"), "{ half")
         assertEquals(records.toSet(), MultipartStore(dir).all().toSet())
         assertEquals(0, legacyFiles().size)
 
-        // Crash before the store was written: only old files exist, and the store is gone or torn.
-        Files.delete(storeFile())
-        records.forEach { writeLegacyRecord(dir, it) }
+        // Crash before a record was written: its old file is the only copy.
+        Files.delete(recordFile("a"))
+        writeLegacyRecord(dir, pending("a"))
         assertEquals(records.toSet(), MultipartStore(dir).all().toSet())
 
-        Files.writeString(storeFile(), "{ torn")
-        records.forEach { writeLegacyRecord(dir, it) }
-        assertEquals(records.toSet(), MultipartStore(dir).all().toSet(), "a torn store is moved aside, the old files convert again")
+        // Crash that left a torn new record next to its old file: the torn one is moved aside, the old file converts again.
+        Files.writeString(recordFile("c"), "{ torn")
+        writeLegacyRecord(dir, pending("c"))
+        assertEquals(records.toSet(), MultipartStore(dir).all().toSet())
+        assertEquals(0, legacyFiles().size)
     }
 
     @Test
@@ -142,27 +145,41 @@ class MultipartStoreTest {
     @Test
     fun resume_lookup_stays_constant_time() {
         repeat(300) { store.save(pending("k$it")) }
-        val warm = MultipartStore(dir)
-        assertEquals(pending("k0"), warm.find("k0")) // the one read of the profile's records
+        // A lookup reads its own record and no other: with every other record damaged, and left untouched on disk
+        // (not parsed, not moved aside), it still answers. An O(n) re-listing (the pre-#676 find) could not.
+        val others = (0 until 300).filter { it != 17 }.map { recordFile("k$it") }
+        others.forEach { Files.writeString(it, "{ torn") }
 
-        // A lookup after that touches no disk: with the files gone it still answers, which an O(n) re-listing
-        // (the pre-#676 find) or a re-parse of the whole store per lookup could not.
-        Files.list(dir).use { it.toList() }.forEach(Files::delete)
-        assertEquals(pending("k299"), warm.find("k299"))
-        assertEquals(pending("k150"), warm.find("k150"))
-        assertNull(warm.find("missing"))
+        val reopened = MultipartStore(dir)
+        assertEquals(pending("k17"), reopened.find("k17"))
+        assertNull(reopened.find("missing"))
+        assertTrue(others.all { Files.readString(it) == "{ torn" }, "no other record was read or moved aside")
+    }
+
+    @Test
+    fun one_torn_record_leaves_the_others_resumable() {
+        listOf("a", "b", "c").forEach { store.save(pending(it)) }
+        Files.writeString(recordFile("b"), "{ torn")
+
+        val reopened = MultipartStore(dir)
+
+        assertEquals(pending("a"), reopened.find("a"))
+        assertEquals(pending("c"), reopened.find("c"))
+        assertNull(reopened.find("b"), "the damaged record costs its own upload only")
+        assertEquals(setOf(pending("a"), pending("c")), reopened.all().toSet())
+        assertEquals(1, Files.list(dir).use { it.toList() }.count { it.fileName.toString().startsWith("${recordFile("b").fileName}.torn-") }, "its bytes are kept aside")
     }
 
     @Test
     fun migration_is_idempotent() {
         listOf("a", "b").forEach { writeLegacyRecord(dir, pending(it)) }
         MultipartStore(dir).all()
-        val after = Files.readAllBytes(storeFile())
+        val after = Files.readAllBytes(recordFile("a"))
 
         val again = MultipartStore(dir)
         assertEquals(setOf(pending("a"), pending("b")), again.all().toSet())
         assertNull(again.migration, "a converted profile has nothing to convert")
-        assertTrue(after.contentEquals(Files.readAllBytes(storeFile())), "and the store file is not rewritten")
+        assertTrue(after.contentEquals(Files.readAllBytes(recordFile("a"))), "and the records are not rewritten")
 
         // A leftover old file of an already converted record (a crash after the write) must not undo a newer save.
         MultipartStore(dir).save(pending("a").copy(uploadId = "newer"))

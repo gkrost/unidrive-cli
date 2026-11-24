@@ -35,11 +35,12 @@ class S3StaleMultipartSweepTest {
         assertFailsWith<Exception> { provider(fake).upload(file(name), "/$name") }
     }
 
-    // The records are one JSON map; ageing them rewrites each entry's save time.
+    // Each record is a small JSON file; ageing them rewrites each entry's save time.
     private fun ageRecords(days: Long) {
         val old = Instant.now().minus(days, ChronoUnit.DAYS).toEpochMilli()
-        val file = dir.resolve("s3-uploads/multipart_uploads.json")
-        Files.writeString(file, Files.readString(file).replace(Regex("\"savedAtMillis\":\\d+"), "\"savedAtMillis\":$old"))
+        Files.list(dir.resolve("s3-uploads")).use { it.toList() }.filter { it.fileName.toString().endsWith(".json") }.forEach { file ->
+            Files.writeString(file, Files.readString(file).replace(Regex("\"savedAtMillis\":\\d+"), "\"savedAtMillis\":$old"))
+        }
     }
 
     @Test
