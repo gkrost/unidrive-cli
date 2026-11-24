@@ -1,14 +1,19 @@
 package org.krost.unidrive.sync
 
 import org.krost.unidrive.io.Os
+import java.io.IOException
 import java.net.ConnectException
 import java.net.SocketException
 import java.net.UnixDomainSocketAddress
 import java.nio.channels.SocketChannel
+import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.LinkOption
+import java.nio.file.NoSuchFileException
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.BasicFileAttributes
+import java.util.UUID
 
 /**
  * gkrost/unidrive-cli#926 S5: the probe of a socket file a dead daemon may have left behind, and its removal; shared by
@@ -30,6 +35,9 @@ internal object IpcStaleSocket {
 
         /** Nobody listened, but the file was replaced or removed after the probe: left alone. */
         CHANGED,
+
+        /** The socket could not be classified safely. */
+        UNKNOWN,
     }
 
     /**
@@ -39,10 +47,11 @@ internal object IpcStaleSocket {
     fun removeIfStale(
         path: Path,
         windows: Boolean = Os.isWindows(),
+        fileIdentity: (Path) -> Any? = ::fileKey,
         afterProbe: () -> Unit = {},
     ): Outcome {
         if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) return Outcome.ABSENT
-        val probed = fileKey(path)
+        val probed = fileIdentity(path)
         try {
             SocketChannel.open(UnixDomainSocketAddress.of(path)).close()
             return Outcome.LIVE
@@ -50,38 +59,60 @@ internal object IpcStaleSocket {
             // ECONNREFUSED: nobody listening
         } catch (e: SocketException) {
             if (e.message.orEmpty().contains("No such file")) return Outcome.ABSENT // ENOENT: gone before the connect
-            if (!(windows &&e.message.orEmpty().contains("Invalid argument"))) throw e // Windows' answer for a stale socket
+            if (!(windows && e.message.orEmpty().contains("Invalid argument"))) throw e // Windows' answer for a stale socket
         }
         afterProbe()
         // Take the file out of the way under a private name first: what is renamed is then ours, whoever bound it. Comparing
         // dev + ino is not enough on its own, because a file system may give a successor the inode just freed.
-        if (fileKey(path) != probed) return Outcome.CHANGED
+        if (fileIdentity(path) != probed) return Outcome.CHANGED
         if (windows) { // no file identity, and a renamed Windows socket cannot be connected to: remove as before
             Files.deleteIfExists(path)
             return Outcome.REMOVED
         }
-        val aside = path.resolveSibling("${path.fileName}.stale-${java.util.UUID.randomUUID()}")
+        val aside = temporarySibling(path) ?: return Outcome.UNKNOWN
         try {
-            Files.move(path, aside, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
-        } catch (_: java.nio.file.NoSuchFileException) {
-            return Outcome.CHANGED
+            Files.createFile(aside)
+        } catch (_: FileAlreadyExistsException) {
+            return Outcome.UNKNOWN
         }
-        if (listening(aside)) {
-            // A successor bound it after the probe: put it back (never over a file bound meanwhile) and leave it alone.
+        try {
+            Files.move(path, aside, StandardCopyOption.ATOMIC_MOVE)
+        } catch (e: IOException) {
+            Files.deleteIfExists(aside)
+            if (e is NoSuchFileException) return Outcome.CHANGED
+            throw e
+        }
+        val probe = probeRenamedSocket(aside)
+        if (probe != Outcome.REMOVED) {
+            // Restore a live or unclassified file, without replacing a socket bound meanwhile.
             runCatching { Files.move(aside, path) }
-            return Outcome.CHANGED
+            return probe
         }
         Files.deleteIfExists(aside)
         return Outcome.REMOVED
     }
 
-    private fun listening(path: Path): Boolean =
+    private fun temporarySibling(path: Path): Path? {
+        val prefixBytes = path.resolveSibling(".").toString().toByteArray(Charsets.UTF_8).size - 1
+        // The JDK on Linux refuses 107-byte addresses, so keep one byte inside the OS limit.
+        val available = IpcSocketPaths.MAX_UNIX_SOCKET_PATH_BYTES - 1 - prefixBytes
+        if (available < MIN_TEMP_NAME) return null
+        val token = UUID.randomUUID().toString().replace("-", "")
+        return path.resolveSibling(".${token.take(minOf(available - 1, TEMP_TOKEN_LENGTH))}")
+    }
+
+    private fun probeRenamedSocket(path: Path): Outcome =
         try {
             SocketChannel.open(UnixDomainSocketAddress.of(path)).close()
-            true
-        } catch (_: java.io.IOException) {
-            false
+            Outcome.CHANGED
+        } catch (_: ConnectException) {
+            Outcome.REMOVED
+        } catch (_: IOException) {
+            Outcome.UNKNOWN
         }
+
+    private const val MIN_TEMP_NAME = 9
+    private const val TEMP_TOKEN_LENGTH = 12
 
     // dev + ino on POSIX; null on Windows (no file key) and when the file is gone.
     private fun fileKey(path: Path): Any? =

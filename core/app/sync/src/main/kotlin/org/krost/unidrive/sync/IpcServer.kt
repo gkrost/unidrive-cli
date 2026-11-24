@@ -568,6 +568,7 @@ class IpcServer(
         when (IpcStaleSocket.removeIfStale(socketPath)) {
             IpcStaleSocket.Outcome.LIVE -> error("Another daemon is already listening on $socketPath")
             IpcStaleSocket.Outcome.CHANGED -> error("The socket file $socketPath was replaced while it was checked")
+            IpcStaleSocket.Outcome.UNKNOWN -> error("Could not determine whether the socket file $socketPath is stale")
             else -> Unit
         }
     }

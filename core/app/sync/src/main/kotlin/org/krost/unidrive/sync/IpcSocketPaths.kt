@@ -16,7 +16,7 @@ internal object IpcSocketPaths {
     private const val MAX_SOCKET_PATH_LENGTH = 90
 
     // A unix socket path holds 108 bytes with its terminating NUL; a longer one cannot be bound.
-    private const val MAX_UNIX_SOCKET_PATH_BYTES = 107
+    const val MAX_UNIX_SOCKET_PATH_BYTES = 107
 
     fun socketBaseName(profileName: String): String = "unidrive-${canonicalDiskName(profileName, diskNameDirectory())}.sock"
 
@@ -153,8 +153,8 @@ internal object IpcSocketFiles {
         // Other IOExceptions abort via runCatching: never delete a socket we can't classify.
         runCatching {
             when (IpcStaleSocket.removeIfStale(socketPath)) {
-                IpcStaleSocket.Outcome.ABSENT, IpcStaleSocket.Outcome.REMOVED -> deleteSocketFiles(socketPath)
-                else -> Unit // somebody is listening, or bound it meanwhile: not ours to delete
+                IpcStaleSocket.Outcome.ABSENT, IpcStaleSocket.Outcome.REMOVED -> Files.deleteIfExists(metaPathFor(socketPath))
+                else -> Unit // Live, changed, or unclassified: leave its metadata alone.
             }
         }
     }

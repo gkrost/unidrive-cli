@@ -12,6 +12,7 @@ import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermissions
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /** gkrost/unidrive-cli#926 S5: a socket file is removed as stale only when nothing changed between the probe and the delete. */
@@ -31,6 +32,40 @@ class IpcStaleSocketTest {
         val path = staleSocket("s.sock")
         assertEquals(IpcStaleSocket.Outcome.REMOVED, IpcStaleSocket.removeIfStale(path))
         assertTrue(Files.notExists(path))
+    }
+
+    @Test
+    fun a_live_replacement_in_a_long_directory_can_still_be_probed() {
+        assumeTrue("POSIX socket rename", FileSystems.getDefault().supportedFileAttributeViews().contains("unix"))
+        val suffix = "unidrive-profile.sock"
+        val padding = 100 - dir.toString().toByteArray(Charsets.UTF_8).size - suffix.length - 2
+        assumeTrue(padding > 0)
+        val path = Files.createDirectory(dir.resolve("a".repeat(padding))).resolve(suffix)
+        ServerSocketChannel.open(StandardProtocolFamily.UNIX).use { it.bind(UnixDomainSocketAddress.of(path)) }
+
+        ServerSocketChannel.open(StandardProtocolFamily.UNIX).use { successor ->
+            val outcome = IpcStaleSocket.removeIfStale(path, fileIdentity = { "reused inode" }) {
+                Files.delete(path)
+                successor.bind(UnixDomainSocketAddress.of(path))
+            }
+            assertEquals(IpcStaleSocket.Outcome.CHANGED, outcome)
+            SocketChannel.open(UnixDomainSocketAddress.of(path)).close()
+        }
+    }
+
+    @Test
+    fun an_inconclusive_probe_of_the_renamed_socket_restores_it() {
+        assumeTrue("POSIX socket permissions", FileSystems.getDefault().supportedFileAttributeViews().contains("posix"))
+        assumeTrue("root ignores the mode", System.getProperty("user.name") != "root")
+        val path = staleSocket("s.sock")
+
+        val outcome = IpcStaleSocket.removeIfStale(path) {
+            Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("---------"))
+        }
+
+        assertEquals(IpcStaleSocket.Outcome.UNKNOWN, outcome)
+        assertTrue(Files.exists(path))
+        assertFalse(Files.list(dir).use { it.anyMatch { entry -> entry != path } })
     }
 
     @Test
