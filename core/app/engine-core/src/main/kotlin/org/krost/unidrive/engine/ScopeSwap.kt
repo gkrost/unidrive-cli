@@ -22,6 +22,8 @@ class ScopeSwap(
     private val wiring: MountWiring,
     // How long [apply] waits for a running enumeration to end before it answers [Outcome.Busy].
     private val maxWaitMs: Long = MAX_WAIT_MS,
+    // The hold of the mount's row-adding verbs (the daemon registers them through it); see [apply].
+    private val writeGate: ScopeWriteGate = ScopeWriteGate(),
 ) {
     /** What a change of the scope does to this computer; nothing in the cloud changes. */
     data class Effect(
@@ -83,31 +85,44 @@ class ScopeSwap(
             waitedMs += WAIT_STEP_MS
         }
         try {
-            val guard = wiring.guard
-            val previous = guard.trackScope
-            // Swapped first: a write into what leaves is refused (`outside_scope`) from here on, so the survey below sees every
-            // file only this computer holds there.
-            guard.swapTrackScope(target)
-            var kept = false
-            val survey =
-                try {
-                    survey(previous, target).also {
-                        if (it.effect.unsyncedCount > 0) return Outcome.Refused(it.effect)
-                        persist(target)
-                        kept = true
-                    }
-                } finally {
-                    // A refusal, or a survey or persist that threw: the scope stays as it was.
-                    if (!kept) guard.swapTrackScope(previous)
-                }
-            wiring.gather.applyScopeTransition()
-            // The mirror's scoped-history key: a mount profile has it only where it was a mirror once (as `unidrive scope set`).
-            if (!wiring.db.getSyncState(EFFECTIVE_SCOPE_KEY).isNullOrEmpty()) wiring.db.setSyncState(EFFECTIVE_SCOPE_KEY, target.joinToString("\t"))
-            evictCacheCopies(survey.evictions, wiring.enumeration.reapGuards)
-            return Outcome.Applied(previous, target, survey.effect)
+            // Owner decision 2026-11-24: the swap, the survey and the transition run with the mount's row-adding verbs held
+            // ([ScopeWriteGate]), so a write accepted under the old set has added its row before the survey, and one that comes
+            // during the hold meets the new set. No provider call is made under the hold.
+            val (outcome, survey) = writeGate.exclusive(WRITE_DRAIN_MS) { swapHeld(target, persist) } ?: return Outcome.Busy
+            // The cache files go after the hold: file deletes, the row flip is the truth (as the enumeration's reap).
+            survey?.let { evictCacheCopies(it.evictions, wiring.enumeration.reapGuards) }
+            return outcome
         } finally {
             flag.set(false)
         }
+    }
+
+    // Under the enumeration's flag and the write hold. The survey is returned for the cache evictions of an applied change.
+    private fun swapHeld(
+        target: List<String>,
+        persist: (List<String>) -> Unit,
+    ): Pair<Outcome, Survey?> {
+        val guard = wiring.guard
+        val previous = guard.trackScope
+        // Swapped first, so nothing that may still run outside the hold (a replay, an upload landing) can widen the set of
+        // rows outside the new scope behind the survey with a write the old scope would have let through.
+        guard.swapTrackScope(target)
+        var kept = false
+        val survey =
+            try {
+                survey(previous, target).also {
+                    if (it.effect.unsyncedCount > 0) return Outcome.Refused(it.effect) to null
+                    persist(target)
+                    kept = true
+                }
+            } finally {
+                // A refusal, or a survey or persist that threw: the scope stays as it was.
+                if (!kept) guard.swapTrackScope(previous)
+            }
+        wiring.gather.applyScopeTransition()
+        // The mirror's scoped-history key: a mount profile has it only where it was a mirror once (as `unidrive scope set`).
+        if (!wiring.db.getSyncState(EFFECTIVE_SCOPE_KEY).isNullOrEmpty()) wiring.db.setSyncState(EFFECTIVE_SCOPE_KEY, target.joinToString("\t"))
+        return Outcome.Applied(previous, target, survey.effect) to survey
     }
 
     private class Survey(
@@ -172,6 +187,9 @@ class ScopeSwap(
         const val LEAVING_CAP = 50
         const val UNSYNCED_PATHS_CAP = 10
         const val MAX_WAIT_MS = 30_000L
+
+        /** How long [apply] waits for the running row-adding writes to end before it answers busy; writes go on meanwhile. */
+        const val WRITE_DRAIN_MS = 10_000L
         private const val WAIT_STEP_MS = 50L
         private const val EFFECTIVE_SCOPE_KEY = "effective_scope"
 

@@ -494,7 +494,15 @@ scope.set {included:[...], version[, dry_run]}  -> {"ok":true,"applied":true|fal
   of what leaves, drops the clean cache copies of their files, and sends `view.invalidated` with `full:true`. A wider set lists the
   drive again (one enumeration starts at once). `sync_path` in config.toml is written before state.db changes, so a crash between the
   two leaves the next start doing the same transition. A change waits up to 30 s for a running enumeration to end, and answers `busy`
-  when that runs out (nothing changed). Mid-change, a write into a folder that leaves is refused with `outside_scope`.
+  when that runs out (nothing changed).
+- **The hold of the writes** (owner decision 2026-11-24). The verbs that add or move a row (`create`, `mkdir`, `open_write`,
+  `open_write_begin`, `close_handle`, `rename`, `refuse_name`) are held for a change. The change first waits until none of them
+  is running, for at most 10 s, and answers `busy` when they do not end in time. New writes go on during that wait. It then
+  holds them while it swaps the set, checks for local-only files and reshapes state.db. That is work on state.db only, with no
+  provider call. It is one scan of the alive rows, the config write and the chunked delete of the rows that leave, so it grows
+  with the size of the profile (not measured on a large drive yet). A write
+  accepted before the change has therefore added its row before the check. A write that arrives during the hold waits for it,
+  then runs against the new set: one into a folder that left answers `outside_scope`. No write waits on a provider request.
 - **`effect`** describes what leaves this computer: `leaving` (the top of each subtree that leaves, at most 50, `leaving_more` the
   rest), `entering` (new roots outside the old set), `remove_locally` (`folders`, `placeholders` for files that are only in the
   cloud, `offline_copies` for files with a clean copy here, which go from this computer and stay in the cloud), `unsynced` (`count`

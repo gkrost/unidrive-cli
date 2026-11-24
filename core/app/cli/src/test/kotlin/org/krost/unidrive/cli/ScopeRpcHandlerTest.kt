@@ -37,6 +37,11 @@ class ScopeRpcHandlerTest {
     }
 
     @Test
+    fun the_held_row_writing_verbs_are_hydration_verbs_the_daemon_registers() {
+        assertTrue(org.krost.unidrive.hydration.HydrationIpcHandler.VERBS.containsAll(ROW_WRITING_VERBS), "a misspelt verb would run unheld: $ROW_WRITING_VERBS")
+    }
+
+    @Test
     fun scope_set_refusal_names_the_count_and_the_first_unsynced_paths() =
         runBlocking {
             val first = (1..ScopeSwap.UNSYNCED_PATHS_CAP).map { "/B/draft-$it.txt" }

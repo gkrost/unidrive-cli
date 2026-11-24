@@ -6,6 +6,7 @@ import kotlinx.coroutines.launch
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.engine.MountWiring
 import org.krost.unidrive.engine.ScopeSwap
+import org.krost.unidrive.engine.ScopeWriteGate
 import org.krost.unidrive.hydration.HydrationEvent
 import org.krost.unidrive.sync.IpcServer
 import org.slf4j.LoggerFactory
@@ -22,6 +23,7 @@ private val log = LoggerFactory.getLogger("org.krost.unidrive.cli.DaemonScopeVer
 internal fun registerScopeVerbs(
     server: IpcServer,
     wiring: MountWiring?,
+    writeGate: ScopeWriteGate,
     fixedScope: List<String>,
     persist: ((List<String>) -> Unit)?,
     cloud: CloudProvider,
@@ -30,7 +32,7 @@ internal fun registerScopeVerbs(
     serveScope: CoroutineScope,
     enumerate: (suspend () -> Unit)?,
 ): ScopeRpcHandler {
-    val control = if (wiring != null && persist != null) ScopeSwap(wiring).asControl() else null
+    val control = if (wiring != null && persist != null) ScopeSwap(wiring, writeGate = writeGate).asControl() else null
     val handler =
         ScopeRpcHandler(
             control = control,
@@ -54,3 +56,20 @@ internal fun registerScopeVerbs(
     server.registerHandler(ScopeRpcHandler.SET) { _, json -> handler.set(json) }
     return handler
 }
+
+/**
+ * The hydration verbs that add a row or move one to another path: they run in [ScopeWriteGate.write], so a scope change never
+ * checks for local-only files while one of them is half done (owner decision 2026-11-24). The read verbs, the transfers and the
+ * deletes do not add rows and are not held.
+ */
+internal val ROW_WRITING_VERBS: Set<String> =
+    setOf(
+        "hydration.create", "hydration.mkdir", "hydration.open_write", "hydration.open_write_begin", "hydration.close_handle",
+        "hydration.rename", "hydration.refuse_name",
+    )
+
+/** Runs the hydration verb [verb] through the scope change's hold when it adds or moves rows ([ROW_WRITING_VERBS]). */
+internal suspend fun ScopeWriteGate.around(
+    verb: String,
+    block: suspend () -> String,
+): String = if (verb in ROW_WRITING_VERBS) write(block) else block()

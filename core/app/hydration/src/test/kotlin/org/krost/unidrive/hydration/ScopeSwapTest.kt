@@ -270,7 +270,7 @@ class ScopeSwapTest {
      */
     @Test
     fun write_accepted_before_narrowing_is_counted_or_refused_never_dropped() =
-        runBlocking {
+        runBlocking<Unit> {
             assertTrue(mount.enumerateRemoteIntoState(reset = false).ok)
             offlineCopy("/A/a.txt")
             val row = assertNotNull(db.getEntry("/A/a.txt"))
