@@ -1,0 +1,63 @@
+﻿{
+    "Tag":  "upload1",
+    "Kind":  "upload",
+    "T0Ms":  1795358974648,
+    "T1Ms":  1795359136307,
+    "WallMs":  161659,
+    "MBps":  0.67,
+    "Clean":  true,
+    "Why":  [
+
+            ],
+    "OtherBytes":  126147,
+    "OtherUnknownLines":  0,
+    "OtherOpenUploads":  0,
+    "OtherProfiles":  {
+                          "other-1":  {
+                                          "Requests":  16,
+                                          "UpBytes":  0,
+                                          "DnBytes":  125430,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  0,
+                                          "OpenUploads":  0
+                                      },
+                          "other-2":  {
+                                          "Requests":  3,
+                                          "UpBytes":  0,
+                                          "DnBytes":  716.5794234030526,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  1,
+                                          "OpenUploads":  0
+                                      }
+                      },
+    "MaxForeignProcess":  "chrome",
+    "MaxForeignCores":  0.198,
+    "TotalCores":  0.901,
+    "OwnCores":  {
+                     "powershell:51384":  0.01,
+                     "unidrive-win:45660":  0.129,
+                     "java:47212":  0.18
+                 },
+    "WireRxBytes":  8670093,
+    "Downloads":  0,
+    "Retries":  0,
+    "Events":  {
+                   "remote_change":  324,
+                   "pickup":  323,
+                   "upload_done":  323,
+                   "cache_evict":  43,
+                   "upload_start":  323,
+                   "upload_confirmed":  323
+               },
+    "Pass":  true,
+    "Violations":  [
+
+                   ],
+    "Detail":  {
+                   "Polls":  42,
+                   "TimedOut":  false,
+                   "Failed":  0
+               }
+}

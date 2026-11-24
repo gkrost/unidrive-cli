@@ -5,6 +5,8 @@ kotlinx-serialization = "1.13.0"
 sqlite-jdbc = "3.54.1.0"
 ktoml = "0.7.1"
 logback = "1.6.8"
+# slf4j-api for the library modules; only :app:cli ships a backend (logback). Kept at the version logback resolves (#270-2).
+slf4j = "2.0.19"
 picocli = "4.7.7"
 ktor = "3.6.1"
 shadow = "9.6.1"
@@ -38,6 +40,7 @@ sqlite-jdbc = { module = "org.xerial:sqlite-jdbc", version.ref = "sqlite-jdbc" }
 ktoml-core = { module = "com.akuleshov7:ktoml-core", version.ref = "ktoml" }
 ktoml-file = { module = "com.akuleshov7:ktoml-file", version.ref = "ktoml" }
 logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
+slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
 picocli = { module = "info.picocli:picocli", version.ref = "picocli" }
 ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
 ktor-client-okhttp = { module = "io.ktor:ktor-client-okhttp", version.ref = "ktor" }

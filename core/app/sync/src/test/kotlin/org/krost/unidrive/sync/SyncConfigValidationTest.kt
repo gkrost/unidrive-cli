@@ -134,4 +134,22 @@ class SyncConfigValidationTest {
             assertTrue("tombstone_retention_days" in message, "the message names the key: $message")
         }
     }
+
+    // gkrost/unidrive-cli#508
+    @Test
+    fun `download_stall_timeout is read per profile and says whether it came from the config or the default`() {
+        val toml = "[providers.a]\ndownload_stall_timeout = 120\n[providers.b]\n"
+        val config = SyncConfig.parse(toml, "a")
+        assertEquals(DownloadStallTimeout(120, "config"), config.downloadStallTimeout("a"))
+        assertEquals(DownloadStallTimeout(600, "default"), config.downloadStallTimeout("b"))
+        assertEquals(DownloadStallTimeout.DEFAULT, config.downloadStallTimeout("unknown"))
+    }
+
+    @Test
+    fun `an out-of-range download_stall_timeout is refused naming the key`() {
+        for (value in listOf(-1, 0, 59, 86_401)) {
+            val message = refusal("[providers.p]\ndownload_stall_timeout = $value\n")
+            assertTrue("download_stall_timeout" in message, "the message names the key: $message")
+        }
+    }
 }

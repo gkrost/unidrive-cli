@@ -345,6 +345,21 @@ class S3ProviderTest {
     }
 
     @Test
+    fun `the largest file size is the vendor's part limit times the part ceiling, as partSizeFor plans it`() {
+        val aws = S3Provider(S3Config("b", "eu-west-1", "https://s3.eu-west-1.amazonaws.com", "AK", "SK", dir))
+        val scaleway = S3Provider(S3Config("b", "fr-par", "https://s3.fr-par.scw.cloud", "AK", "SK", dir))
+        val gib = 1024 * mib
+
+        assertEquals(10_000 * 5 * gib, aws.maxFileSizeBytes())
+        assertEquals(1_000 * 5 * gib, scaleway.maxFileSizeBytes())
+        for (p in listOf(aws, scaleway)) {
+            assertEquals(S3Config.MAX_PART_SIZE, p.partSizeFor(p.maxFileSizeBytes()), "the cap is a size partSizeFor still plans")
+            assertFailsWith<ProviderException> { p.partSizeFor(p.maxFileSizeBytes() + 1) }
+        }
+        assertTrue(6L * 1024 * gib <= aws.maxFileSizeBytes(), "a 6 TiB file fits on AWS")
+    }
+
+    @Test
     fun `on AWS a guarded write carries If-Match and a 412 is a conflict`() =
         runTest {
             val fake = FakeS3()

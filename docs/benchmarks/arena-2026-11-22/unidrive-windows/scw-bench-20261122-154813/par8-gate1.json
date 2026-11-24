@@ -1,0 +1,54 @@
+﻿{
+    "Tag":  "par8-gate1",
+    "Kind":  "gate",
+    "T0Ms":  1795359832045,
+    "T1Ms":  1795359892052,
+    "WallMs":  60007,
+    "MBps":  null,
+    "Clean":  true,
+    "Why":  [
+
+            ],
+    "OtherBytes":  383,
+    "OtherUnknownLines":  0,
+    "OtherOpenUploads":  0,
+    "OtherProfiles":  {
+                          "other-1":  {
+                                          "Requests":  2,
+                                          "UpBytes":  0,
+                                          "DnBytes":  62,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  0,
+                                          "OpenUploads":  0
+                                      },
+                          "other-2":  {
+                                          "Requests":  1,
+                                          "UpBytes":  0,
+                                          "DnBytes":  321,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  0,
+                                          "OpenUploads":  0
+                                      }
+                      },
+    "MaxForeignProcess":  "com.docker.backend",
+    "MaxForeignCores":  0.009,
+    "TotalCores":  0.14,
+    "OwnCores":  {
+                     "powershell:51384":  0.003,
+                     "unidrive-win:45660":  0.01,
+                     "java:47212":  0.006
+                 },
+    "WireRxBytes":  587575,
+    "Downloads":  0,
+    "Retries":  0,
+    "Events":  {
+
+               },
+    "Pass":  null,
+    "Violations":  [
+
+                   ],
+    "Detail":  null
+}

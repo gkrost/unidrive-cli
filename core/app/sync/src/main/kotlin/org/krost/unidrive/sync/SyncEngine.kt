@@ -37,6 +37,7 @@ import org.krost.unidrive.engine.RemoteGather
 import org.krost.unidrive.engine.ScanTimings
 import org.krost.unidrive.engine.ScopeState
 import org.krost.unidrive.engine.localNameIssue
+import org.krost.unidrive.engine.idIndex
 import org.krost.unidrive.engine.loneSurrogatePathIssue
 import org.krost.unidrive.engine.Transfers
 import org.krost.unidrive.sync.model.*
@@ -635,13 +636,6 @@ open class SyncEngine(
     }
 
     private fun markRecentlyUploaded(path: String) = remoteGather.markRecentlyUploaded(path)
-
-    private fun admit(
-        changes: MutableMap<String, CloudItem>,
-        keyToPath: MutableMap<String, String>,
-        collisions: MutableMap<String, RemoteGather.CollisionRecord>,
-        item: CloudItem,
-    ): CloudItem = remoteGather.admit(changes, keyToPath, collisions, item)
 
     private fun reportGatheredCollisions(
         collisions: Map<String, RemoteGather.CollisionRecord>,
@@ -2385,6 +2379,8 @@ open class SyncEngine(
         // the buffered gather (see gatherRemoteChanges).
         val keyToPath = HashMap<String, String>()
         val collisions = HashMap<String, RemoteGather.CollisionRecord>()
+        // #745 finding 6: of an id delivered at more than one path, the gather keeps the last occurrence (GatherIdIndex).
+        val latestOfId = remoteGather.idIndex(changes, keyToPath, collisions)
         // archive#403: the twin rows of state.db, for the winner rule and placeTwins.
         remoteGather.loadTwins()
         val buffer = StreamingReconcileBuffer()
@@ -2765,7 +2761,7 @@ open class SyncEngine(
                             // the key's winner only when THIS page's item is it — a twin that
                             // lost to an earlier page's winner was already reconciled on that
                             // page, and the collision is recorded by the admit itself.
-                            val winner = admit(changes, keyToPath, collisions, item.resolved)
+                            val winner = latestOfId.admitLatest(item.resolved)
                             if (winner.id == item.resolved.id) {
                                 slice[winner.path] = winner
                             }
@@ -2782,10 +2778,11 @@ open class SyncEngine(
                         // Resolve and stage the new page's items, keyed by remote id or, when the
                         // item carries none, by path: a Dropbox tombstone has an empty id, and
                         // keying it as "" would let the tombstones of one page overwrite each
-                        // other until only the last survives. A null resolve leaves the lookahead.
+                        // other until only the last survives. A null resolve leaves the lookahead; a tombstone with no row still
+                        // ends its id's live occurrence: admitted, held, or earlier on this page.
                         val newItems = LinkedHashMap<String, HeldItem>()
                         for (item in page.items) {
-                            val resolved = resolveItemPath(item) ?: continue
+                            val resolved = resolveItemPath(item) ?: run { latestOfId.unplacedTombstone(item, heldItems, newItems); continue }
                             newItems[resolved.id.ifEmpty { resolved.path }] = HeldItem(resolved, resolved.id)
                         }
 

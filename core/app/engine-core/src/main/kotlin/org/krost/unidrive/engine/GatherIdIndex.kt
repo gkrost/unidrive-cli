@@ -14,27 +14,35 @@ import org.krost.unidrive.CloudItem
  * the item at the new one are already consistent. Id-less items (Dropbox tombstones) and the namespaces' own folders
  * (one root id per page, under a name that can change between pages) are never collapsed.
  */
-internal class GatherIdIndex(
+class GatherIdIndex internal constructor(
     private val changes: MutableMap<String, CloudItem>,
     private val keyToPath: MutableMap<String, String>,
     private val collisions: MutableMap<String, RemoteGather.CollisionRecord>,
     private val gatherKey: (String) -> String,
-    private val admit: (CloudItem) -> Unit,
+    private val admit: (CloudItem) -> CloudItem,
 ) {
     private val keyById = HashMap<String, String>()
 
-    /** Admits [item] (resolved, keyed by its path) as the latest occurrence of its id. */
-    fun admitLatest(item: CloudItem) {
+    /** Admits [item] (resolved, keyed by its path) as the latest occurrence of its id; returns the key's winner (see admit). */
+    fun admitLatest(item: CloudItem): CloudItem {
         if (collapses(item.id)) {
             val earlier = keyById.put(item.id, item.path)
             if (earlier != null && gatherKey(earlier) != gatherKey(item.path)) retract(item.id, earlier)
         }
-        admit(item)
+        return admit(item)
     }
 
-    /** A tombstone the gather cannot place (its id has no row) still ends the live occurrence of that id. */
-    fun unplacedTombstone(item: CloudItem) {
-        if (item.deleted && collapses(item.id)) keyById.remove(item.id)?.let { retract(item.id, it) }
+    /**
+     * A tombstone the gather cannot place (its id has no row) still ends the live occurrence of that id: the admitted one,
+     * and one [staged] by id and not admitted yet (the streaming gather's lookahead, PR #917 review).
+     */
+    fun unplacedTombstone(
+        item: CloudItem,
+        vararg staged: MutableMap<String, *>?,
+    ) {
+        if (!item.deleted || !collapses(item.id)) return
+        keyById.remove(item.id)?.let { retract(item.id, it) }
+        for (map in staged) map?.remove(item.id)
     }
 
     /** Forgets every id, with the maps it indexes (a recovery pass starts the gather over). */
@@ -53,7 +61,7 @@ internal class GatherIdIndex(
             if (holder.deleted) return
             changes.remove(holderKey)
             keyToPath.remove(fold)
-            collisions.remove(holderKey)?.let { record -> (record.losers + record.tombstones).forEach(admit) }
+            collisions.remove(holderKey)?.let { record -> (record.losers + record.tombstones).forEach { admit(it) } }
             return
         }
         val record = collisions[holderKey] ?: return
@@ -61,3 +69,10 @@ internal class GatherIdIndex(
         if (record.losers.isEmpty() && record.tombstones.isEmpty()) collisions.remove(holderKey)
     }
 }
+
+/** The admit of one gather that keeps the last occurrence of a repeated id: the buffered gather's and the streaming one's. */
+fun RemoteGather.idIndex(
+    changes: MutableMap<String, CloudItem>,
+    keyToPath: MutableMap<String, String>,
+    collisions: MutableMap<String, RemoteGather.CollisionRecord>,
+) = GatherIdIndex(changes, keyToPath, collisions, ::gatherKey) { admit(changes, keyToPath, collisions, it) }

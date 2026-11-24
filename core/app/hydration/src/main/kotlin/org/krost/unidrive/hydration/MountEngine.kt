@@ -616,17 +616,11 @@ class MountEngine private constructor(
     fun downloadProgress(path: String): DownloadProgress? =
         runningDownloads[path]?.let { DownloadProgress(it.bytesDone(), it.bytesTotal) }
 
-    // The bytes a download has written so far. The providers stream into a staging file of their own next to the file they
-    // were given (`<name>.unidrive-tmp`, stagingSiblingName) and move it over that file only at the end, so the mount's
-    // staging file stays empty until then: the larger of the two is what has arrived.
-    private fun stagedBytes(staged: Path): Long {
-        val own = runCatching { Files.size(staged) }.getOrDefault(0L)
-        val providers =
-            runCatching {
-                Files.size(staged.resolveSibling(org.krost.unidrive.io.stagingSiblingName(staged.fileName.toString(), PROVIDER_STAGING_SUFFIX)))
-            }.getOrDefault(0L)
-        return maxOf(own, providers)
-    }
+    /**
+     * gkrost/unidrive-cli#508: the no-progress limit of the cold downloads; the daemon sets its timeout from the profile key
+     * `download_stall_timeout` before the mount serves, and daemon.status reports it.
+     */
+    val downloadStall: DownloadStallWatchdog = DownloadStallWatchdog()
 
     // Cloud objects found truncated or refused for their content, remembered so a repeated read or pin is refused
     // without asking the provider (or downloading a refused object again).
@@ -826,30 +820,26 @@ class MountEngine private constructor(
         // archive#318: download to a temp sibling and atomically swap it in, so a handle
         // already reading the old cache keeps its inode instead of having the file
         // truncated under it by TRUNCATE_EXISTING (silent short/garbage reads).
-        val staged =
-            cachePath.resolveSibling(
-                // archive#529: a long cache name cannot take the full suffix — stage short when over the limit.
-                org.krost.unidrive.io.stagingSiblingName(
-                    cachePath.fileName.toString(),
-                    ".hydrating-" + java.util.UUID.randomUUID(),
-                ),
-            )
+        // archive#529: a long cache name stages short; #508: short enough that the provider's own staging name keeps it.
+        val staged = cachePath.resolveSibling(HydrationStaging.stagingName(cachePath.fileName.toString()))
+        val download = StagedDownload(staged) // #508: one measure for the pacer, the meter and the watchdog; charges every attempt
         try {
             // archive#778: a download starts only while the daemon is not paused; one running when a pause begins is
             // judged on the bytes the staging file holds so far.
             // gkrost/unidrive-cli#392: and only with a permit of the download budget, by the size the row knows: many small
             // files at once, large ones at the provider's transfer cap, all of them narrow again after a throttle. #715: after the byte-rate cap.
             val fetched =
-                guard.pacedDownload(entry.remoteSize, bytesStaged = { stagedBytes(staged) }) {
+                guard.pacedDownload(entry.remoteSize, bytesStaged = download::bytesMoved) {
                     rememberingRemoteIncomplete(path, entry) {
                         pause.track(path) { transfer ->
                             transfer.begin()
                             // archive#652: a cold download is a transfer from here on (a warm serve and a refusal for a pause never get here).
                             history?.started()
-                            transfer.measuredBy(entry.remoteSize) { stagedBytes(staged) }
+                            transfer.measuredBy(entry.remoteSize, download::bytes)
                             runningDownloads[path] = transfer
                             try {
-                                watchingCredentials { downloadByIdOrLiveItem(path, entry, remoteItem, staged, tally) }
+                                // gkrost/unidrive-cli#508: an attempt with no byte progress for the stall limit is abandoned and started again.
+                                downloadStall.run(path, download::bytes, download::attemptAbandoned) { watchingCredentials { downloadByIdOrLiveItem(path, entry, remoteItem, staged, tally) } }
                             } finally {
                                 runningDownloads.remove(path, transfer)
                             }
@@ -2382,10 +2372,6 @@ class MountEngine private constructor(
         const val LOCAL_FILE_UNREADABLE = "local_file_unreadable"
         const val METHOD_SIZE = "size"
         const val METHOD_RECORDED_SHA256 = "recorded-sha256"
-
-        // The suffix of a provider's own staging file of a download (StagedDownload and the Internxt, OneDrive and local
-        // providers), see stagedBytes.
-        private const val PROVIDER_STAGING_SUFFIX = ".unidrive-tmp"
     }
 }
 

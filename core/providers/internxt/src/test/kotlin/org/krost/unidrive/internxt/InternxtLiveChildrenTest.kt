@@ -98,6 +98,10 @@ class InternxtLiveChildrenTest {
         val jsonHeaders = headersOf(HttpHeaders.ContentType, "application/json")
         val uuid = path.removePrefix("/drive/folders/content/")
         val body = contents[uuid]
+        val streamed = if (path.endsWith("/folders")) contents[path.removePrefix("/drive/folders/v2/content/").removeSuffix("/folders")] else null
+        if (path.startsWith("/drive/folders/v2/content/") && streamed != null) {
+            return respond("""{"folders":${streamed.first},"nextCursor":null}""", HttpStatusCode.OK, jsonHeaders)
+        }
         return if (path.startsWith("/drive/folders/content/") && request.method == HttpMethod.Get && body != null) {
             respond("""{"children":${body.first},"files":${body.second}}""", HttpStatusCode.OK, jsonHeaders)
         } else {

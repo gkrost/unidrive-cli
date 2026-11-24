@@ -1,0 +1,56 @@
+﻿{
+    "Tag":  "pin",
+    "Kind":  "pin",
+    "T0Ms":  1795356867094,
+    "T1Ms":  1795356888311,
+    "WallMs":  21217,
+    "MBps":  5.1,
+    "Clean":  true,
+    "Why":  [
+
+            ],
+    "OtherBytes":  62684,
+    "OtherUnknownLines":  0,
+    "OtherOpenUploads":  0,
+    "OtherProfiles":  {
+                          "other-1":  {
+                                          "Requests":  7,
+                                          "UpBytes":  0,
+                                          "DnBytes":  62684,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  0,
+                                          "OpenUploads":  0
+                                      }
+                      },
+    "MaxForeignProcess":  "ChatGPT",
+    "MaxForeignCores":  0.667,
+    "TotalCores":  4.237,
+    "OwnCores":  {
+                     "unidrive-win:27152":  0.412,
+                     "java:32632":  1.186,
+                     "powershell:43740":  0.263
+                 },
+    "WireRxBytes":  126561653,
+    "Downloads":  323,
+    "Retries":  0,
+    "Events":  {
+                   "hash_done":  323,
+                   "download_done":  323,
+                   "download_start":  323,
+                   "cache_store":  323,
+                   "hydrate_served":  323
+               },
+    "Pass":  false,
+    "Violations":  [
+                       "wire moved 1.116x the payload \u003e 1.05"
+                   ],
+    "Detail":  {
+                   "Mode":  "pin",
+                   "Polls":  12,
+                   "TimedOut":  false,
+                   "Files":  323,
+                   "Hydrated":  323,
+                   "Dehydrated":  0
+               }
+}

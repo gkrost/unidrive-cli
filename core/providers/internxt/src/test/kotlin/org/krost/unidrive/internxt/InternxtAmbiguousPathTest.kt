@@ -67,7 +67,7 @@ class InternxtAmbiguousPathTest {
                 .encodeToString(payload.toByteArray())
         return InternxtProvider(
             InternxtConfig(credentialProtector = null, tokenPath = TestScratch.file("ud-amb-token", ".tmp")),
-            httpClient = HttpClient(MockEngine { request -> handle(request) }),
+            httpClient = HttpClient(MockEngine { request -> folderStream(request) ?: handle(request) }),
             credentials =
                 org.krost.unidrive.internxt.model.InternxtCredentials(
                     jwt = "header.$payloadB64.signature",
@@ -79,6 +79,20 @@ class InternxtAmbiguousPathTest {
                     bucket = "6928426c1a2316b856c9ab81",
                 ),
         )
+    }
+
+    // The folder stream of `/drive/folders/v2/content/{uuid}/folders`: the children of the combined body set for the uuid.
+    private fun childFoldersOf(path: String): String {
+        val uuid = path.removePrefix("/drive/folders/v2/content/").removeSuffix("/folders")
+        if (uuid == rootUuid) return folderChildrenJson
+        val body = kotlinx.serialization.json.Json.parseToJsonElement(folderContentsByUuid.getValue(uuid))
+        return (body as kotlinx.serialization.json.JsonObject).getValue("children").toString()
+    }
+
+    private fun MockRequestHandleScope.folderStream(request: HttpRequestData): HttpResponseData? {
+        val path = request.url.encodedPath
+        if (!path.startsWith("/drive/folders/v2/content/") || !path.endsWith("/folders")) return null
+        return respond("""{"folders":${childFoldersOf(path)},"nextCursor":null}""", HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
     }
 
     private fun MockRequestHandleScope.handle(request: HttpRequestData): HttpResponseData {

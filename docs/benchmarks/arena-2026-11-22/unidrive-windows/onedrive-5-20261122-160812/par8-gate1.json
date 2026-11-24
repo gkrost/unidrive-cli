@@ -1,0 +1,45 @@
+﻿{
+    "Tag":  "par8-gate1",
+    "Kind":  "gate",
+    "T0Ms":  1795360939854,
+    "T1Ms":  1795360999862,
+    "WallMs":  60008,
+    "MBps":  null,
+    "Clean":  true,
+    "Why":  [
+
+            ],
+    "OtherBytes":  15308,
+    "OtherUnknownLines":  0,
+    "OtherOpenUploads":  0,
+    "OtherProfiles":  {
+                          "other-1":  {
+                                          "Requests":  4,
+                                          "UpBytes":  0,
+                                          "DnBytes":  15308.288633365144,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  0,
+                                          "OpenUploads":  0
+                                      }
+                      },
+    "MaxForeignProcess":  "claude",
+    "MaxForeignCores":  0.011,
+    "TotalCores":  0.112,
+    "OwnCores":  {
+                     "powershell:42432":  0.002,
+                     "java:32896":  0.003,
+                     "unidrive-win:40484":  0.007
+                 },
+    "WireRxBytes":  467072,
+    "Downloads":  0,
+    "Retries":  0,
+    "Events":  {
+
+               },
+    "Pass":  null,
+    "Violations":  [
+
+                   ],
+    "Detail":  null
+}

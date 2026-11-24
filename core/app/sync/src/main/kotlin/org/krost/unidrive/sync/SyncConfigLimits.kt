@@ -1,7 +1,7 @@
 package org.krost.unidrive.sync
 
 /**
- * issue#72: the per-profile daemon-limit keys (`max_concurrent_transfers`, `upload_queue_depth`,
+ * issue#72: the per-profile daemon-limit keys (`max_concurrent_transfers`, `upload_queue_depth`, `download_stall_timeout`,
  * `cache_access_grace_ms`) — their typed accessors, ranges and defaults — beside [SyncConfig], whose file
  * they would otherwise grow past its sizeRatchet baseline. The raw keys and the parse-time validation call
  * sites stay in SyncConfig.kt (RawProvider, its toSyncConfig); the accessors read [SyncConfig.providers]
@@ -52,6 +52,40 @@ fun SyncConfig.uploadQueueDepth(profileName: String): Int =
  */
 fun SyncConfig.cacheAccessGraceMs(profileName: String): Long =
     providers[profileName]?.cacheAccessGraceMs ?: DEFAULT_CACHE_ACCESS_GRACE_MS
+
+/**
+ * gkrost/unidrive-cli#508: the no-progress limit of a hydration download a profile without `download_stall_timeout` gets,
+ * in seconds — the value DownloadStallWatchdog.DEFAULT_TIMEOUT_MS runs at (:app:hydration; kept in step by hand, as for
+ * [DEFAULT_UPLOAD_QUEUE_DEPTH]). [MIN_DOWNLOAD_STALL_TIMEOUT_SECONDS]..[MAX_DOWNLOAD_STALL_TIMEOUT_SECONDS].
+ */
+const val DEFAULT_DOWNLOAD_STALL_TIMEOUT_SECONDS: Long = 600L
+
+/** The floor of `download_stall_timeout`: a minute, so a short pause of the line does not abandon a healthy download. */
+const val MIN_DOWNLOAD_STALL_TIMEOUT_SECONDS: Long = 60L
+
+/** The ceiling of `download_stall_timeout` (one day). */
+const val MAX_DOWNLOAD_STALL_TIMEOUT_SECONDS: Long = 86_400L
+
+/** The effective `download_stall_timeout` of a profile and where it came from (daemon.status `download_stall_timeout`). */
+data class DownloadStallTimeout(
+    val seconds: Long,
+    val source: String,
+) {
+    companion object {
+        const val SOURCE_DEFAULT = "default"
+        const val SOURCE_CONFIG = "config"
+
+        val DEFAULT = DownloadStallTimeout(DEFAULT_DOWNLOAD_STALL_TIMEOUT_SECONDS, SOURCE_DEFAULT)
+    }
+}
+
+/**
+ * gkrost/unidrive-cli#508: how long a hydration download of this profile may make no byte progress before it is abandoned
+ * and started again (key `download_stall_timeout`, seconds); [DownloadStallTimeout.DEFAULT] when unset.
+ */
+fun SyncConfig.downloadStallTimeout(profileName: String): DownloadStallTimeout =
+    providers[profileName]?.downloadStallTimeoutSeconds?.let { DownloadStallTimeout(it, DownloadStallTimeout.SOURCE_CONFIG) }
+        ?: DownloadStallTimeout.DEFAULT
 
 /** The ceiling of `tombstone_retention_days` (ten years). The default itself is [DEFAULT_TOMBSTONE_RETENTION_DAYS] in :app:engine-core. */
 const val MAX_TOMBSTONE_RETENTION_DAYS: Int = 3650

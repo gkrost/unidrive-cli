@@ -145,6 +145,9 @@ class IpcContractLevelTest {
                 // 9 (gkrost/unidrive-cli#848): history.list takes an `order` member (the reply echoes it and says
                 // live_keyset), and history.retry queues one failed upload row again; the capabilities name both.
                 setOf("verb:history.retry", "capability:history.order.v1", "capability:history.retry.v1"),
+                // 10 (gkrost/unidrive-cli#508): daemon.status reports the cold downloads' no-progress limit (`seconds`) and
+                // where it came from (`source`: default or config).
+                setOf("field:daemon.status.download_stall_timeout"),
             )
     }
 }

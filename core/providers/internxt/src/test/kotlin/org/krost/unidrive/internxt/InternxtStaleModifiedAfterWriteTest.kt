@@ -445,6 +445,8 @@ class InternxtStaleModifiedAfterWriteTest {
                 MockEngine { request ->
                     val path = request.url.encodedPath
                     when {
+                        path == "/drive/folders/v2/content/root-folder-uuid/folders" ->
+                            json("""{"folders":[${folderJson("sub-uuid", "sub", pre)}],"nextCursor":null}""")
                         path == "/drive/folders/content/root-folder-uuid" ->
                             json(
                                 """{"children":[${folderJson("sub-uuid", "sub", pre)}],""" +

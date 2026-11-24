@@ -1,0 +1,54 @@
+﻿{
+    "Tag":  "readall-gate1",
+    "Kind":  "gate",
+    "T0Ms":  1795348730918,
+    "T1Ms":  1795348790931,
+    "WallMs":  60013,
+    "MBps":  null,
+    "Clean":  true,
+    "Why":  [
+
+            ],
+    "OtherBytes":  611,
+    "OtherUnknownLines":  0,
+    "OtherOpenUploads":  0,
+    "OtherProfiles":  {
+                          "other-1":  {
+                                          "Requests":  1,
+                                          "UpBytes":  0,
+                                          "DnBytes":  290,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  0,
+                                          "OpenUploads":  0
+                                      },
+                          "other-2":  {
+                                          "Requests":  1,
+                                          "UpBytes":  0,
+                                          "DnBytes":  321,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  0,
+                                          "OpenUploads":  0
+                                      }
+                      },
+    "MaxForeignProcess":  "chrome",
+    "MaxForeignCores":  0.239,
+    "TotalCores":  0.601,
+    "OwnCores":  {
+                     "powershell:48624":  0.003,
+                     "unidrive-win:41756":  0.004,
+                     "java:20032":  0.011
+                 },
+    "WireRxBytes":  6048675,
+    "Downloads":  0,
+    "Retries":  0,
+    "Events":  {
+
+               },
+    "Pass":  null,
+    "Violations":  [
+
+                   ],
+    "Detail":  null
+}

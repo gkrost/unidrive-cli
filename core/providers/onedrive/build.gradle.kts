@@ -21,7 +21,8 @@ dependencies {
     // socket.io client for Graph's change-notification endpoint (OneDriveChangeChannel).
     implementation(libs.socket.io.client)
 
-    implementation(libs.logback.classic)
+    implementation(libs.slf4j.api)
+    testImplementation(libs.logback.classic)
 
     testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.coroutines.test)

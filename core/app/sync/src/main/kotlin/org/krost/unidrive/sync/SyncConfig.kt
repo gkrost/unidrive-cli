@@ -502,6 +502,10 @@ data class RawProvider(
     // object that appeared after the listing, or a key a direct upload never listed, can be replaced. Default off. Threaded into
     // S3Config.createFromListing by S3ProviderFactory.
     val s3_create_from_listing: Boolean? = null,
+    // S3: skip the HEAD after a single-part upload (rclone's `no_head`, gkrost/unidrive-cli#574). The item's modified time is then
+    // the PUT answer's `Date` instead of the object's `Last-Modified`: only for a vendor where the two agree. Default off. Threaded
+    // into S3Config.noHead by S3ProviderFactory.
+    val s3_no_head: Boolean? = null,
     // The sync policy of this profile alone: each key overrides the same-named [general] key for this profile
     // (`unidrive backup add` writes them). Absent = the [general] value, then the default.
     val sync_direction: String? = null,
@@ -524,6 +528,8 @@ data class RawProvider(
     val upload_queue_depth: Int? = null,
     // issue#72: how long a hydration-cache file stays un-evictable after its last use, in ms; absent = 60000. Mount only.
     val cache_access_grace_ms: Long? = null,
+    // gkrost/unidrive-cli#508: seconds a hydration download may make no byte progress before it is abandoned and retried; absent = 600.
+    val download_stall_timeout: Long? = null,
     // gkrost/unidrive-cli#863: days a DELETED tombstone row is kept in state.db before the daemon's start purges it; absent = 90, 0 = keep.
     val tombstone_retention_days: Int? = null,
 )
@@ -675,6 +681,7 @@ data class SyncConfig(
         val maxConcurrentTransfersOverride: Int? = null,
         val uploadQueueDepth: Int? = null,
         val cacheAccessGraceMs: Long? = null,
+        val downloadStallTimeoutSeconds: Long? = null,
         val tombstoneRetentionDays: Int? = null,
         val bulkReapGuard: Boolean = false,
         val topLevelGuard: Boolean = false,
@@ -1161,6 +1168,7 @@ data class SyncConfig(
                     validateDaemonLimit(name, "max_concurrent_transfers", rp.max_concurrent_transfers?.toLong(), 1, MAX_CONCURRENT_TRANSFERS.toLong())
                     validateDaemonLimit(name, "upload_queue_depth", rp.upload_queue_depth?.toLong(), 1, MAX_UPLOAD_QUEUE_DEPTH.toLong())
                     validateDaemonLimit(name, "cache_access_grace_ms", rp.cache_access_grace_ms, 0, MAX_CACHE_ACCESS_GRACE_MS)
+                    validateDaemonLimit(name, "download_stall_timeout", rp.download_stall_timeout, MIN_DOWNLOAD_STALL_TIMEOUT_SECONDS, MAX_DOWNLOAD_STALL_TIMEOUT_SECONDS)
                     validateDaemonLimit(name, "tombstone_retention_days", rp.tombstone_retention_days?.toLong(), 0, MAX_TOMBSTONE_RETENTION_DAYS.toLong())
                     ProviderConfig(
                         pinIncludes = rp.pin_patterns?.include ?: emptyList(),
@@ -1174,6 +1182,7 @@ data class SyncConfig(
                         maxConcurrentTransfersOverride = rp.max_concurrent_transfers,
                         uploadQueueDepth = rp.upload_queue_depth,
                         cacheAccessGraceMs = rp.cache_access_grace_ms,
+                        downloadStallTimeoutSeconds = rp.download_stall_timeout,
                         tombstoneRetentionDays = rp.tombstone_retention_days,
                         bulkReapGuard = rp.bulk_reap_guard ?: false,
                         topLevelGuard = rp.top_level_guard ?: false,

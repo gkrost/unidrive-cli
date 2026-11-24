@@ -27,6 +27,12 @@ class InternxtProviderDeleteRetryTest {
     ) = MockEngine { request ->
         val url = request.url.toString()
         when {
+            url.contains("/drive/folders/v2/content/root-folder-uuid/folders") ->
+                respond(
+                    """{"folders":[{"uuid":"$folderUuid","plainName":"x","parentUuid":"root-folder-uuid","status":"EXISTS"}],"nextCursor":null}""",
+                    HttpStatusCode.OK,
+                    headersOf("Content-Type", "application/json"),
+                )
             url.contains("/drive/folders/content/root-folder-uuid") ->
                 respond(
                     """{"children":[{"uuid":"$folderUuid","plainName":"x","parentUuid":"root-folder-uuid","status":"EXISTS"}],"files":[]}""",

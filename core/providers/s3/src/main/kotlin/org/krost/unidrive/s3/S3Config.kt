@@ -29,6 +29,14 @@ data class S3Config(
      * writes to the bucket.
      */
     val createFromListing: Boolean = false,
+    /**
+     * Profile key `s3_no_head`, default off (gkrost/unidrive-cli#574; rclone's `no_head`). A single-part upload then skips the HEAD
+     * after the PUT, one request fewer per object. What the HEAD supplied is replaced by the PUT's answer: the ETag, the encryption
+     * kind when the answer names one, and the answer's `Date` (whole seconds) as the item's `modified`, in place of `Last-Modified`.
+     * Turn it on only for a vendor whose `Last-Modified` equals the `Date` of the PUT's answer; if it differs by a second, the next
+     * listing reports a different time than the engine recorded (the "remote changed" failure of #82 D). Multipart uploads keep the HEAD.
+     */
+    val noHead: Boolean = false,
 ) {
     /** The host as the Host header carries it on the wire: lower-case, with the scheme's default port left out. */
     val host: String
@@ -42,7 +50,7 @@ data class S3Config(
     override fun toString(): String =
         "S3Config(bucket=$bucket, region=$region, endpoint=$endpoint, accessKey=${maskSecret(accessKey)}, " +
             "secretKey=${maskSecret(secretKey)}, tokenPath=$tokenPath, multipartThreshold=$multipartThreshold, " +
-            "minPartSize=$minPartSize, vendor=$vendor, createFromListing=$createFromListing)"
+            "minPartSize=$minPartSize, vendor=$vendor, createFromListing=$createFromListing, noHead=$noHead)"
 
     /** What sets one S3 implementation apart from another for this provider. */
     data class Vendor(

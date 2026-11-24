@@ -15,6 +15,7 @@ import org.krost.unidrive.sync.lookupProcess
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.SyncEngine
 import org.krost.unidrive.sync.cacheAccessGraceMs
+import org.krost.unidrive.sync.downloadStallTimeout
 import org.krost.unidrive.sync.tombstoneRetentionDays
 import org.krost.unidrive.sync.maxConcurrentTransfersOverride
 import org.krost.unidrive.sync.uploadQueueDepth
@@ -204,7 +205,7 @@ class DaemonRunCommand : Runnable {
             hydrationCacheMaxBytes = config.hydrationCacheMaxBytes(profile.name),
             // issue#72: the profile's transfer budget, upload queue depth and cache access grace.
             maxConcurrentTransfersOverride = config.maxConcurrentTransfersOverride(profile.name),
-            uploadQueueDepth = config.uploadQueueDepth(profile.name),
+            uploadQueueDepth = config.uploadQueueDepth(profile.name), downloadStallTimeout = config.downloadStallTimeout(profile.name), // #508
             cacheAccessGraceMs = config.cacheAccessGraceMs(profile.name), tombstoneRetentionDays = config.tombstoneRetentionDays(profile.name),
             deleteGuards = deleteGuardsFor(config, profile.name),
             profileMode = mode,

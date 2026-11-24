@@ -449,6 +449,7 @@ open class Main : Runnable {
             "allow_unverified_shard_hash" to rp.allow_unverified_shard_hash?.toString(),
             "internxt_strict_names" to rp.internxt_strict_names?.toString(),
             "s3_create_from_listing" to rp.s3_create_from_listing?.toString(),
+            "s3_no_head" to rp.s3_no_head?.toString(),
             "remote_notifications" to rp.remote_notifications?.toString(),
             "upload_concurrency" to rp.upload_concurrency?.toString(),
             "upload_chunk_mb" to rp.upload_chunk_mb?.toString(),
@@ -456,6 +457,7 @@ open class Main : Runnable {
             "max_concurrent_transfers" to rp.max_concurrent_transfers?.toString(),
             "upload_queue_depth" to rp.upload_queue_depth?.toString(),
             "cache_access_grace_ms" to rp.cache_access_grace_ms?.toString(),
+            "download_stall_timeout" to rp.download_stall_timeout?.toString(),
             "tombstone_retention_days" to rp.tombstone_retention_days?.toString(),
         )
     }

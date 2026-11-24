@@ -936,6 +936,7 @@ class OneDriveProvider(
     }
 
     override suspend fun quota(): QuotaInfo = graphApi.getQuota()
+    override fun maxFileSizeBytes(): Long = ONEDRIVE_MAX_FILE_SIZE_BYTES // gkrost/unidrive-cli#508
 
     // The drive owner id (GET /me/drive; /me is 403 for the app's file-only scopes) with the token the provider runs with: one call, for a profile signed in before ids were kept (AccountOwner).
     override suspend fun currentAccountId(): String? = graphApi.getDrive().accountId()

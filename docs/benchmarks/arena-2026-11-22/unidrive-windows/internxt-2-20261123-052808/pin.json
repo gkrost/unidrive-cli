@@ -1,0 +1,65 @@
+﻿{
+    "Tag":  "pin",
+    "Kind":  "pin",
+    "T0Ms":  1795408535319,
+    "T1Ms":  1795408559076,
+    "WallMs":  23757,
+    "MBps":  4.55,
+    "Clean":  true,
+    "Why":  [
+
+            ],
+    "OtherBytes":  611,
+    "OtherUnknownLines":  0,
+    "OtherOpenUploads":  0,
+    "OtherProfiles":  {
+                          "other-1":  {
+                                          "Requests":  1,
+                                          "UpBytes":  0,
+                                          "DnBytes":  290,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  0,
+                                          "OpenUploads":  0
+                                      },
+                          "other-2":  {
+                                          "Requests":  1,
+                                          "UpBytes":  0,
+                                          "DnBytes":  321,
+                                          "UpUnknown":  0,
+                                          "DnUnknown":  0,
+                                          "Open":  0,
+                                          "OpenUploads":  0
+                                      }
+                      },
+    "MaxForeignProcess":  "explorer",
+    "MaxForeignCores":  0.066,
+    "TotalCores":  1.1,
+    "OwnCores":  {
+                     "powershell:7176":  0.147,
+                     "unidrive-win:40816":  0.269,
+                     "java:57164":  0.489
+                 },
+    "WireRxBytes":  115492037,
+    "Downloads":  323,
+    "Retries":  0,
+    "Events":  {
+                   "hash_done":  323,
+                   "download_done":  323,
+                   "download_start":  323,
+                   "cache_store":  323,
+                   "hydrate_served":  323
+               },
+    "Pass":  true,
+    "Violations":  [
+
+                   ],
+    "Detail":  {
+                   "Mode":  "pin",
+                   "Polls":  20,
+                   "TimedOut":  false,
+                   "Files":  323,
+                   "Hydrated":  323,
+                   "Dehydrated":  0
+               }
+}
