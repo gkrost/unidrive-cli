@@ -14,7 +14,8 @@ import java.nio.file.attribute.BasicFileAttributes
  * gkrost/unidrive-cli#926 S5: the probe of a socket file a dead daemon may have left behind, and its removal; shared by
  * [IpcServer]'s start and `daemon stop` ([IpcSocketFiles.removeStaleSocketFiles]). The file is removed only when the connect
  * was refused (`ECONNREFUSED`; Windows answers "Invalid argument") and it is still the file that was probed (same
- * `unix:dev`/`unix:ino`, where the file system has them): a socket a new daemon bound in between is left alone.
+ * `unix:dev`/`unix:ino`, where the file system has them, and nobody listens on it once it is renamed aside): a socket a new
+ * daemon bound in between is left alone.
  */
 internal object IpcStaleSocket {
     enum class Outcome {
@@ -52,10 +53,35 @@ internal object IpcStaleSocket {
             if (!(windows &&e.message.orEmpty().contains("Invalid argument"))) throw e // Windows' answer for a stale socket
         }
         afterProbe()
+        // Take the file out of the way under a private name first: what is renamed is then ours, whoever bound it. Comparing
+        // dev + ino is not enough on its own, because a file system may give a successor the inode just freed.
         if (fileKey(path) != probed) return Outcome.CHANGED
-        Files.deleteIfExists(path)
+        if (windows) { // no file identity, and a renamed Windows socket cannot be connected to: remove as before
+            Files.deleteIfExists(path)
+            return Outcome.REMOVED
+        }
+        val aside = path.resolveSibling("${path.fileName}.stale-${java.util.UUID.randomUUID()}")
+        try {
+            Files.move(path, aside, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+        } catch (_: java.nio.file.NoSuchFileException) {
+            return Outcome.CHANGED
+        }
+        if (listening(aside)) {
+            // A successor bound it after the probe: put it back (never over a file bound meanwhile) and leave it alone.
+            runCatching { Files.move(aside, path) }
+            return Outcome.CHANGED
+        }
+        Files.deleteIfExists(aside)
         return Outcome.REMOVED
     }
+
+    private fun listening(path: Path): Boolean =
+        try {
+            SocketChannel.open(UnixDomainSocketAddress.of(path)).close()
+            true
+        } catch (_: java.io.IOException) {
+            false
+        }
 
     // dev + ino on POSIX; null on Windows (no file key) and when the file is gone.
     private fun fileKey(path: Path): Any? =
