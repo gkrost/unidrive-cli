@@ -142,6 +142,7 @@ internal class HistoryRpcHandler(
         server.registerConnectionCloseListener { connId -> onConnectionClosed(connId) }
         // A tail subscriber sits idle between rows: it is not closed for that (no history, no stream, no exemption).
         if (history != null) server.registerIdleExemptVerbs(listOf("history.subscribe"))
+        server.registerIdleHold { subscribers.containsKey(it) } // also for a read-scope subscriber (gkrost/unidrive-cli#926)
     }
 
     suspend fun list(jsonRequest: String): String {

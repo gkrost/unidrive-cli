@@ -149,7 +149,10 @@ class IpcContractLevelTest {
                 // where it came from (`source`: default or config).
                 setOf("field:daemon.status.download_stall_timeout"),
                 setOf("verb:hydration.close_read"),
-                // 12 (gkrost/unidrive-cli#848 item 3): history.report lets the mount host report an operation of its own
+                // 12 (gkrost/unidrive-cli#860): scope.get (read) and scope.set (admin, a mount daemon swaps its scope live), the
+                // capabilities that name them, and the scope.changed event.
+                setOf("verb:scope.get", "verb:scope.set", "capability:scope.get", "capability:scope.set"),
+                // 13 (gkrost/unidrive-cli#848 item 3): history.report lets the mount host report an operation of its own
                 // (a journal replay, a placeholder or pin action) as one row of the history, its source named.
                 setOf("verb:history.report", "capability:history.report.v1"),
             )

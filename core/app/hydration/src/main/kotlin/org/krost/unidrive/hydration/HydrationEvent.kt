@@ -195,6 +195,19 @@ sealed class HydrationEvent {
         }
     }
 
+    /**
+     * gkrost/unidrive-cli#860: `scope.set` changed the profile's synced folders while the daemon runs. [included] is the new
+     * set (empty = the whole drive) and [version] the one `scope.get` answers now. Not tied to a path.
+     *
+     * Wire shape (on `hydration.subscribe` and `sync.subscribe`): `{"event":"scope.changed","included":["/A"],"version":"84c4d41062c7af73"}`
+     */
+    data class ScopeChanged(
+        val included: List<String>,
+        val version: String,
+    ) : HydrationEvent() {
+        override val path: String get() = ""
+    }
+
     companion object {
         /** Maximum number of individual paths emitted before collapsing to `full:true`. */
         const val VIEW_INVALIDATED_PATH_CAP = 256

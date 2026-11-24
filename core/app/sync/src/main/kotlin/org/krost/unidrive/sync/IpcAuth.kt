@@ -212,6 +212,8 @@ class IpcAuth(
                     "daemon.status", "hydration.list", "hydration.stat", "hydration.locate", "hydration.handle_status", "hydration.last_synced", "hydration.subscribe",
                     "sync.subscribe", "hydration.close_read", "hydration.open_read", "history.list", "history.subscribe", "metrics.query", "ignore.explain", "view.page",
                 ).forEach { put(it, VerbClass.READ) }
+                // gkrost/unidrive-cli#860: scope.get answers from memory (and, asked, one bounded listing of the cloud root).
+                put("scope.get", VerbClass.READ)
                 listOf(
                     "hydration.hydrate", "hydration.dehydrate", "hydration.create", "hydration.open_write",
                     "hydration.open_write_begin", "hydration.close_handle", "hydration.mkdir", "hydration.unlink",
@@ -236,6 +238,8 @@ class IpcAuth(
                 // The vault verbs (issue#796): vault.unlock carries the vault passphrase in its body
                 // and vault.lock drops the loaded vault data — owner-only (full scope) both.
                 listOf("vault.unlock", "vault.lock").forEach { put(it, VerbClass.ADMIN) }
+                // gkrost/unidrive-cli#860: scope.set rewrites the profile's sync_path and drops what leaves from this computer: owner-only.
+                put("scope.set", VerbClass.ADMIN)
             }
 
         fun classOf(verb: String): VerbClass = VERB_CLASSES[verb] ?: VerbClass.ADMIN

@@ -47,6 +47,7 @@ class HydrationEventTest {
             is HydrationEvent.ViewInvalidated -> "vi"
             is HydrationEvent.Paused         -> "pa"
             is HydrationEvent.Resumed        -> "re"
+            is HydrationEvent.ScopeChanged   -> "sc"
         }
         assertEquals("ing", s)
     }

@@ -51,7 +51,7 @@ import org.krost.unidrive.http.UploadTimeoutPolicy
 import org.krost.unidrive.http.UploadWatchdogException
 import org.krost.unidrive.http.UploadWatchdogLimits
 import org.krost.unidrive.http.readBoundedErrorBody
-import org.krost.unidrive.http.retrying
+import org.krost.unidrive.http.retryingAuthenticated
 import org.krost.unidrive.http.unidriveHttpClient
 import org.krost.unidrive.http.truncateErrorBody
 import org.krost.unidrive.http.throttleWaitMs
@@ -192,13 +192,7 @@ class DropboxApi(
         path: String,
         destination: Path,
     ): Pair<JsonObject, Long> {
-        var rejectedToken: String? = null
-        return budget.retrying { refreshed, retries ->
-            // The token a 401 refused, until the replay that answers it takes it (#215): a forced refresh is for
-            // that replay alone, so a throttle of the replayed request does not make the next attempt rotate again.
-            val rejected = rejectedToken
-            rejectedToken = null
-            val token = accessToken(rejected != null, rejected)
+        return budget.retryingAuthenticated(accessToken) { token, refreshed, retries ->
             val statement =
                 httpClient.prepareRequest {
                     url("${config.contentBase}/files/download")
@@ -214,10 +208,7 @@ class DropboxApi(
                 }
             statement.execute { response ->
                 when {
-                    response.status == HttpStatusCode.Unauthorized && !refreshed -> {
-                        rejectedToken = token
-                        RetryOutcome.RetryAuth
-                    }
+                    response.status == HttpStatusCode.Unauthorized && !refreshed -> RetryOutcome.RetryAuth
                     isThrottle(response.status) && retries < MAX_THROTTLE_ATTEMPTS ->
                         RetryOutcome.Retry(backoffMs(response, readBoundedErrorBody(response), retries), throttle = true)
                     !response.status.isSuccess() -> throw failure(response, readBoundedErrorBody(response), "files/download")
@@ -261,12 +252,7 @@ class DropboxApi(
         watchedBytes: Long? = null,
         configure: HttpRequestBuilder.(UploadProgress?) -> Unit,
     ): HttpResponse {
-        var rejectedToken: String? = null
-        return budget.retrying { refreshed, retries ->
-            // The token a 401 refused, until the replay that answers it takes it (#215): see download.
-            val rejected = rejectedToken
-            rejectedToken = null
-            val token = accessToken(rejected != null, rejected)
+        return budget.retryingAuthenticated(accessToken) { token, refreshed, retries ->
             // One progress record per attempt: a replay after a 401 or a throttle starts its idle clock afresh.
             val progress = watchedBytes?.let { UploadProgress(it) }
             val request: suspend () -> HttpResponse = {
@@ -299,7 +285,6 @@ class DropboxApi(
             when {
                 response.status == HttpStatusCode.Unauthorized && !refreshed -> {
                     log.info("Dropbox answered 401 on {}; refreshing the token and retrying once", endpoint.substringAfter("/2/"))
-                    rejectedToken = token
                     RetryOutcome.RetryAuth
                 }
                 isThrottle(response.status) && retries < MAX_THROTTLE_ATTEMPTS -> {

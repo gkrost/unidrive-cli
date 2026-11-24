@@ -1,3 +1,5 @@
+@file:Suppress("MatchingDeclarationName") // AtPath is the one type; the file also holds the helpers that answer and mark a row
+
 package org.krost.unidrive.hydration
 
 import kotlinx.coroutines.CancellationException
@@ -43,7 +45,7 @@ internal suspend fun CloudProvider.fileStandingInFor(
             getMetadata(remotePath)
         } catch (e: CancellationException) {
             throw e
-        } catch (e: Exception) {
+        } catch (@Suppress("TooGenericExceptionCaught") e: Exception) { // whatever the lookup throws, the answer is Unusable (Nothing for not-found)
             if (RemoteErrors.isNotFound(e)) {
                 log.debug("#796: {} is not found by path either", path)
                 return AtPath.Nothing

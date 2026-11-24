@@ -425,6 +425,7 @@ internal fun ipcStatusJson(requestCounts: Map<String, Long>): JsonObject =
  * `history.order.v1` and `history.retry.v1` (gkrost/unidrive-cli#848): `history.list` takes an `order` member, and a
  * failed upload row can be queued again through `history.retry` — where a history is open to serve them from.
  */
+@Suppress("LongParameterList") // one flag per optional capability group
 internal fun daemonCapabilitiesJson(
     profileMode: ProfileMode,
     hydration: Boolean,
@@ -436,6 +437,8 @@ internal fun daemonCapabilitiesJson(
     historyOpen: Boolean = false,
     // issue#796: the vault verbs exist (vault.enc present); `vault.unlock` and `vault.lock` answer.
     vaultUnlockable: Boolean = false,
+    // gkrost/unidrive-cli#860: scope.set swaps the scope live (a mount daemon that can persist it).
+    scopeSettable: Boolean = false,
 ): String =
     (
         profileMode.capabilities + NOTIFICATIONS_STATUS_CAPABILITY +
@@ -444,6 +447,7 @@ internal fun daemonCapabilitiesJson(
             (if (uploadIgnore) listOf(IGNORE_EXPLAIN_BATCH_CAPABILITY) else emptyList()) +
             (if (viewNamespaces.isEmpty()) emptyList() else listOf("views", "view_page")) +
             (if (shareCapable) listOf(SHARE_CREATE_CAPABILITY) else emptyList()) +
+            listOf(ScopeRpcHandler.GET) + (if (scopeSettable) listOf(ScopeRpcHandler.SET) else emptyList()) +
             (if (vaultUnlockable) listOf(VAULT_UNLOCK_CAPABILITY) else emptyList())
     ).joinToString(",", "[", "]") { ndjsonString(it) }
 
