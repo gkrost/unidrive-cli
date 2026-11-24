@@ -100,7 +100,10 @@ class IpcContractCorpusTest {
     // daemon.shutdown is listed last because it stops the daemon the other verbs are replayed against.
     private val daemonVerbs =
         listOf(
-            "daemon.status", "daemon.pause", "daemon.resume", "metrics.query", "sync.subscribe", "refresh.run", "sync.enumerate",
+            "daemon.status", "daemon.pause", "daemon.resume",
+            // gkrost/unidrive-cli#860: before any enumeration, so the effect of the narrowing is the empty state's.
+            "scope.get", "scope.set",
+            "metrics.query", "sync.subscribe", "refresh.run", "sync.enumerate",
             "history.list", "history.subscribe", "history.retry", "ignore.explain", "share.create",
             // auth.logout deletes the corpus daemon's (absent) credential files and is idempotent; it must
             // run before daemon.shutdown, which stops the daemon the other verbs are replayed against.
@@ -192,6 +195,8 @@ class IpcContractCorpusTest {
         // issue#796: the corpus daemon has a vault (the verbs are registered, the capability
         // advertised), starting unlocked — the scripted attempt knows one passphrase.
         runtime.vault = scriptedVault()
+        // gkrost/unidrive-cli#860: scope.set persists the new set; the corpus daemon has no config.toml to write.
+        runtime.scopeConfig = {}
         // The sign-in verbs (§4.11) sign an Internxt-typed profile in; the library sign-in is a fake that knows one
         // password, one bad two-factor code and one other user (no network, no real account).
         runtime.signInTarget = ProfileTarget("contract_profile", "internxt", tempDir)
@@ -859,6 +864,16 @@ class IpcContractCorpusTest {
         } finally {
             scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
         }
+    }
+
+    /** gkrost/unidrive-cli#860: `events/scope-changed.ndjson`, the line a subscriber is pushed when `scope.set` applied a change. */
+    @Test
+    fun scope_changed_event_matches_the_serialiser() {
+        assertJsonMatches(
+            expected = Json.parseToJsonElement(loadEventLine("scope-changed")),
+            actual = Json.parseToJsonElement(serialiseHydrationEvent(HydrationEvent.ScopeChanged(listOf("/A"), "84c4d41062c7af73"))),
+            at = "events/scope-changed",
+        )
     }
 
     /** `events/view.invalidated-recents.ndjson` is the line the daemon's serialiser makes of the event the view's cache sends. */
