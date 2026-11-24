@@ -46,6 +46,10 @@ internal class ConnectionHandles(private val limit: Int = 1024) {
     }
 
     @Synchronized
+    fun hasWrite(connection: String, id: String, path: String): Boolean =
+        paths[connection]?.get(id) == path && (connection to id) !in reads
+
+    @Synchronized
     fun close(connection: String, id: String, ownReadOnly: Boolean): String? {
         if (ownReadOnly && (connection to id) !in reads) return null
         val owner = when {

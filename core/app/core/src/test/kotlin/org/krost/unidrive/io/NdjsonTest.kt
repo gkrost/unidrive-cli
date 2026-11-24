@@ -12,6 +12,14 @@ class NdjsonTest {
     private val lineEnders = setOf('\n', '\r', '\u0085', ' ', ' ')
 
     @Test
+    fun serialized_object_escapes_all_extra_line_breaks() {
+        val json = """{"path":"a${'\u0085'}b${'\u2028'}c${'\u2029'}"}"""
+        val line = ndjsonLine(json)
+        assertEquals("""{"path":"a\u0085b\u2028c\u2029"}""", line)
+        assertEquals(Json.parseToJsonElement(json), Json.parseToJsonElement(line))
+    }
+
+    @Test
     fun `plain text is just quoted`() {
         assertEquals("\"plain\"", ndjsonString("plain"))
         assertEquals("\"\"", ndjsonString(""))

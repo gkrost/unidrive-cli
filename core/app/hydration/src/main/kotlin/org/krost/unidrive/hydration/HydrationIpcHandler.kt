@@ -513,10 +513,7 @@ class HydrationIpcHandler(
         private fun randomHandleIdRun(): String =
             java.util.HexFormat.of().formatHex(ByteArray(HANDLE_ID_RUN_BYTES).also { java.security.SecureRandom().nextBytes(it) })
 
-        // Single source of truth for the verbs this handler answers. The daemon
-        // (SyncCommand) iterates this list to wire each verb on IpcServer via
-        // registerHandler. The dispatch table in `handle()` below must stay in
-        // lockstep — there's a unit test pinning the two together.
+        // Registered on IpcServer at startup; the contract suite checks dispatch coverage.
         val VERBS: List<String> = listOf(
             "hydration.open_read",
             "hydration.open_write",

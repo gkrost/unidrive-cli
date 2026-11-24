@@ -66,26 +66,44 @@ internal object UnlockHelper {
                 out.write((requestLine(secretKind, keyring) + "\n").toByteArray(Charsets.UTF_8))
                 out.flush()
             }
-            // The reply read must not outlive the timeout: a helper that answers nothing and never
-            // closes its stdout would otherwise block for ever before the wait below runs.
-            val reply =
-                try {
-                    java.util.concurrent.CompletableFuture
-                        .supplyAsync { process.inputStream.readAllBytes() }
-                        .get(TIMEOUT_MS, TimeUnit.MILLISECONDS)
-                } catch (_: java.util.concurrent.TimeoutException) {
-                    process.destroyForcibly()
-                    return Result.Hard("timeout")
-                } catch (_: Exception) {
-                    ByteArray(0)
-                }
-            if (!process.waitFor(TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                process.destroyForcibly()
-                return Result.Hard("timeout")
-            }
-            parse(reply)
+            readReply(process)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            Result.Hard("interrupted")
+        } catch (_: java.io.IOException) {
+            Result.Hard("invalid_reply")
         } finally {
             process.destroyForcibly()
+        }
+    }
+
+    private const val MAX_REPLY_BYTES = 64 * 1024
+
+    // Only read bytes already in the pipe. A grandchild retaining its write end cannot
+    // delay completion after the helper exits or leave a blocked common-pool worker.
+    private fun readReply(process: Process): Result {
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(TIMEOUT_MS)
+        val buffer = ByteArray(MAX_REPLY_BYTES + 1)
+        var count = 0
+        try {
+            process.inputStream.use { stream ->
+                while (System.nanoTime() < deadline) {
+                    val exited = !process.isAlive
+                    val available = stream.available()
+                    if (available > 0) {
+                        val read = stream.read(buffer, count, minOf(available, buffer.size - count))
+                        if (read > 0) count += read
+                        if (count > MAX_REPLY_BYTES) return Result.Hard("invalid_reply")
+                    } else if (exited) {
+                        return parse(buffer.copyOf(count))
+                    } else {
+                        process.waitFor(10, TimeUnit.MILLISECONDS)
+                    }
+                }
+            }
+            return Result.Hard("timeout")
+        } finally {
+            buffer.fill(0)
         }
     }
 
@@ -93,9 +111,12 @@ internal object UnlockHelper {
     internal fun parse(replyBytes: ByteArray): Result {
         val reply =
             try {
+                if (replyBytes.size > MAX_REPLY_BYTES) return Result.Hard("invalid_reply")
                 kotlinx.serialization.json.Json.parseToJsonElement(replyBytes.decodeToString().trim())
             } catch (_: Exception) {
                 return Result.Hard("invalid_reply")
+            } finally {
+                replyBytes.fill(0)
             }
         if (reply !is kotlinx.serialization.json.JsonObject) return Result.Hard("invalid_reply")
         val secret = (reply["secret"] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content
@@ -106,11 +127,19 @@ internal object UnlockHelper {
                 } catch (_: IllegalArgumentException) {
                     return Result.Hard("invalid_reply")
                 }
-            // The secret arrives as the UTF-8 bytes of the passphrase: decode to the CharArray the
-            // chain passes on, then scrub the byte copy so only one heap copy survives.
-            val chars = String(bytes, Charsets.UTF_8).toCharArray()
-            bytes.fill(0)
-            return Result.Secret(chars)
+            // The JSON parser retains immutable encoded text; wipe the mutable plaintext buffers.
+            return try {
+                val decoded = Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes))
+                try {
+                    Result.Secret(CharArray(decoded.remaining()).also { decoded.get(it) })
+                } finally {
+                    if (decoded.hasArray()) decoded.array().fill('\u0000')
+                }
+            } catch (_: java.nio.charset.CharacterCodingException) {
+                Result.Hard("invalid_reply")
+            } finally {
+                bytes.fill(0)
+            }
         }
         val error = (reply["error"] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content
             ?: return Result.Hard("invalid_reply")

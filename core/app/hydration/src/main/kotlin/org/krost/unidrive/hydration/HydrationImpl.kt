@@ -307,7 +307,7 @@ class HydrationImpl(
     internal val openSets = handles.paths
 
     override fun hasRegisteredWriteHandle(connectionId: String, handleId: String, path: String): Boolean =
-        openSets[connectionId]?.get(handleId) == path
+        handles.hasWrite(connectionId, handleId, path)
 
     // Per-path mutex for `create`. Without this, two concurrent
     // `hydration.create(samePath)` callers can both pass the
@@ -599,9 +599,9 @@ class HydrationImpl(
     override suspend fun openForRead(connectionId: String, handleId: String, path: String): OpenResult =
         handles.admit(connectionId, handleId, { OpenResult.Failed(it) }) {
             when (val target = views.readTarget(path)) {
-            is HydrationViews.ReadTarget.Real -> stateDb.strictNameRefusal(target.path)?.let { OpenResult.Failed(it) } ?: openForReadAt(connectionId, handleId, target.path)
-            HydrationViews.ReadTarget.Missing -> OpenResult.Failed(HydrationError.UnknownPath)
-        }
+                is HydrationViews.ReadTarget.Real -> stateDb.strictNameRefusal(target.path)?.let { OpenResult.Failed(it) } ?: openForReadAt(connectionId, handleId, target.path)
+                HydrationViews.ReadTarget.Missing -> OpenResult.Failed(HydrationError.UnknownPath)
+            }
         }
 
     // The read of a real path; a view entry is read through the real item's path (see [HydrationViews]).

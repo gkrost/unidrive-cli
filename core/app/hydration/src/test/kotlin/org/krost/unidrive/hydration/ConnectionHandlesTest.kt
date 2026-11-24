@@ -1,5 +1,6 @@
 package org.krost.unidrive.hydration
 
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -13,6 +14,29 @@ class ConnectionHandlesTest {
             handles.register("owner", id, "/file", read)
             "ok"
         }
+
+    @Test
+    fun concurrent_open_reservations_share_the_cap() = runBlocking {
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val finish = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val first = launch {
+            handles.admit("owner", "pending", { error(it.message) }) {
+                entered.complete(Unit)
+                finish.await()
+            }
+        }
+        entered.await()
+        try {
+            assertEquals("too_many_handles", open("parallel"))
+            assertEquals("ok", handles.admit("other", "parallel", { it.message }) { "ok" })
+        } finally {
+            finish.complete(Unit)
+        }
+        first.join()
+        assertEquals("ok", open("parallel"))
+        handles.disconnect("owner")
+        assertEquals("ok", open("after-disconnect"))
+    }
 
     @Test
     fun open_read_past_the_handle_cap_is_refused() = runBlocking {

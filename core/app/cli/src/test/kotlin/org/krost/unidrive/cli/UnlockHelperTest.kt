@@ -26,6 +26,16 @@ class UnlockHelperTest {
     private val keyring: Path = dir.resolve("keyring.hello")
 
     @Test
+    fun reply_limit_preserves_valid_utf8_and_wipes_owned_bytes() {
+        val raw = """{"secret":"${Base64.getEncoder().encodeToString("café".toByteArray())}"}"""
+        val atLimit = raw.padEnd(65536).toByteArray()
+        val result = UnlockHelper.parse(atLimit) as UnlockHelper.Result.Secret
+        assertEquals("café", String(result.chars))
+        assertTrue(atLimit.all { it == 0.toByte() })
+        assertEquals(UnlockHelper.Result.Hard("invalid_reply"), UnlockHelper.parse(raw.padEnd(65537).toByteArray()))
+    }
+
+    @Test
     fun `the request names the op, the secret kind and the keyring path`() {
         val line = UnlockHelper.requestLine("xtra", dir.resolve("key ring.hello"))
         val request = Json.parseToJsonElement(line) as kotlinx.serialization.json.JsonObject

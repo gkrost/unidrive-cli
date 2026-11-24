@@ -44,10 +44,13 @@ internal fun detachedCommand(
     return listOf(tool.toString()) + command
 }
 
-/** The `setsid` executable on the PATH, or null. */
-private fun setsidOnPath(): Path? =
-    System.getenv("PATH").orEmpty()
+/** Prefer the system executable, then use the platform PATH fallback. */
+private fun setsidOnPath(): Path? {
+    val systemPaths = sequenceOf(Path.of("/usr/bin/setsid"), Path.of("/bin/setsid"))
+    val pathEntries = System.getenv("PATH").orEmpty()
         .split(java.io.File.pathSeparatorChar)
+        .asSequence()
         .filter { it.isNotBlank() }
         .map { Path.of(it, "setsid") }
-        .firstOrNull { Files.isRegularFile(it) && Files.isExecutable(it) }
+    return (systemPaths + pathEntries).firstOrNull { Files.isRegularFile(it) && Files.isExecutable(it) }
+}

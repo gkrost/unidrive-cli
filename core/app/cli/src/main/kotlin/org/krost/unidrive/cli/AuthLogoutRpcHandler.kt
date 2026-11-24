@@ -1,5 +1,7 @@
 package org.krost.unidrive.cli
 
+import org.krost.unidrive.io.ndjsonLine
+
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonArray
@@ -52,7 +54,7 @@ internal class AuthLogoutRpcHandler(
     private val log = LoggerFactory.getLogger(AuthLogoutRpcHandler::class.java)
 
     suspend fun handle(jsonRequest: String): String =
-        oneAtATime.withLock {
+        ndjsonLine(oneAtATime.withLock {
             try {
                 handleLocked(jsonRequest)
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -61,7 +63,7 @@ internal class AuthLogoutRpcHandler(
                 log.warn("auth.logout: cleanup failed ({})", e.javaClass.simpleName)
                 lifecycleErrorJson(LifecycleError("internal_error", "unexpected failure: ${e.javaClass.simpleName}")).toString()
             }
-        }
+        })
 
     private suspend fun handleLocked(jsonRequest: String): String {
         val body = jsonRequest.asJsonObjectOrNull()
