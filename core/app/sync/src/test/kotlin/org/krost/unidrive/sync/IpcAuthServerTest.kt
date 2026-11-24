@@ -330,6 +330,7 @@ class IpcAuthServerTest {
     private fun slotServer(
         maxClients: Int = IpcServer.DEFAULT_MAX_CLIENTS,
         now: java.util.concurrent.atomic.AtomicLong = java.util.concurrent.atomic.AtomicLong(1_000_000L),
+        onUnlink: (String) -> Unit = {},
     ): IpcServer {
         IpcAuth.issue(profileDir, "p1", "test-engine")
         val auth =
@@ -343,7 +344,10 @@ class IpcAuthServerTest {
         val server = IpcServer(socketPath, auth = auth, maxClients = maxClients, idleTimeoutMs = 60_000, clock = { now.get() })
         server.registerHandler("daemon.status") { _, _ -> """{"ok":true,"detail":"full status"}""" }
         server.registerHandler("hydration.list") { _, _ -> """{"ok":true,"entries":[]}""" }
-        server.registerHandler("hydration.unlink") { _, _ -> """{"ok":true}""" }
+        server.registerHandler("hydration.unlink") { id, _ ->
+            onUnlink(id)
+            """{"ok":true}"""
+        }
         server.registerIdleExemptVerbs(listOf("hydration.list", "hydration.unlink"))
         servers.add(server)
         return server
@@ -372,7 +376,15 @@ class IpcAuthServerTest {
     @Test
     fun read_scope_connection_without_handles_is_closed_when_idle() {
         val now = java.util.concurrent.atomic.AtomicLong(1_000_000L)
-        slotServer(now = now).start(scope)
+        val holdChecks = java.util.concurrent.atomic.AtomicInteger()
+        val writerId = java.util.concurrent.atomic.AtomicReference<String>()
+        slotServer(now = now, onUnlink = writerId::set).also { server ->
+            server.registerIdleHold {
+                if (it == writerId.get()) holdChecks.incrementAndGet()
+                false
+            }
+            server.start(scope)
+        }
         // A read-scope client that ran an exempt (hydration) read verb and holds nothing on its connection.
         val reader =
             IpcAuthClient.connect(endpoint, IpcAuth.Scope.READ).also {
@@ -390,6 +402,7 @@ class IpcAuthServerTest {
             assertEquals(null, reader.line(), "closed for being idle")
             Thread.sleep(300)
             assertEquals("""{"ok":true,"entries":[]}""", writer.ask("""{"verb":"hydration.list","prefix":"/"}"""), "the full one stays")
+            assertEquals(0, holdChecks.get(), "a permanently exempt connection never checks changing holds")
         } finally {
             listOf(reader, writer).forEach { runCatching { it.close() } }
         }

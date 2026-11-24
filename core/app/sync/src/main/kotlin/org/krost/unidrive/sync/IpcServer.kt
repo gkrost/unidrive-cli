@@ -185,7 +185,7 @@ class IpcServer(
     private val idleExemptVerbs = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val idleHolds = CopyOnWriteArrayList<(String) -> Boolean>()
 
-    /** gkrost/unidrive-cli#926 S4: [holds] says whether a connection holds something (a subscription, open handles), see [IpcClientSlots.idleExempt]. */
+    /** gkrost/unidrive-cli#926 S4: [holds] says whether a connection holds something (a subscription, open handles), until the hold ends. */
     fun registerIdleHold(holds: (connectionId: String) -> Boolean) {
         idleHolds.add(holds)
     }
@@ -847,10 +847,10 @@ class IpcServer(
     private fun idleExpired(entry: ClientEntry): Boolean =
         idleTimeoutMs > 0 &&
             clock() - entry.lastRequestAtMs >= idleTimeoutMs &&
-            !idleExempt(entry)
+            !permanentlyIdleExempt(entry) && idleHolds.none { it(entry.id) }
 
-    private fun idleExempt(entry: ClientEntry): Boolean =
-        IpcClientSlots.idleExempt(entry.idleExempt, scopeOf(entry.id) == IpcAuth.Scope.READ.wire, entry.id in syncSubscribers || idleHolds.any { it(entry.id) })
+    private fun permanentlyIdleExempt(entry: ClientEntry): Boolean =
+        entry.id in syncSubscribers || (entry.idleExempt && scopeOf(entry.id) != IpcAuth.Scope.READ.wire)
 
     // gkrost/unidrive-cli#926 S4: false when the connection was refused; a connection still in its handshake may close an older one.
     private fun admit(
@@ -889,10 +889,9 @@ class IpcServer(
         val handshake = if (authSessions[connId]?.let { it.scope == null } == true) HANDSHAKE_RECHECK_MS else null
         val idle =
             when {
-                idleTimeoutMs <= 0 -> null
-                !idleExempt(entry) -> (idleTimeoutMs - (clock() - entry.lastRequestAtMs)).coerceIn(1L, IDLE_RECHECK_MS)
-                idleHolds.isNotEmpty() -> IDLE_RECHECK_MS // a hold (a subscription, a handle) can end between requests
-                else -> null
+                idleTimeoutMs <= 0 || permanentlyIdleExempt(entry) -> null
+                idleHolds.any { it(entry.id) } -> IDLE_RECHECK_MS // a hold (a subscription, a handle) can end between requests
+                else -> (idleTimeoutMs - (clock() - entry.lastRequestAtMs)).coerceIn(1L, IDLE_RECHECK_MS)
             }
         return if (handshake != null && idle != null) minOf(handshake, idle) else handshake ?: idle
     }
