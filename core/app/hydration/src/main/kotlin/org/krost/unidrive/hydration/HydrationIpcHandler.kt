@@ -349,6 +349,9 @@ class HydrationIpcHandler(
      */
     fun hasActiveMountConnection(): Boolean = mountConnections.isNotEmpty()
 
+    /** gkrost/unidrive-cli#926 S4: what keeps [connectionId] open while idle: its event subscription or an open handle. */
+    fun holdsConnectionState(connectionId: String): Boolean = subscribers.containsKey(connectionId) || hydration.holdsHandles(connectionId)
+
     /**
      * Production wiring entry point. Stores the scope used to launch per-subscriber
      * writer coroutines and the function used to write a single NDJSON line to a
@@ -1074,6 +1077,7 @@ fun serialiseHydrationEvent(e: HydrationEvent): String = when (e) {
         if (e.untilMs == null) "$base}" else "$base,\"until_ms\":${e.untilMs}}"
     }
     is HydrationEvent.Resumed -> if (e.reason == null) """{"event":"resumed"}""" else """{"event":"resumed","reason":${jsonEsc(e.reason)}}"""
+    is HydrationEvent.ScopeChanged -> """{"event":"scope.changed","included":[${e.included.joinToString(",") { jsonEsc(it) }}],"version":${jsonEsc(e.version)}}"""
     is HydrationEvent.ViewInvalidated -> {
         if (e.full) {
             """{"event":"view.invalidated","full":true}"""

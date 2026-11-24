@@ -1034,12 +1034,9 @@ class MountEngine private constructor(
         } catch (e: Exception) {
             // The trash namespace is no drive path: its rows are never asked for by path and answer as before.
             if (item.id.isEmpty() || !DownloadFailures.isNotFound(e) || isReadOnlyPath(path)) throw e
-            val live =
-                when (val atPath = provider.fileStandingInFor(remotePath, item.id, db, path, log)) {
-                    is AtPath.Replacement -> atPath.item
-                    AtPath.Nothing -> throw db.unresolvedRow(path, item.id, e, reason = null, log)
-                    is AtPath.Unusable -> throw db.unresolvedRow(path, item.id, e, atPath.reason, log)
-                }
+            val atPath = provider.fileStandingInFor(remotePath, item.id, db, path, log)
+            if (atPath !is AtPath.Replacement) throw db.unresolvedRow(path, item.id, e, (atPath as? AtPath.Unusable)?.reason, log)
+            val live = atPath.item
             log.warn(
                 "#796: {} is not found by the remote id its row keeps; reading the file the provider shows at its path, " +
                     "whose id the row takes",

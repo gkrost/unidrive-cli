@@ -24,6 +24,8 @@ import org.krost.unidrive.ShareInfo
 import org.krost.unidrive.UnsupportedRemoteObjectDownloadException
 import org.krost.unidrive.http.HttpRetryBudget
 import org.krost.unidrive.http.RequestMetricsSink
+import org.krost.unidrive.http.RetryOutcome
+import org.krost.unidrive.http.retryingAuthenticated
 import org.krost.unidrive.http.RequestMetricsTap
 import org.krost.unidrive.http.UploadProgress
 import org.krost.unidrive.http.UploadTimeoutPolicy
@@ -1626,17 +1628,8 @@ class GraphApiService(
         if (!isGraphUrl(endpoint)) {
             throw ProviderException("Refusing to send the OneDrive token to a URL that is not on the Graph origin")
         }
-        var refreshed = false
-        // The token a 401 refused, until the replay that answers it takes it (#215): a forced refresh is for that
-        // replay alone, so a throttle of the replayed request does not make the next attempt rotate again.
-        var rejectedToken: String? = null
-        var throttleAttempts = 0
         var totalThrottleWaitMs = 0L
-        while (true) {
-            throttleBudget.awaitSlot()
-            val rejected = rejectedToken
-            rejectedToken = null
-            val token = tokenProvider(rejected != null, rejected)
+        return throttleBudget.retryingAuthenticated(tokenProvider) { token, refreshed, throttleAttempts ->
             val response =
                 httpClient.request(
                     HttpRequestBuilder().apply {
@@ -1646,30 +1639,29 @@ class GraphApiService(
                         configure()
                     },
                 )
-            if (response.status == HttpStatusCode.Unauthorized && !refreshed) {
-                log.info("Got 401 on {} — forcing token refresh and retrying once", endpoint.takeLast(60))
-                refreshed = true
-                rejectedToken = token
-                continue
+            when {
+                response.status == HttpStatusCode.Unauthorized && !refreshed -> {
+                    log.info("Got 401 on {} — forcing token refresh and retrying once", endpoint.takeLast(60))
+                    RetryOutcome.RetryAuth
+                }
+                shouldBackoff(response, throttleAttempts, totalThrottleWaitMs) -> {
+                    val waitMs = pickBackoffMs(response, throttleAttempts, totalThrottleWaitMs)
+                    log.warn(
+                        "Got {} on {} — throttled, waiting {}ms (attempt {}/{})",
+                        response.status.value,
+                        endpoint.takeLast(60),
+                        waitMs,
+                        throttleAttempts + 1,
+                        MAX_THROTTLE_ATTEMPTS,
+                    )
+                    totalThrottleWaitMs += waitMs
+                    RetryOutcome.Retry(waitMs, throttle = true)
+                }
+                else -> {
+                    if (response.status.isSuccess()) throttleBudget.recordSuccess()
+                    RetryOutcome.Done(response)
+                }
             }
-            if (shouldBackoff(response, throttleAttempts, totalThrottleWaitMs)) {
-                val waitMs = pickBackoffMs(response, throttleAttempts, totalThrottleWaitMs)
-                log.warn(
-                    "Got {} on {} — throttled, waiting {}ms (attempt {}/{})",
-                    response.status.value,
-                    endpoint.takeLast(60),
-                    waitMs,
-                    throttleAttempts + 1,
-                    MAX_THROTTLE_ATTEMPTS,
-                )
-                throttleBudget.recordThrottle(waitMs)
-                delay(waitMs)
-                throttleAttempts++
-                totalThrottleWaitMs += waitMs
-                continue
-            }
-            if (response.status.isSuccess()) throttleBudget.recordSuccess()
-            return response
         }
     }
 
