@@ -53,7 +53,14 @@ internal class AuthLogoutRpcHandler(
 
     suspend fun handle(jsonRequest: String): String =
         oneAtATime.withLock {
-            handleLocked(jsonRequest)
+            try {
+                handleLocked(jsonRequest)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log.warn("auth.logout: cleanup failed ({})", e.javaClass.simpleName)
+                lifecycleErrorJson(LifecycleError("internal_error", "unexpected failure: ${e.javaClass.simpleName}")).toString()
+            }
         }
 
     private suspend fun handleLocked(jsonRequest: String): String {
@@ -88,11 +95,13 @@ internal class AuthLogoutRpcHandler(
                 } finally {
                     provider.close()
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: CredentialProtectionException) {
-                log.warn("auth.logout: the credential marker of '{}' could not be removed from the secret store: {}", profileDir, e.message)
+                log.warn("auth.logout: the credential marker of '{}' could not be removed from the secret store: {}", profileDir, e.javaClass.simpleName)
                 return CREDENTIAL_PROTECTION
             } catch (e: Exception) {
-                log.warn("auth.logout: revoking the token of '{}' failed: {}", profileDir, e.message)
+                log.warn("auth.logout: revoking the token of '{}' failed: {}", profileDir, e.javaClass.simpleName)
                 Revocation.FAILED
             }
         // Before the files go: a refresh the daemon's instance still had under way stores nothing from now on, and one
