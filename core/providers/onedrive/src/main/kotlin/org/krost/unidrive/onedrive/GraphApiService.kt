@@ -16,6 +16,7 @@ import kotlinx.serialization.json.*
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.HttpDefaults
 import org.krost.unidrive.PermanentDownloadFailureException
+import org.krost.unidrive.PageGuard
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.QuickXorHash
 import org.krost.unidrive.RemoteContentRefusedDownloadException
@@ -387,14 +388,14 @@ class GraphApiService(
             }
 
         val accumulated = mutableListOf<DriveItem>()
-        val visited = HashSet<String>()
+        val pages = PageGuard("Graph repeated a listing link it was already asked for; the listing stopped incomplete", "Graph was still listing after $MAX_PAGES pages; the listing stopped incomplete", MAX_PAGES)
         var nextUrl: String? = firstUrl
         var pageIndex = 0
         while (nextUrl != null) {
             // A link already fetched would page for ever (#82 F): the listing fails as an incomplete one, which the
             // engine retries, and a page cap keeps even fresh links from going on for ever.
-            if (!visited.add(nextUrl)) throw ProviderException("Graph repeated a listing link it was already asked for; the listing stopped incomplete")
-            if (visited.size > MAX_PAGES) throw ProviderException("Graph was still listing after $MAX_PAGES pages; the listing stopped incomplete")
+            // Counts every fetch, page one included: at most MAX_PAGES requests (S3 and Dropbox count continuations only).
+            pages.follow(nextUrl)
             val response = authenticatedRequest(nextUrl)
             val body = response.bodyAsText()
             val collection = json.decodeFromString<DriveItemCollectionResponse>(body)

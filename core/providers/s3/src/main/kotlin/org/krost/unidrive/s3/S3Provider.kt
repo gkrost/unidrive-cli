@@ -18,6 +18,7 @@ import org.krost.unidrive.CredentialProof
 import org.krost.unidrive.DeltaPage
 import org.krost.unidrive.HashAlgorithm
 import org.krost.unidrive.PermanentDownloadFailureException
+import org.krost.unidrive.PageGuard
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.QuotaInfo
 import org.krost.unidrive.RemoteConflictException
@@ -124,7 +125,7 @@ class S3Provider(
     override suspend fun listChildren(path: String): List<CloudItem> {
         val prefix = prefixOf(path)
         val out = mutableListOf<CloudItem>()
-        val pages = PageTokenGuard("The S3 listing of '$path'")
+        val pages = pageGuard("The S3 listing of '$path'")
         var token: String? = null
         do {
             val page = api.list(prefix, delimiter = "/", token = token)
@@ -207,7 +208,7 @@ class S3Provider(
         // A staged item's path is a placeholder; its id is the key, which is the path.
         scanContext?.resumedItems?.forEach { admit(if (it.isFolder) folderItem(pathOf(it.id)) else it.copy(path = pathOf(it.id), name = nameOf(it.id))) }
         var token: String? = null
-        val pages = PageTokenGuard("The S3 listing of the bucket")
+        val pages = pageGuard("The S3 listing of the bucket")
         do {
             val page = api.list("", startAfter = resumeAfter, token = token)
             val pageItems = page.objects.map { if (it.key.endsWith("/")) folderItem(pathOf(it.key)) else fileItem(it) }
@@ -654,7 +655,7 @@ class S3Provider(
     /** Every object under [prefix] as the listing reports it: key, size and ETag, no HEAD per key. */
     private suspend fun allObjects(prefix: String): List<S3Object> {
         val objects = mutableListOf<S3Object>()
-        val pages = PageTokenGuard("The S3 listing under '$prefix'")
+        val pages = pageGuard("The S3 listing under '$prefix'")
         var token: String? = null
         do {
             val page = api.list(prefix, token = token)
@@ -668,7 +669,7 @@ class S3Provider(
     /** Every key under [prefix] with its ETag: what a move's destination already holds (#176). */
     private suspend fun keysWithEtags(prefix: String): Map<String, String?> {
         val keys = linkedMapOf<String, String?>()
-        val pages = PageTokenGuard("The S3 listing under '$prefix'")
+        val pages = pageGuard("The S3 listing under '$prefix'")
         var token: String? = null
         do {
             val page = api.list(prefix, token = token)
@@ -890,26 +891,10 @@ class S3Provider(
     }
 }
 
-/**
- * The paging loops of the listing, the delta and the folder deletes (#82 F). A server or proxy that answers a page
- * with a continuation token it was already asked for would otherwise be paged for ever, holding the memory and a
- * budget slot. A repeated token fails the listing as an incomplete one, which the engine retries; a page cap keeps
- * even fresh tokens from going on for ever.
- */
-private class PageTokenGuard(
-    private val what: String,
-) {
-    private val seen = HashSet<String>()
-
-    /** Admits the token the next page is to be asked with, or fails the listing when it is a repeat. */
-    fun follow(token: String?) {
-        if (token == null) return
-        if (!seen.add(token)) throw ProviderException("$what answered a page token it was already asked for; the listing stopped incomplete")
-        if (seen.size > MAX_PAGES) throw ProviderException("$what was still paging after $MAX_PAGES pages; the listing stopped incomplete")
-    }
-
-    companion object {
-        // A 10,000-page listing is ten million keys (1,000 a page): far above any bucket this holds a cursor into.
-        private const val MAX_PAGES = 10_000
-    }
-}
+// The paging loops of the listing, the delta and the folder deletes (#82 F); see PageGuard. Every loop follows the
+// token of a continuation only (page one is fetched first, without one), so the cap admits 10001 requests, not 10000.
+private fun pageGuard(what: String) =
+    PageGuard(
+        "$what answered a page token it was already asked for; the listing stopped incomplete",
+        "$what was still paging after 10000 pages; the listing stopped incomplete",
+    )

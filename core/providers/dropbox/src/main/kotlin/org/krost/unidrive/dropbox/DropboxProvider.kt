@@ -36,6 +36,7 @@ import org.krost.unidrive.DeltaPage
 import org.krost.unidrive.HashAlgorithm
 import org.krost.unidrive.PermanentDownloadFailureException
 import org.krost.unidrive.PermanentUploadFailureException
+import org.krost.unidrive.PageGuard
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.QuotaInfo
 import org.krost.unidrive.RemoteConflictException
@@ -201,17 +202,21 @@ class DropboxProvider(
     override suspend fun listChildren(path: String): List<CloudItem> {
         ready()
         val out = mutableListOf<CloudItem>()
-        val asked = HashSet<String>()
+        val pages =
+            PageGuard(
+                "Dropbox repeated a listing cursor for '$path' it was already asked for; the listing stopped incomplete",
+                "Dropbox was still listing '$path' after $MAX_PAGES pages; the listing stopped incomplete",
+                MAX_PAGES,
+            )
         var page = api.rpc("files/list_folder", listArgs(apiPath(path), recursive = false, includeDeleted = false))
-        var pages = 0
         while (true) {
             page["entries"]?.jsonArray?.forEach { out += items.toCloudItem(it.jsonObject) }
             if (page["has_more"]?.jsonPrimitive?.booleanOrNull != true) return out
             val next = page.cursor()
             // A cursor already asked for would page for ever (#82 F): the listing fails as an incomplete one, which
             // the engine retries, and a page cap keeps even fresh cursors from going on for ever.
-            if (!asked.add(next)) throw ProviderException("Dropbox repeated a listing cursor for '$path' it was already asked for; the listing stopped incomplete")
-            if (++pages > MAX_PAGES) throw ProviderException("Dropbox was still listing '$path' after $MAX_PAGES pages; the listing stopped incomplete")
+            // Counts continuations only: page one is fetched unguarded, so up to MAX_PAGES + 1 requests (Graph counts every fetch).
+            pages.follow(next)
             page = api.rpc("files/list_folder/continue", obj("cursor" to next))
         }
     }
