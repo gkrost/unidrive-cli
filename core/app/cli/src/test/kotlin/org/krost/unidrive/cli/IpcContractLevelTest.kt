@@ -148,6 +148,7 @@ class IpcContractLevelTest {
                 // 10 (gkrost/unidrive-cli#508): daemon.status reports the cold downloads' no-progress limit (`seconds`) and
                 // where it came from (`source`: default or config).
                 setOf("field:daemon.status.download_stall_timeout"),
+                setOf("verb:hydration.close_read"),
             )
     }
 }

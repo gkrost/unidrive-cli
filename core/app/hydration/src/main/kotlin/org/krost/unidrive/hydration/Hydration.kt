@@ -37,6 +37,8 @@ interface Hydration {
         cachePath: Path,
         baseEtag: String? = null,
     ): OpenResult
+    suspend fun closeReadHandle(connectionId: String, handleId: String) {}
+
     suspend fun closeHandle(connectionId: String, handleId: String)
 
     /**

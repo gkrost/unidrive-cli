@@ -60,7 +60,6 @@ import java.nio.file.NoSuchFileException
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.ConcurrentMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -304,38 +303,11 @@ class HydrationImpl(
     private val _events = MutableSharedFlow<HydrationEvent>(extraBufferCapacity = 64)
     override val events: Flow<HydrationEvent> = _events.asSharedFlow()
 
-    // connectionId -> handleId -> path
-    // The inner map is a ConcurrentHashMap: dehydrate scans every connection's
-    // inner map with containsValue while other connections' IO-dispatched
-    // handlers concurrently put/remove their own handles. A plain HashMap there
-    // would corrupt under that race (torn read missing a live handle, or worker
-    // crash), letting dehydrate delete the cache of a path open for write.
-    internal val openSets =
-        ConcurrentHashMap<String, ConcurrentMap<String, String>>()
-
-    // Handle ids that two connections held at the same time: two clients that both number their handles
-    // wh-1, wh-2, ... A close for such an id is never taken from another connection (see closeHandle).
-    // An id leaves the set once no connection holds it.
-    private val sharedHandleIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
-
-    private fun registerHandle(
-        connectionId: String,
-        handleId: String,
-        path: String,
-    ) {
-        // Put first, then look: two registrations racing on different connections each see the other.
-        openSets.computeIfAbsent(connectionId) { ConcurrentHashMap() }[handleId] = path
-        if (openSets.any { (other, handles) -> other != connectionId && handles.containsKey(handleId) }) {
-            sharedHandleIds += handleId
-        }
-    }
-
-    private fun forgetSharedIdIfUnheld(handleId: String) {
-        if (openSets.values.none { it.containsKey(handleId) }) sharedHandleIds -= handleId
-    }
+    private val handles = ConnectionHandles()
+    internal val openSets = handles.paths
 
     override fun hasRegisteredWriteHandle(connectionId: String, handleId: String, path: String): Boolean =
-        openSets[connectionId]?.get(handleId) == path
+        handles.hasWrite(connectionId, handleId, path)
 
     // Per-path mutex for `create`. Without this, two concurrent
     // `hydration.create(samePath)` callers can both pass the
@@ -625,9 +597,11 @@ class HydrationImpl(
     private fun providerRefusal(path: String): HydrationError? = mount.providerNameIssue(path)?.let { HydrationError.NameRefused(it, null) }
 
     override suspend fun openForRead(connectionId: String, handleId: String, path: String): OpenResult =
-        when (val target = views.readTarget(path)) {
-            is HydrationViews.ReadTarget.Real -> stateDb.strictNameRefusal(target.path)?.let { OpenResult.Failed(it) } ?: openForReadAt(connectionId, handleId, target.path)
-            HydrationViews.ReadTarget.Missing -> OpenResult.Failed(HydrationError.UnknownPath)
+        handles.admit(connectionId, handleId, { OpenResult.Failed(it) }) {
+            when (val target = views.readTarget(path)) {
+                is HydrationViews.ReadTarget.Real -> stateDb.strictNameRefusal(target.path)?.let { OpenResult.Failed(it) } ?: openForReadAt(connectionId, handleId, target.path)
+                HydrationViews.ReadTarget.Missing -> OpenResult.Failed(HydrationError.UnknownPath)
+            }
         }
 
     // The read of a real path; a view entry is read through the real item's path (see [HydrationViews]).
@@ -673,7 +647,7 @@ class HydrationImpl(
                         ok = true,
                     ),
                 )
-                registerHandle(connectionId, handleId, path)
+                handles.register(connectionId, handleId, path, read = true)
                 return mount.readReply(path, mount.servedWarm(entry, cachePath))
             } catch (_: java.io.IOException) {
                 // The copy vanished between the check and the serve: the full path answers.
@@ -757,12 +731,21 @@ class HydrationImpl(
             return OpenResult.Failed(err)
         }
 
-        registerHandle(connectionId, handleId, path)
+        handles.register(connectionId, handleId, path, read = true)
         touch(path)
         return mount.readReply(path, copy)
     }
 
     override suspend fun openForWrite(
+        connectionId: String,
+        handleId: String,
+        path: String,
+        cachePath: Path,
+        baseEtag: String?,
+    ): OpenResult =
+        handles.admit(connectionId, handleId, { OpenResult.Failed(it) }) { openForWriteAdmitted(connectionId, handleId, path, cachePath, baseEtag) }
+
+    private suspend fun openForWriteAdmitted(
         connectionId: String,
         handleId: String,
         path: String,
@@ -861,7 +844,7 @@ class HydrationImpl(
         // the gap. The connection is already registered in openSets so closeHandle
         // from the co-daemon's paired close_handle call cleans it up normally.
         if (handleId.startsWith("recovery-")) {
-            registerHandle(connectionId, handleId, path)
+            handles.register(connectionId, handleId, path)
             launchSerializedUpload(path, cachePath, handleId, precondition)
             return OpenResult.Ok(cachePath)
         }
@@ -874,7 +857,7 @@ class HydrationImpl(
         // upload run on recoveryUploadScope. Durability across crashes is provided by the
         // co-daemon's cache_scanner replay (which fires recovery- handles on next mount).
         // On failure: stamp the row so `unidrive doctor` can surface the unsynced gap.
-        registerHandle(connectionId, handleId, path)
+        handles.register(connectionId, handleId, path)
         rememberClientHandle(path, handleId)
         launchSerializedUpload(path, cachePath, handleId, precondition)
         return OpenResult.Ok(cachePath)
@@ -1987,25 +1970,14 @@ class HydrationImpl(
     }
 
     override suspend fun closeHandle(connectionId: String, handleId: String) {
-        // archive#728: the client wrote through this handle, not through the engine: its bytes only become
-        // visible here, and the trigger below must see them (a close of a read handle accounts the same
-        // size again, a no-op).
-        // archive#438: a pooled client can close on a connection other than the one that served open_read, so the
-        // caller's own connection is looked up first and a miss falls through to the others. A handle id is
-        // the client's own name (wh-N): a match on another connection counts only when it is unique across
-        // them, so a close from one client never releases the handle of another using the same id. Unique now
-        // is not enough: once two connections held the id at the same time, a repeated close from the client
-        // whose handle is already gone would find the other client's handle alone. Such an id is only closed
-        // on its own connection (or by the connection going away). A close that finds nothing anywhere still
-        // succeeds — the close is idempotent.
-        val path =
-            openSets[connectionId]?.remove(handleId)
-                ?: if (handleId in sharedHandleIds) {
-                    null
-                } else {
-                    openSets.values.filter { it.containsKey(handleId) }.singleOrNull()?.remove(handleId)
-                }
-        forgetSharedIdIfUnheld(handleId)
+        afterClose(handles.close(connectionId, handleId, ownReadOnly = false))
+    }
+
+    override suspend fun closeReadHandle(connectionId: String, handleId: String) {
+        afterClose(handles.close(connectionId, handleId, ownReadOnly = true))
+    }
+
+    private suspend fun afterClose(path: String?) {
         path?.let {
             accountCacheFileOnDisk(it)
             if (cacheReclaims) reclaimOnLastClose(it)
@@ -3447,7 +3419,10 @@ class HydrationImpl(
         return cachePath
     }
 
-    override suspend fun openWriteBegin(connectionId: String, path: String, handleId: String?): OpenResult {
+    override suspend fun openWriteBegin(connectionId: String, path: String, handleId: String?): OpenResult =
+        handles.admit(connectionId, handleId, { OpenResult.Failed(it) }) { openWriteBeginAdmitted(connectionId, path, handleId) }
+
+    private suspend fun openWriteBeginAdmitted(connectionId: String, path: String, handleId: String?): OpenResult {
         val normalised = path.trimEnd('/').let { if (it == "") "/" else it }
         if (!resolvesInsideCache(normalised)) return OpenResult.Failed(HydrationError.InvalidPath)
         // archive#1040 M4: a truncate would empty a cache copy that has not followed its rename yet.
@@ -3482,7 +3457,7 @@ class HydrationImpl(
             // open.  One-shot callers (setattr bare-truncate) pass null → no
             // registration, matching the existing no-spurious-close_handle contract.
             if (handleId != null) {
-                registerHandle(connectionId, handleId, normalised)
+                handles.register(connectionId, handleId, normalised)
             }
             OpenResult.Ok(cachePath, excluded = mount.isExcludedPath(normalised))
         } catch (e: CancellationException) {
@@ -3492,7 +3467,10 @@ class HydrationImpl(
         }
     }
 
-    override suspend fun create(connectionId: String, handleId: String, path: String): CreateResult {
+    override suspend fun create(connectionId: String, handleId: String, path: String): CreateResult =
+        handles.admit(connectionId, handleId, { CreateResult.Failed(it) }) { createAdmitted(connectionId, handleId, path) }
+
+    private suspend fun createAdmitted(connectionId: String, handleId: String, path: String): CreateResult {
         val normalised = path.trimEnd('/').let { if (it == "") "/" else it }
         providerRefusal(normalised)?.let { return CreateResult.Failed(it) }
         if (refusedNewName(normalised)) return CreateResult.Failed(HydrationError.InvalidPath)
@@ -3545,7 +3523,7 @@ class HydrationImpl(
                 // the row says so (the row of this very create is the only history there is), so that its unlink owes
                 // the cloud no probe. A row made under another rule carries no such record.
                 if (excluded) stateDb.markNeverSubmitted(normalised)
-                registerHandle(connectionId, handleId, normalised)
+                handles.register(connectionId, handleId, normalised)
                 // archive#450: the bytes that follow are the only copy until the upload lands.
                 touch(normalised)
                 CreateResult.Ok(cachePath = cachePath, handleId = handleId, excluded = excluded)
@@ -4250,9 +4228,8 @@ class HydrationImpl(
         downloads.cancelConnection(connectionId)
         // archive#728: a client that wrote through the mount and died without closing its handles never
         // reaches closeHandle: pick the sizes up here, while the paths are still known.
-        val handles = openSets.remove(connectionId) ?: return
-        handles.keys.forEach { forgetSharedIdIfUnheld(it) }
-        handles.values.forEach { accountCacheFileOnDisk(it) }
+        val released = handles.disconnect(connectionId) ?: return
+        released.values.forEach { accountCacheFileOnDisk(it) }
     }
 
 }

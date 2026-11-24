@@ -466,6 +466,7 @@ class DaemonRuntimeTest {
                     """{"verb":"daemon.pause","reason":"user","auto":false}""",
                     """{"verb":"daemon.resume"}""",
                     """{"verb":"hydration.open_read","handle_id":"h1","path":"/startup/read.txt"}""",
+                    """{"verb":"hydration.close_read","handle_id":"h1"}""",
                     // The cache path is a JSON string: a Windows path's backslashes must be escaped.
                     """{"verb":"hydration.open_write","handle_id":"h2","path":"/startup/write.txt","cache_path":${kotlinx.serialization.json.JsonPrimitive(tempDir.resolve("write-cache.bin").toString())}}""",
                     """{"verb":"hydration.open_write_begin","path":"/startup/truncate.txt"}""",

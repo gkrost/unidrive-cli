@@ -101,7 +101,7 @@ internal suspend fun awaitOAuthCallback(
         try {
             // archive#1054 S1: the timeout is for the whole wait, and a connection that is not the provider's redirect (a port
             // probe, a speculative browser connect, a favicon request) gets a 404 and does not end it.
-            val (client, requestLine) = CallbackListener(server, io).use { it.next(deadline) }
+            val (client, requestLine) = CallbackListener(server, io, expectedState).use { it.next(deadline) }
 
             client.use {
                 val code =
@@ -151,6 +151,7 @@ private fun writeBestEffort(
 private class CallbackListener(
     private val server: ServerSocket,
     private val io: CallbackIo,
+    private val expectedState: String,
 ) : AutoCloseable {
     private val arrived = LinkedBlockingQueue<Pair<Socket, String>>()
     private val lock = Any()
@@ -181,7 +182,7 @@ private class CallbackListener(
         val requestLine =
             try {
                 client.soTimeout = io.readTimeoutMs
-                client.getInputStream().bufferedReader().readLine() ?: ""
+                boundedRequestLine(client.getInputStream()) ?: ""
             } catch (_: IOException) {
                 "" // a connection that sent nothing in time, or that broke, is not the redirect
             }
@@ -194,6 +195,15 @@ private class CallbackListener(
             }
         if (!isCallback) {
             runCatching { client.use { io.writePage(it, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n") } }
+            return
+        }
+        val state = try {
+            callbackQuery(requestLine)["state"]
+        } catch (_: AuthenticationException) {
+            null
+        }
+        if (state == null || state != expectedState) {
+            client.use { writeBestEffort(io, it, "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n") }
             return
         }
         val taken =
@@ -211,6 +221,17 @@ private class CallbackListener(
                 buildList { arrived.drainTo(this) }
             }
         for ((client, _) in left) runCatching { client.close() }
+    }
+}
+
+internal fun boundedRequestLine(input: java.io.InputStream): String? {
+    val stream = input.buffered()
+    val line = java.io.ByteArrayOutputStream()
+    while (true) {
+        val byte = stream.read()
+        if (byte == -1 || byte == 10) return line.toString(Charsets.UTF_8).removeSuffix("\r")
+        if (line.size() == 16 * 1024) return null
+        line.write(byte)
     }
 }
 
@@ -248,10 +269,7 @@ private fun escapeHtml(text: String): String =
 /**
  * Parse an HTTP callback request line and validate the OAuth state parameter.
  *
- * Order matters and is load-bearing:
- *   1. provider error (surfaces `access_denied` etc. as themselves, not as CSRF)
- *   2. state parameter (rejects CSRF before we ever look at the code)
- *   3. authorization code (happy path only after CSRF is cleared)
+ * Validate state before accepting either a provider error or an authorization code.
  *
  * @param requestLine    raw HTTP request line, e.g. `GET /?code=…&state=… HTTP/1.1`
  * @param expectedState  the `state` value we generated at authorize time
@@ -268,11 +286,6 @@ public fun parseAndValidateCallback(
 
     fun param(name: String): String? = query[name]?.takeIf { it.isNotEmpty() }
 
-    val error = param("error")
-    if (error != null) {
-        throw AuthenticationException("$providerLabel returned error: $error ${param("error_description") ?: ""}")
-    }
-
     val receivedState =
         param("state")
             ?: throw AuthenticationException("Missing OAuth state parameter — possible CSRF attack")
@@ -280,6 +293,11 @@ public fun parseAndValidateCallback(
         throw AuthenticationException("OAuth state mismatch — possible CSRF attack")
     }
 
+    val error = param("error")
+    if (error != null) {
+        val detail = "$error ${param("error_description").orEmpty()}".filterNot { it.isISOControl() || it == '\u2028' || it == '\u2029' }
+        throw AuthenticationException("$providerLabel returned error: $detail")
+    }
     return param("code")
-        ?: throw AuthenticationException("No authorization code in callback: $requestLine")
+        ?: throw AuthenticationException("No authorization code in callback")
 }

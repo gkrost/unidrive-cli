@@ -1,5 +1,7 @@
 package org.krost.unidrive.cli
 
+import org.krost.unidrive.io.ndjsonLine
+
 /**
  * gkrost/unidrive-cli#442: one JSON object written member by member, each value a JSON text its own builder rendered. The
  * separators are written here, once: a member added to a hand-assembled reply such as `daemon.status` cannot leave the line
@@ -23,5 +25,5 @@ internal class JsonMembers(
         return this
     }
 
-    fun render(): String = text.append('}').toString()
+    fun render(): String = ndjsonLine(text.append('}').toString())
 }

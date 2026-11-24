@@ -1,5 +1,7 @@
 package org.krost.unidrive.cli
 
+import org.krost.unidrive.io.childProcessBuilder
+import org.krost.unidrive.io.stripPassphrases
 import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.ProfileMode
@@ -211,10 +213,24 @@ class MountCommand : Runnable {
         fun checkBinaryExists(binary: Path): Int =
             if (Files.isExecutable(binary) || Files.exists(binary)) 0 else EX_CONFIG
 
+        /** The co-daemon's environment from [parent]: no passphrase variable, the default log level applied. */
+        internal fun coDaemonEnv(parent: Map<String, String>): MutableMap<String, String> =
+            parent.toMutableMap().also {
+                it.stripPassphrases()
+                applyDefaultCoDaemonLogLevel(it)
+            }
+
+        internal fun coDaemonProcess(argv: List<String>): ProcessBuilder =
+            childProcessBuilder(argv).inheritIO().apply {
+                val env = coDaemonEnv(environment())
+                environment().apply {
+                    clear()
+                    putAll(env)
+                }
+            }
+
         fun superviseProcess(argv: List<String>): Int {
-            val pb = ProcessBuilder(argv).inheritIO()
-            applyDefaultCoDaemonLogLevel(pb.environment())
-            val proc = pb.start()
+            val proc = coDaemonProcess(argv).start()
             val hook = Thread {
                 if (proc.isAlive) {
                     sendSigtermAndWait(proc, SIGTERM_GRACE_MS)

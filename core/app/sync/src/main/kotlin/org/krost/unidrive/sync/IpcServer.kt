@@ -11,6 +11,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.krost.unidrive.http.UrlRedaction
 import org.krost.unidrive.io.Os
 import org.krost.unidrive.io.OwnerOnly
+import org.krost.unidrive.io.ndjsonLine
 import org.krost.unidrive.io.ndjsonString
 import org.slf4j.LoggerFactory
 import java.io.IOException
@@ -234,7 +235,7 @@ class IpcServer(
      */
     suspend fun writeToConnection(connectionId: String, json: String): Boolean {
         val entry = clients.firstOrNull { it.id == connectionId } ?: return false
-        val bytes = (json + "\n").toByteArray(Charsets.UTF_8)
+        val bytes = (ndjsonLine(json) + "\n").toByteArray(Charsets.UTF_8)
         return try {
             entry.writeMutex.withLock {
                 writeNonBlocking(entry.channel, ByteBuffer.wrap(bytes))
@@ -751,7 +752,7 @@ class IpcServer(
         val entry = clients.firstOrNull { it.channel === client } ?: return
         runCatching {
             entry.writeMutex.withLock {
-                writeNonBlocking(entry.channel, ByteBuffer.wrap((reply + "\n").toByteArray(Charsets.UTF_8)))
+                writeNonBlocking(entry.channel, ByteBuffer.wrap((ndjsonLine(reply) + "\n").toByteArray(Charsets.UTF_8)))
             }
         }.onFailure { e ->
             // A reply that could not be written (broken pipe, closed socket, write timeout) would

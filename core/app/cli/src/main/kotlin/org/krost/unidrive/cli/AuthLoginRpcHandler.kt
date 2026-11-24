@@ -1,5 +1,7 @@
 package org.krost.unidrive.cli
 
+import org.krost.unidrive.io.ndjsonLine
+
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonObject
@@ -87,7 +89,7 @@ internal class AuthLoginRpcHandler(
     ): String {
         val profile = target ?: return SIGN_IN_UNAVAILABLE
         val body = jsonRequest.asJsonObjectOrNull() ?: return INVALID_REQUEST
-        return oneAtATime.withLock {
+        return ndjsonLine(oneAtATime.withLock {
             try {
                 block(profile, body).toString()
             } catch (e: LifecycleError) {
@@ -99,7 +101,7 @@ internal class AuthLoginRpcHandler(
                 log.warn("{}: the sign-in failed: {}", verb, e.javaClass.simpleName)
                 lifecycleErrorJson(LifecycleError("internal_error", "unexpected failure: ${e.javaClass.simpleName}")).toString()
             }
-        }
+        })
     }
 
     companion object {

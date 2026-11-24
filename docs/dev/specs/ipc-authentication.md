@@ -89,7 +89,7 @@ Classified by the exact wire string; a verb that is not listed is `admin` (defau
 
 | Class | Verbs |
 |---|---|
-| read | `daemon.status`, `hydration.list`, `hydration.stat`, `hydration.locate`, `hydration.handle_status`, `hydration.last_synced`, `hydration.subscribe`, `sync.subscribe`, `hydration.open_read`, `history.list`, `history.subscribe`, `metrics.query`, `ignore.explain`, `view.page` |
+| read | `hydration.close_read`, `daemon.status`, `hydration.list`, `hydration.stat`, `hydration.locate`, `hydration.handle_status`, `hydration.last_synced`, `hydration.subscribe`, `sync.subscribe`, `hydration.open_read`, `history.list`, `history.subscribe`, `metrics.query`, `ignore.explain`, `view.page` |
 | write | `hydration.hydrate`, `hydration.dehydrate`, `hydration.create`, `hydration.open_write`, `hydration.open_write_begin`, `hydration.close_handle`, `hydration.mkdir`, `hydration.unlink`, `hydration.rmdir`, `hydration.rename`, `hydration.cancel`, `sync.enumerate`, `hydration.matches_local`, `hydration.refuse_name`, `share.create`, `history.retry` |
 | admin | `daemon.shutdown`, `daemon.pause`, `daemon.resume`, `refresh.run`, `auth.logout`, `auth.begin`, `auth.complete`, `auth.login`, `auth.check`, `vault.unlock`, `vault.lock` |
 
@@ -214,3 +214,7 @@ vectors and the refusal shapes over a live socket (one connection per file).
   engine that speaks protocol 2.
 - The Linux co-daemon is started by `unidrive mount` with the socket path only; it finds the token in the
   profile's config folder (or a later argument agreed with that repository).
+
+### Handle lifetime (contract level 11)
+
+Each connection can hold 1,024 distinct handle IDs, including opens in progress. A new ID beyond that limit returns `too_many_handles`. Release a read handle with `hydration.close_read` and its `handle_id` on the original connection. This idempotent READ verb ignores unknown IDs and write handles. FULL clients can still use `hydration.close_handle` with pooled connections.

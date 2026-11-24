@@ -140,6 +140,19 @@ class AuthLogoutRpcHandlerTest {
     /** One request through the handler, as the IPC server would run it: on a coroutine. */
     private fun call(request: String): JsonObject = kotlinx.coroutines.runBlocking { reply(handler().handle(request)) }
 
+    @Test
+    fun logout_failure_midway_is_answered_and_can_be_retried() {
+        val token = Files.createFile(dir.resolve("token.json"))
+        val blocked = Files.createDirectory(dir.resolve("credentials.json"))
+        val obstruction = Files.createFile(blocked.resolve("obstruction"))
+        val failure = call("{}")
+        assertEquals("internal_error", failure["error"]?.jsonPrimitive?.content)
+        assertFalse(Files.exists(token))
+        Files.delete(obstruction)
+        assertEquals("true", call("{}")["ok"]?.jsonPrimitive?.content)
+        assertFalse(Files.exists(blocked))
+    }
+
     private fun seedPending(vararg rows: Pair<String, Boolean>) {
         for ((path, failed) in rows) {
             db.upsertEntry(

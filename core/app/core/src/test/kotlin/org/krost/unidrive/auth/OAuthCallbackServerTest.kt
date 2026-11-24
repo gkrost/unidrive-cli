@@ -17,6 +17,20 @@ class OAuthCallbackServerTest {
     private val provider = "Azure"
 
     @Test
+    fun oversized_request_line_is_not_the_redirect() {
+        assertEquals(null, boundedRequestLine("a".repeat(16385).byteInputStream()))
+        assertEquals(16384, boundedRequestLine("a".repeat(16384).byteInputStream())?.length)
+    }
+
+    @Test
+    fun reflected_provider_error_has_no_control_characters() {
+        val error = assertFailsWith<AuthenticationException> {
+            parseAndValidateCallback("GET /?state=s&error=no%0A&error_description=%1Bbad HTTP/1.1", "s", provider)
+        }
+        assertEquals("$provider returned error: no bad", error.message)
+    }
+
+    @Test
     fun `parseAndValidateCallback returns code when state matches`() {
         val requestLine = "GET /?code=abc123&state=expected-state HTTP/1.1"
         val code = parseAndValidateCallback(requestLine, expectedState = "expected-state", providerLabel = provider)
@@ -58,7 +72,7 @@ class OAuthCallbackServerTest {
 
     @Test
     fun `parseAndValidateCallback still surfaces provider error param`() {
-        val requestLine = "GET /?error=access_denied&error_description=User%20cancelled HTTP/1.1"
+        val requestLine = "GET /?state=expected-state&error=access_denied&error_description=User%20cancelled HTTP/1.1"
         val ex =
             assertFailsWith<AuthenticationException> {
                 parseAndValidateCallback(requestLine, expectedState = "expected-state", providerLabel = provider)
@@ -96,7 +110,7 @@ class OAuthCallbackServerTest {
 
     @Test
     fun `parseAndValidateCallback uses providerLabel as prefix in error message`() {
-        val requestLine = "GET /?error=access_denied&error_description=User%20cancelled HTTP/1.1"
+        val requestLine = "GET /?state=expected-state&error=access_denied&error_description=User%20cancelled HTTP/1.1"
         val azureEx =
             assertFailsWith<AuthenticationException> {
                 parseAndValidateCallback(requestLine, expectedState = "expected-state", providerLabel = "Azure")
@@ -173,7 +187,7 @@ class OAuthCallbackServerTest {
                 }
             val page =
                 connect(port).use { client ->
-                    client.send("GET /?error=access_denied&error_description=%3Cscript%3Ealert(1)%3C/script%3E%22%27 HTTP/1.1\r\n\r\n")
+                    client.send("GET /?state=expected-state&error=access_denied&error_description=%3Cscript%3Ealert(1)%3C/script%3E%22%27 HTTP/1.1\r\n\r\n")
                     client.readAll()
                 }
 
@@ -230,7 +244,7 @@ class OAuthCallbackServerTest {
     }
 
     @Test
-    fun `a broken percent escape in the redirect ends the wait with a failure page`() {
+    fun `error_callback_without_matching_state_does_not_end_the_wait`() {
         val port = freePort()
         kotlinx.coroutines.runBlocking {
             val waiting =
@@ -239,12 +253,13 @@ class OAuthCallbackServerTest {
                 }
             val page =
                 connect(port).use { client ->
-                    client.send("GET /?state=expected-state&code=%zz HTTP/1.1\r\n\r\n")
+                    client.send("GET /?error=declined HTTP/1.1\r\n\r\n")
                     client.readAll()
                 }
 
             assert(page.startsWith("HTTP/1.1 400")) { page }
-            assertFailsWith<AuthenticationException> { waiting.await().getOrThrow() }
+            connect(port).use { it.send("GET /?state=expected-state&code=valid HTTP/1.1\r\n\r\n") }
+            assertEquals("valid", waiting.await().getOrThrow())
         }
     }
 
@@ -269,7 +284,7 @@ class OAuthCallbackServerTest {
 
     @Test
     fun `the provider error is URL-decoded like its description`() {
-        val requestLine = "GET /?error=access%5Fdenied&error_description=User+said%20no%2C+twice HTTP/1.1"
+        val requestLine = "GET /?state=expected-state&error=access%5Fdenied&error_description=User+said%20no%2C+twice HTTP/1.1"
         val ex =
             assertFailsWith<AuthenticationException> {
                 parseAndValidateCallback(requestLine, expectedState = "expected-state", providerLabel = provider)

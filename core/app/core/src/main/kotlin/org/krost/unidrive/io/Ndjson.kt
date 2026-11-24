@@ -12,8 +12,10 @@ import kotlinx.serialization.json.JsonPrimitive
  * Use it wherever a string goes into such a line, in place of `JsonPrimitive(s).toString()` or a hand-written escaper
  * (gkrost/unidrive-cli#222 item 1).
  */
-public fun ndjsonString(s: String): String {
-    val quoted = JsonPrimitive(s).toString()
+public fun ndjsonString(s: String): String = ndjsonLine(JsonPrimitive(s).toString())
+
+/** Escape additional Unicode line breaks in an already serialized single-line JSON value. */
+public fun ndjsonLine(quoted: String): String {
     if (quoted.none { it in EXTRA_LINE_BREAKS }) return quoted
     val sb = StringBuilder(quoted.length + 10)
     for (c in quoted) {
@@ -26,4 +28,4 @@ public fun ndjsonString(s: String): String {
     return sb.toString()
 }
 
-private val EXTRA_LINE_BREAKS = charArrayOf('\u0085', ' ', ' ')
+private val EXTRA_LINE_BREAKS = charArrayOf('\u0085', '\u2028', '\u2029')
