@@ -129,6 +129,10 @@ class IpcServer(
     private var ownsSocketFiles = false
     private var acceptJob: Job? = null
     private var broadcastJob: Job? = null
+
+    // gkrost/unidrive-cli#926 S3: one queue and writer per sync subscriber; made by start().
+    @Volatile
+    private var syncFanOut: IpcSyncFanOut? = null
     private var socketWatchJob: Job? = null
     private var socketWatcher: IpcSocketWatcher? = null
 
@@ -272,6 +276,7 @@ class IpcServer(
      */
     fun registerSyncSubscriber(connectionId: String) {
         syncSubscribers.add(connectionId)
+        syncFanOut?.add(connectionId)
     }
 
     /**
@@ -281,6 +286,7 @@ class IpcServer(
      */
     fun unregisterSyncSubscriber(connectionId: String) {
         syncSubscribers.remove(connectionId)
+        syncFanOut?.remove(connectionId)
     }
 
     /**
@@ -477,29 +483,10 @@ class IpcServer(
         socketWatcher = watcher
         if (socketWatchIntervalMs > 0) socketWatchJob = scope.launch(transport) { watcher.run() }
 
-        broadcastJob =
-            scope.launch(transport) {
-                for (json in channel) {
-                    val line = (json + "\n").toByteArray(Charsets.UTF_8)
-                    val dead = mutableListOf<ClientEntry>()
-                    for (entry in clients) {
-                        if (entry.id !in syncSubscribers) continue
-                        try {
-                            entry.writeMutex.withLock {
-                                writeNonBlocking(entry.channel, ByteBuffer.wrap(line))
-                            }
-                        } catch (e: IOException) {
-                            log.debug("IPC: dropping dead sync-subscriber id={}: {}", entry.id, e.message)
-                            dead.add(entry)
-                        }
-                    }
-                    for (entry in dead) {
-                        clients.remove(entry)
-                        closeChannel(entry.channel)
-                        closeListeners.forEach { it(entry.id) }
-                    }
-                }
-            }
+        // gkrost/unidrive-cli#926 S3: the loop only deals each event to the subscribers' queues; their writers do the waiting.
+        val fanOut = IpcSyncFanOut(CoroutineScope(scope.coroutineContext + transport), ::writeToConnection)
+        syncFanOut = fanOut
+        broadcastJob = scope.launch(transport) { for (json in channel) fanOut.offer(json) }
     }
 
     fun close() {
@@ -521,6 +508,7 @@ class IpcServer(
         readSelector?.close()
         readSelector = null
         syncSubscribers.clear()
+        syncFanOut?.clear()
         pendingPostReply.clear()
         authSessions.clear()
         // archive#419: only remove the files of a socket THIS server bound. A start() that was refused
