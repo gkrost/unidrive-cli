@@ -2,9 +2,6 @@ package org.krost.unidrive.sync
 
 import org.krost.unidrive.io.Os
 import org.krost.unidrive.io.OwnerOnly
-import java.net.ConnectException
-import java.net.UnixDomainSocketAddress
-import java.nio.channels.SocketChannel
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
@@ -19,7 +16,7 @@ internal object IpcSocketPaths {
     private const val MAX_SOCKET_PATH_LENGTH = 90
 
     // A unix socket path holds 108 bytes with its terminating NUL; a longer one cannot be bound.
-    private const val MAX_UNIX_SOCKET_PATH_BYTES = 107
+    const val MAX_UNIX_SOCKET_PATH_BYTES = 107
 
     fun socketBaseName(profileName: String): String = "unidrive-${canonicalDiskName(profileName, diskNameDirectory())}.sock"
 
@@ -159,19 +156,12 @@ internal object IpcSocketFiles {
      * the same probe the server's start uses.
      */
     fun removeStaleSocketFiles(socketPath: Path) {
+        // Other IOExceptions abort via runCatching: never delete a socket we can't classify.
         runCatching {
-            if (Files.exists(socketPath)) {
-                try {
-                    SocketChannel.open(UnixDomainSocketAddress.of(socketPath)).close()
-                    return // somebody is listening: not ours to delete
-                } catch (_: ConnectException) {
-                    // Stale socket — nobody listening
-                } catch (_: java.net.SocketException) {
-                    // Stale socket — Windows "Invalid argument"
-                }
-                // Other IOExceptions abort via runCatching — never delete a socket we can't classify
+            when (IpcStaleSocket.removeIfStale(socketPath)) {
+                IpcStaleSocket.Outcome.ABSENT, IpcStaleSocket.Outcome.REMOVED -> Files.deleteIfExists(metaPathFor(socketPath))
+                else -> Unit // Live, changed, or unclassified: leave its metadata alone.
             }
-            deleteSocketFiles(socketPath)
         }
     }
 }

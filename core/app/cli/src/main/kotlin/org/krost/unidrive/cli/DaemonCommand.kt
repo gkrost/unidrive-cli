@@ -451,7 +451,7 @@ class DaemonStopCommand : Runnable {
         if (handle == null || !handle.isAlive) {
             // Also the recycled-pid case: a live process that is not the lock's writer is never signalled.
             println("daemon for profile '${profile.name}' (PID $pid) is not running (stale .lock.pid); cleaning up")
-            runCatching { Files.deleteIfExists(pidFile) }
+            runCatching { deleteLockPidIfUnchanged(pidFile, contents) }
             removeLeftoverSocket(profile.name)
             return
         }
@@ -626,6 +626,19 @@ internal fun readLockPid(pidFile: java.nio.file.Path): LockPidReadResult {
     val pid = parts.getOrNull(0)?.toLongOrNull() ?: return LockPidReadResult.Malformed(raw)
     val modeToken = parts.getOrNull(1)
     return LockPidReadResult.Present(LockPidContents(pid, modeToken))
+}
+
+/**
+ * gkrost/unidrive-cli#926 S5: deletes the stale [pidFile] only while it still holds [read]. A daemon that started after
+ * it was read stamped its own pid there, and keeps it.
+ */
+internal fun deleteLockPidIfUnchanged(
+    pidFile: java.nio.file.Path,
+    read: LockPidContents,
+): Boolean {
+    val now = readLockPid(pidFile)
+    if (now !is LockPidReadResult.Present || now.contents != read) return false
+    return java.nio.file.Files.deleteIfExists(pidFile)
 }
 
 /** True when [pid] is a running process that can be the writer of [pidFile]. Shared by `daemon status`, `doctor` and `migrate`. */
