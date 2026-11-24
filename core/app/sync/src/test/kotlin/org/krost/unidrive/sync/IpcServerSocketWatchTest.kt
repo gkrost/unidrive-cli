@@ -1,5 +1,8 @@
 package org.krost.unidrive.sync
 
+import ch.qos.logback.classic.Logger
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -7,6 +10,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.krost.unidrive.testing.TestScratch
+import org.slf4j.LoggerFactory
 import java.net.StandardProtocolFamily
 import java.net.UnixDomainSocketAddress
 import java.nio.ByteBuffer
@@ -154,6 +158,39 @@ class IpcServerSocketWatchTest {
                 assertFalse(Files.exists(socket))
                 assertEquals(0, server!!.socketRebinds)
             } finally {
+                scope.cancel()
+            }
+        }
+
+    @Test
+    fun healthy_probes_do_not_enter_client_accounting_or_log_refusals() =
+        runBlocking(Dispatchers.IO) {
+            val scope = CoroutineScope(coroutineContext + SupervisorJob())
+            val logger = LoggerFactory.getLogger(IpcServer::class.java) as Logger
+            val appender = ListAppender<ILoggingEvent>().apply { start() }
+            val closedClients = java.util.concurrent.atomic.AtomicInteger()
+            val socket = base.resolve("d.sock")
+            val ipc = IpcServer(socket, maxClients = 1).also { server = it }
+            ipc.socketWatchIntervalMs = 20
+            ipc.registerConnectionCloseListener { closedClients.incrementAndGet() }
+            logger.addAppender(appender)
+            try {
+                ipc.start(scope)
+                assertTrue(await { ipc.socketProbeSuccesses >= 2 })
+                assertEquals(0, closedClients.get(), "idle probes did not create client sessions")
+
+                SocketChannel.open(UnixDomainSocketAddress.of(socket)).use {
+                    assertTrue(await { ipc.clientCount == 1 })
+                    val before = ipc.socketProbeSuccesses
+                    assertTrue(await { ipc.socketProbeSuccesses >= before + 2 })
+                    assertEquals(1, ipc.clientCount)
+                    assertEquals(0, closedClients.get())
+                    assertEquals(0, ipc.socketRebinds)
+                    assertFalse(appender.list.any { event -> "refusing connection" in event.formattedMessage })
+                }
+            } finally {
+                logger.detachAppender(appender)
+                appender.stop()
                 scope.cancel()
             }
         }
