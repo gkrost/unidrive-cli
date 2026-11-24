@@ -194,6 +194,8 @@ class TransferHistory private constructor(
 
     internal val wallNow: Long get() = clock()
 
+    internal val profileName: String get() = profile
+
     internal val nanoNow: Long get() = nanoClock()
 
     /**

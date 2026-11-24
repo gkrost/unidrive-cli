@@ -1,0 +1,16 @@
+{"verb":"history.report"}
+{"ok":false,"error":"invalid_request"}
+{"verb":"history.report","request_id":"00000000-0000-0000-0000-00000000b001","source":"windows-host","operation":"journal_replay","path":"/docs/host.txt","result":"success","started_at_ms":1700000000000,"finished_at_ms":1700000000500,"bytes":42,"extra":1}
+{"ok":false,"error":"invalid_request"}
+{"verb":"history.report","request_id":"00000000-0000-0000-0000-00000000b001","source":"windows-host","operation":"journal_replay","path":"docs/host.txt","result":"success","started_at_ms":1700000000000,"finished_at_ms":1700000000500,"bytes":42}
+{"ok":false,"error":"invalid_request"}
+{"verb":"history.report","request_id":"00000000-0000-0000-0000-00000000b001","source":"windows-host","operation":"journal_replay","path":"/docs/host.txt","result":"running","started_at_ms":1700000000000,"finished_at_ms":1700000000500,"bytes":42}
+{"ok":false,"error":"invalid_request"}
+{"verb":"history.report","request_id":"00000000-0000-0000-0000-00000000b001","source":"some-other-app","operation":"journal_replay","path":"/docs/host.txt","result":"success","started_at_ms":1700000000000,"finished_at_ms":1700000000500,"bytes":42}
+{"ok":false,"error":"unknown_source"}
+{"verb":"history.report","request_id":"00000000-0000-0000-0000-00000000b001","source":"windows-host","operation":"journal_replay","path":"/docs/host.txt","result":"success","started_at_ms":1700000000000,"finished_at_ms":1700000000500,"bytes":42}
+{"ok":true,"recorded":true,"operation_id":"host:00000000-0000-0000-0000-00000000b001","request_id":"00000000-0000-0000-0000-00000000b001"}
+{"verb":"history.report","request_id":"00000000-0000-0000-0000-00000000b001","source":"windows-host","operation":"journal_replay","path":"/docs/host.txt","result":"success","started_at_ms":1700000000000,"finished_at_ms":1700000000500,"bytes":42}
+{"ok":true,"recorded":true,"operation_id":"host:00000000-0000-0000-0000-00000000b001","request_id":"00000000-0000-0000-0000-00000000b001"}
+{"verb":"history.report","request_id":"00000000-0000-0000-0000-00000000b001","source":"windows-host","operation":"journal_replay","path":"/docs/other.txt","result":"success","started_at_ms":1700000000000,"finished_at_ms":1700000000500,"bytes":42}
+{"ok":false,"error":"idempotency_conflict","request_id":"00000000-0000-0000-0000-00000000b001"}

@@ -91,7 +91,9 @@ internal class TelemetryStore private constructor(
                     old_hash      TEXT,
                     new_hash      TEXT,
                     max_attempts  INTEGER,
-                    next_try_at_ms INTEGER
+                    next_try_at_ms INTEGER,
+                    source        TEXT,
+                    operation     TEXT
                 ) WITHOUT ROWID
                 """.trimIndent(),
             )
@@ -125,8 +127,8 @@ internal class TelemetryStore private constructor(
             c.createStatement().use { st ->
                 st.executeQuery("PRAGMA table_info(transfers)").use { rs -> buildSet { while (rs.next()) add(rs.getString("name")) } }
             }
-        for (column in ADDED_TRANSFER_COLUMNS) {
-            if (column !in have) c.createStatement().use { it.execute("ALTER TABLE transfers ADD COLUMN $column INTEGER") }
+        for ((column, type) in ADDED_TRANSFER_COLUMNS) {
+            if (column !in have) c.createStatement().use { it.execute("ALTER TABLE transfers ADD COLUMN $column $type") }
         }
     }
 
@@ -462,13 +464,14 @@ internal class TelemetryStore private constructor(
         private val SETTINGS = SqliteConnections.Settings(synchronous = SqliteConnections.Synchronous.NORMAL)
 
         /** Columns the transfers table gained after its first shape (see [addMissingTransferColumns]). */
-        private val ADDED_TRANSFER_COLUMNS = listOf("max_attempts", "next_try_at_ms")
+        private val ADDED_TRANSFER_COLUMNS =
+            listOf("max_attempts" to "INTEGER", "next_try_at_ms" to "INTEGER", "source" to "TEXT", "operation" to "TEXT")
 
         private const val COLUMNS =
             "operation_id, profile, direction, path, queued_at, started_at, finished_at, queue_wait_ms, transfer_ms, " +
-                "bytes_total, bytes_done, result, error_class, error_message, attempts, old_hash, new_hash, max_attempts, next_try_at_ms"
+                "bytes_total, bytes_done, result, error_class, error_message, attempts, old_hash, new_hash, max_attempts, next_try_at_ms, source, operation"
         private val UPSERT =
-            "INSERT INTO transfers($COLUMNS) VALUES (${List(19) { "?" }.joinToString(",")}) " +
+            "INSERT INTO transfers($COLUMNS) VALUES (${List(21) { "?" }.joinToString(",")}) " +
                 "ON CONFLICT(operation_id) DO UPDATE SET " +
                 COLUMNS.split(", ").drop(1).joinToString(", ") { "$it = excluded.$it" }
 
@@ -523,6 +526,8 @@ internal object TransferRowCodec {
         ps.setString(17, r.newHash)
         ps.setObject(18, r.maxAttempts)
         ps.setObject(19, r.nextTryAtMs)
+        ps.setString(20, r.source)
+        ps.setString(21, r.operation)
     }
 
     fun read(rs: ResultSet): TransferRow {
@@ -547,6 +552,8 @@ internal object TransferRowCodec {
             newHash = rs.getString("new_hash"),
             maxAttempts = long("max_attempts")?.toInt(),
             nextTryAtMs = long("next_try_at_ms"),
+            source = rs.getString("source"),
+            operation = rs.getString("operation"),
         )
     }
 }

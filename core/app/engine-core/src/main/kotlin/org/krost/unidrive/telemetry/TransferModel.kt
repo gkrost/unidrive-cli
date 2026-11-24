@@ -80,4 +80,8 @@ data class TransferRow(
     val newHash: String? = null,
     val maxAttempts: Int? = null,
     val nextTryAtMs: Long? = null,
+    /** Who reported the row (gkrost/unidrive-cli#848, `history.report`): null for a row the engine wrote itself. */
+    val source: String? = null,
+    /** What the reporting host did (a short token); null with [source]. */
+    val operation: String? = null,
 )
