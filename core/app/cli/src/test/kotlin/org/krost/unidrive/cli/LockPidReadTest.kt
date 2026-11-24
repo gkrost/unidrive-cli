@@ -25,4 +25,20 @@ class LockPidReadTest {
         Files.writeString(file, "not-a-pid")
         assertIs<LockPidReadResult.Malformed>(readLockPid(file))
     }
+
+    @Test
+    fun stop_keeps_a_pid_sidecar_restamped_by_a_new_daemon() {
+        val dir = TestScratch.directory("lock-pid")
+        val file = dir.resolve(".lock.pid")
+        Files.writeString(file, "4242 daemon")
+        val read = assertIs<LockPidReadResult.Present>(readLockPid(file)).contents
+
+        Files.writeString(file, "4343 daemon") // a daemon started after `daemon stop` read the dead one's pid
+        assertEquals(false, deleteLockPidIfUnchanged(file, read))
+        assertEquals("4343 daemon", Files.readString(file), "the new daemon's sidecar is kept")
+
+        Files.writeString(file, "4242 daemon")
+        assertEquals(true, deleteLockPidIfUnchanged(file, read), "the unchanged stale sidecar is removed")
+        assertIs<LockPidReadResult.Absent>(readLockPid(file))
+    }
 }

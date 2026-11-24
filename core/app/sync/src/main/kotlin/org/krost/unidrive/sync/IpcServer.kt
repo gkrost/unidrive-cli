@@ -15,7 +15,6 @@ import org.krost.unidrive.io.ndjsonLine
 import org.krost.unidrive.io.ndjsonString
 import org.slf4j.LoggerFactory
 import java.io.IOException
-import java.net.ConnectException
 import java.net.StandardProtocolFamily
 import java.net.UnixDomainSocketAddress
 import java.nio.ByteBuffer
@@ -564,17 +563,12 @@ class IpcServer(
         return es.asCoroutineDispatcher()
     }
 
+    // Other IOExceptions propagate: never delete a socket we can't classify (gkrost/unidrive-cli#926 S5).
     private fun reclaimStaleSocket() {
-        if (Files.exists(socketPath)) {
-            try {
-                SocketChannel.open(UnixDomainSocketAddress.of(socketPath)).close()
-                throw IllegalStateException("Another daemon is already listening on $socketPath")
-            } catch (_: ConnectException) {
-                Files.deleteIfExists(socketPath) // Stale socket — nobody listening
-            } catch (_: java.net.SocketException) {
-                Files.deleteIfExists(socketPath) // Stale socket — Windows "Invalid argument"
-            }
-            // Other IOExceptions propagate — never delete a socket we don't own
+        when (IpcStaleSocket.removeIfStale(socketPath)) {
+            IpcStaleSocket.Outcome.LIVE -> error("Another daemon is already listening on $socketPath")
+            IpcStaleSocket.Outcome.CHANGED -> error("The socket file $socketPath was replaced while it was checked")
+            else -> Unit
         }
     }
 
