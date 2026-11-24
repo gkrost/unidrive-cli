@@ -35,10 +35,11 @@ class S3StaleMultipartSweepTest {
         assertFailsWith<Exception> { provider(fake).upload(file(name), "/$name") }
     }
 
+    // The records are one JSON map; ageing them rewrites each entry's save time.
     private fun ageRecords(days: Long) {
-        val old = FileTime.from(Instant.now().minus(days, ChronoUnit.DAYS))
-        Files.list(dir.resolve("s3-uploads")).use { it.toList() }.filter { it.fileName.toString().endsWith(".upload") }
-            .forEach { Files.setLastModifiedTime(it, old) }
+        val old = Instant.now().minus(days, ChronoUnit.DAYS).toEpochMilli()
+        val file = dir.resolve("s3-uploads/multipart_uploads.json")
+        Files.writeString(file, Files.readString(file).replace(Regex("\"savedAtMillis\":\\d+"), "\"savedAtMillis\":$old"))
     }
 
     @Test
@@ -66,7 +67,7 @@ class S3StaleMultipartSweepTest {
             assertEquals(1, fake.openUploads, "the recent upload is not touched")
         }
 
-    private fun records() = Files.list(dir.resolve("s3-uploads")).use { it.toList() }.count { it.fileName.toString().endsWith(".upload") }
+    private fun records() = MultipartStore(dir.resolve("s3-uploads")).all().size
 
     @Test
     fun `a stale upload whose abort fails keeps its record`() =
