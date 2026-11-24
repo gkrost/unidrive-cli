@@ -220,7 +220,8 @@ class IpcServer(
     }
 
     // NEW-2: count silently-dropped broadcast events so a full-channel drop
-    // (slow/absent subscriber) is observable instead of invisible. Exposed
+    // (the fan-out loop not keeping up; a slow subscriber no longer fills the
+    // channel, each has its own queue) is observable instead of invisible. Exposed
     // internally for the regression test; production drop semantics are
     // unchanged (we still drop — observability only).
     private val droppedBroadcastEvents = java.util.concurrent.atomic.AtomicLong(0)
@@ -234,17 +235,17 @@ class IpcServer(
         val r = channel.trySend(json)
         if (r.isFailure && !r.isClosed) {
             droppedBroadcastEvents.incrementAndGet()
-            log.warn("sync-progress broadcast event dropped (channel full, cap=256) — subscriber too slow")
+            log.warn("sync-progress broadcast event dropped (channel full, cap=256) — the fan-out loop did not keep up")
         }
     }
 
     /**
      * Write a single JSON line to one specific connection (newline is appended
-     * server-side). Used by the hydration subscriber pipeline to push events to
-     * just the connections that ran `hydration.subscribe`, instead of fanning out
-     * via the shared broadcast channel. Returns false when the connection is
-     * unknown or the write failed (dead client is then removed and close-listeners
-     * fire — same shape as the broadcast loop's dead-client cleanup).
+     * server-side). Used by the hydration subscriber pipeline and the sync
+     * event fan-out ([IpcSyncFanOut]) to push events to just the connections
+     * that subscribed, instead of writing to all of them one after another.
+     * Returns false when the connection is unknown or the write failed (dead
+     * client is then removed and close-listeners fire).
      */
     suspend fun writeToConnection(connectionId: String, json: String): Boolean {
         val entry = clients.firstOrNull { it.id == connectionId } ?: return false
@@ -281,8 +282,9 @@ class IpcServer(
 
     /**
      * Remove a connection from the sync-progress subscriber set. Idempotent;
-     * called from the connection-close listener `SyncCommand` registers
-     * and from the broadcast loop's dead-subscriber cleanup path.
+     * called from the connection-close listener `registerSyncSubscribeVerb`
+     * registers, which [writeToConnection] also fires when it finds the
+     * subscriber's connection gone.
      */
     fun unregisterSyncSubscriber(connectionId: String) {
         syncSubscribers.remove(connectionId)
