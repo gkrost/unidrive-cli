@@ -1,0 +1,16 @@
+{"verb":"scope.set","included":["/A"]}
+{"ok":false,"error":"missing_version"}
+{"verb":"scope.set","version":"3ee0eece94cc2da7"}
+{"ok":false,"error":"missing_included"}
+{"verb":"scope.set","included":"/A","version":"3ee0eece94cc2da7"}
+{"ok":false,"error":"invalid_included"}
+{"verb":"scope.set","included":["A"],"version":"3ee0eece94cc2da7"}
+{"ok":false,"error":"invalid_included"}
+{"verb":"scope.set","included":["/A"],"version":"3ee0eece94cc2da7","dry_run":"yes"}
+{"ok":false,"error":"invalid_dry_run"}
+{"verb":"scope.set","included":["/A"],"version":"0000000000000000"}
+{"ok":false,"error":"version_conflict","included":[],"version":"3ee0eece94cc2da7"}
+{"verb":"scope.set","included":["/A"],"version":"3ee0eece94cc2da7","dry_run":true}
+{"ok":true,"applied":false,"included":["/A"],"version":"84c4d41062c7af73","previous_version":"3ee0eece94cc2da7","effect":{"leaving":[],"leaving_more":0,"entering":[],"remove_locally":{"folders":0,"placeholders":0,"offline_copies":0},"unsynced":{"count":0,"paths":[]},"re_enumerate":false}}
+{"verb":"scope.set","included":["/A"],"version":"3ee0eece94cc2da7"}
+{"ok":true,"applied":true,"included":["/A"],"version":"84c4d41062c7af73","previous_version":"3ee0eece94cc2da7","effect":{"leaving":[],"leaving_more":0,"entering":[],"remove_locally":{"folders":0,"placeholders":0,"offline_copies":0},"unsynced":{"count":0,"paths":[]},"re_enumerate":false}}
