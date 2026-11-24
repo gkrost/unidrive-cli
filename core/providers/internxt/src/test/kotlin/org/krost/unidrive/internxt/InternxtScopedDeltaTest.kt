@@ -6,9 +6,12 @@ import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import kotlinx.coroutines.test.runTest
+import org.junit.experimental.categories.Category
 import org.krost.unidrive.ScanContext
 import org.krost.unidrive.ScanProgress
 import org.krost.unidrive.internxt.model.InternxtCredentials
+import org.krost.unidrive.testing.Flaky
+import org.krost.unidrive.testing.FlakyTests
 import java.time.Instant
 import java.util.Base64
 import java.util.Collections
@@ -285,6 +288,16 @@ class InternxtScopedDeltaTest {
             )
         }
 
+    // gkrost/unidrive-cli#925: failed once on PR #923 (account-wide counter 12, expected 11) without a related change;
+    // 300 local iterations under load did not reproduce it. Quarantined until a loop in CI says whether a late MockEngine
+    // call lands after cancellation or the second gather misses the skip window.
+    @Category(FlakyTests::class)
+    @Flaky(
+        issue = 925,
+        reason = "the account-wide counter was one higher after the second gather (12, expected 11) once on CI; " +
+            "a late handler call after cancellation, or a skip window the second gather did not see, is still open",
+        firstFailure = "https://github.com/gkrost/unidrive-cli/actions/runs/45204579347",
+    )
     @Test
     fun `a gather that ended in the walk skips the account-wide attempt on the next gather`() =
         runTest {
