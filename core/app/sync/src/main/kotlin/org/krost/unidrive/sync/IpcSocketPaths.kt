@@ -77,8 +77,7 @@ internal object IpcSocketPaths {
         // Linux / macOS: /run/user/$UID/, else the per-user folder in the temp dir
         // (a fixed name, so clients find the socket there too).
         val uid = OwnerOnly.posixUid()
-        val runDir = Path.of("/run/user/$uid")
-        if (!Files.isDirectory(runDir)) IpcSocketDir.ensurePosixFallbackDir(tmpDir, uid)
+        if (dir == tmpDir.resolve(IpcSocketDir.posixFallbackName(uid))) IpcSocketDir.ensurePosixFallbackDir(tmpDir, uid)
         return resolveAndMeta(dir, profileName, dir)
     }
 
@@ -100,18 +99,25 @@ internal object IpcSocketPaths {
         windows: Boolean,
     ): Path {
         if (windows) return tmpDir.resolve(IpcSocketDir.WINDOWS_DIR_NAME)
-        val runDir = Path.of("/run/user/${OwnerOnly.posixUid()}")
-        return if (Files.isDirectory(runDir)) runDir else tmpDir.resolve(IpcSocketDir.posixFallbackName(OwnerOnly.posixUid()))
+        return IpcSocketDir.posixSocketDirectory(tmpDir, OwnerOnly.posixUid())
     }
 
     /**
      * Makes sure the folder of [socketPath] is there again (a temp cleanup took it, gkrost/unidrive-cli#794): made private like at
-     * start, and left alone when it exists.
+     * start. One that is there is checked like at start too (gkrost/unidrive-cli#926 S2: someone else may have made it meanwhile).
      */
-    fun restoreSocketDirectory(socketPath: Path) {
+    fun restoreSocketDirectory(
+        socketPath: Path,
+        windows: Boolean = Os.isWindows(),
+        ops: IpcSocketDir.PosixDirOps = IpcSocketDir.RealPosixDirOps,
+    ) {
         val dir = socketPath.parent ?: return
-        if (Files.isDirectory(dir)) return
-        if (Os.isWindows()) IpcSocketDir.ensureWindowsFolder(dir) else IpcSocketDir.ensureOverrideDir(dir, windows = false)
+        if (windows) {
+            IpcSocketDir.ensureWindowsFolder(dir)
+            return
+        }
+        dir.parent?.let { Files.createDirectories(it) }
+        IpcSocketDir.ensurePosixFolder(dir, OwnerOnly.posixUid(), ops)
     }
 
     private fun resolveAndMeta(

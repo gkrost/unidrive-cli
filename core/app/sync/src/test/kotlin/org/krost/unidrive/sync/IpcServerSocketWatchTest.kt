@@ -159,6 +159,28 @@ class IpcServerSocketWatchTest {
         }
 
     @Test
+    fun watcher_rebinds_when_the_socket_file_is_replaced_by_another_inode() =
+        runBlocking(Dispatchers.IO) {
+            val scope = CoroutineScope(coroutineContext + SupervisorJob())
+            val foreign = java.nio.channels.ServerSocketChannel.open(StandardProtocolFamily.UNIX)
+            try {
+                val socket = base.resolve("d.sock")
+                server = IpcServer(socket).also { it.socketWatchIntervalMs = 200; it.start(scope) }
+                assertTrue(answers(socket), "the daemon answers before the swap")
+
+                // Another listener takes the name between two rounds of the watcher: the file is there, but not ours.
+                Files.delete(socket)
+                foreign.bind(UnixDomainSocketAddress.of(socket))
+
+                assertTrue(await { server!!.socketRebinds == 1 }, "the watcher sees another inode and binds the file again")
+                assertTrue(answers(socket), "our listener serves the name again")
+            } finally {
+                foreign.close()
+                scope.cancel()
+            }
+        }
+
+    @Test
     fun `a closed server does not bind its socket again`() =
         runBlocking(Dispatchers.IO) {
             val scope = CoroutineScope(coroutineContext + SupervisorJob())

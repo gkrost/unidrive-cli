@@ -129,7 +129,21 @@ internal object IpcSocketDir {
         return dir
     }
 
-    private object RealPosixDirOps : PosixDirOps {
+    /**
+     * gkrost/unidrive-cli#926 S1: [runDir] (`/run/user/<uid>`) when it passes the checks of the fallback folder
+     * ([fallbackDirProblem]: a real directory, no link, owned by [uid], mode 700), else the fallback folder in [tmpDir].
+     */
+    fun posixSocketDirectory(
+        tmpDir: Path,
+        uid: Int,
+        runDir: Path = Path.of("/run/user/$uid"),
+        ops: PosixDirOps = RealPosixDirOps,
+    ): Path {
+        val private = ops.facts(runDir)?.let { fallbackDirProblem(it, uid) == null } ?: false
+        return if (private) runDir else tmpDir.resolve(posixFallbackName(uid))
+    }
+
+    object RealPosixDirOps : PosixDirOps {
         override fun facts(dir: Path): DirFacts? {
             val basic =
                 try {
