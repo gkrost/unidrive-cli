@@ -6,9 +6,12 @@ import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import kotlinx.coroutines.test.runTest
+import org.junit.experimental.categories.Category
 import org.krost.unidrive.ScanContext
 import org.krost.unidrive.ScanProgress
 import org.krost.unidrive.internxt.model.InternxtCredentials
+import org.krost.unidrive.testing.Flaky
+import org.krost.unidrive.testing.FlakyTests
 import java.time.Instant
 import java.util.Base64
 import java.util.Collections
@@ -285,54 +288,71 @@ class InternxtScopedDeltaTest {
             )
         }
 
+    // gkrost/unidrive-cli#925: failed once on PR #923 (account-wide counter 12, expected 11) without a related change;
+    // 300 local iterations under load did not reproduce it. Quarantined until a loop in CI says whether a late MockEngine
+    // call lands after cancellation or the second gather misses the skip window.
+    @Category(FlakyTests::class)
+    @Flaky(
+        issue = 925,
+        reason = "the account-wide counter was one higher after the second gather (12, expected 11) once on CI; " +
+            "a late handler call after cancellation, or a skip window the second gather did not see, is still open",
+        firstFailure = "https://github.com/gkrost/unidrive-cli/actions/runs/45204579347",
+    )
     @Test
     fun `a gather that ended in the walk skips the account-wide attempt on the next gather`() =
         runTest {
-            val accountWide = java.util.concurrent.atomic.AtomicInteger(0)
-            val cursorWide = java.util.concurrent.atomic.AtomicInteger(0)
-            val engine =
-                MockEngine { request ->
-                    val url = request.url.toString()
-                    when {
-                        contentOf(url) != null -> respond(contentOf(url)!!, HttpStatusCode.OK, json)
-                        isCursorListing(request.url.encodedPath) -> {
-                            cursorWide.incrementAndGet()
-                            respond("{}", HttpStatusCode.NotFound, json)
-                        }
-                        isAccountWideListing(request.url.encodedPath) -> {
-                            accountWide.incrementAndGet()
-                            throw cutByTheGateway()
-                        }
-                        else -> error("unexpected request: $url")
-                    }
-                }
-            val p = provider(engine)
-            val scanContext = ScanContext(null, emptyList(), { _, _ -> }, scopeRoots = emptyList())
+            val repetitions = if (System.getenv("UNIDRIVE_REPEAT_INTERNXT_WALK") == "true") 300 else 1
+            repeat(repetitions) { checkWalkFallback(it + 1) }
+            if (repetitions > 1) println("Internxt walk fallback passed $repetitions iterations")
+        }
 
+    private suspend fun checkWalkFallback(iteration: Int) {
+        val accountWide = java.util.concurrent.atomic.AtomicInteger(0)
+        val cursorWide = java.util.concurrent.atomic.AtomicInteger(0)
+        val engine =
+            MockEngine { request ->
+                val url = request.url.toString()
+                when {
+                    contentOf(url) != null -> respond(contentOf(url)!!, HttpStatusCode.OK, json)
+                    isCursorListing(request.url.encodedPath) -> {
+                        cursorWide.incrementAndGet()
+                        respond("{}", HttpStatusCode.NotFound, json)
+                    }
+                    isAccountWideListing(request.url.encodedPath) -> {
+                        accountWide.incrementAndGet()
+                        throw cutByTheGateway()
+                    }
+                    else -> error("unexpected request: $url")
+                }
+            }
+        val p = provider(engine)
+        try {
+            val scanContext = ScanContext(null, emptyList(), { _, _ -> }, scopeRoots = emptyList())
             val first = p.delta(null, null, scanContext)
-            assertTrue(first.complete)
             val wideAfterFirst = accountWide.get()
             val cursorAfterFirst = cursorWide.get()
-            assertTrue(cursorAfterFirst > 0, "the first gather tried the cursor listing: $cursorWide")
-            assertTrue(wideAfterFirst > 0, "the first gather tried the offset listing: $accountWide")
+            val firstCounts = "iteration $iteration, cursor $cursorAfterFirst, offset $wideAfterFirst"
+            assertTrue(first.complete, firstCounts)
+            assertTrue(cursorAfterFirst > 0, "the first gather tried the cursor listing ($firstCounts)")
+            assertTrue(wideAfterFirst > 0, "the first gather tried the offset listing ($firstCounts)")
 
             val second = p.delta(null, null, scanContext)
+            val wideAfterSecond = accountWide.get()
+            val cursorAfterSecond = cursorWide.get()
+            val counts = "iteration $iteration, cursor $cursorAfterFirst -> $cursorAfterSecond, offset $wideAfterFirst -> $wideAfterSecond"
             assertEquals(
                 setOf("/_INBOX", "/other", "/top.txt", "/_INBOX/a.txt", "/other/o.txt"),
                 second.items.map { it.path }.toSet(),
+                counts,
             )
-            assertTrue(second.complete)
-            assertEquals(
-                wideAfterFirst,
-                accountWide.get(),
-                "the second gather skipped the doomed account-wide attempt and walked straight away",
-            )
-            assertEquals(
-                cursorAfterFirst,
-                cursorWide.get(),
-                "the second gather skipped the cursor listing too: both are account-wide listings",
-            )
+            assertTrue(second.complete, counts)
+            assertEquals(wideAfterFirst, wideAfterSecond, "the second gather skipped the offset listing ($counts)")
+            assertEquals(cursorAfterFirst, cursorAfterSecond, "the second gather skipped the cursor listing ($counts)")
+        } finally {
+            p.close()
+            engine.close()
         }
+    }
 
     // The window belongs to full gathers. An incremental poll is one cheap updatedAt-filtered query, and walking the whole
     // tree in its place costs a full enumeration: a failed full gather must not push the poll after it into one, and a
