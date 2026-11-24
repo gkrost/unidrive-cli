@@ -201,6 +201,12 @@ class DaemonRuntime(
      */
     internal var vault: DaemonVault? = null
 
+    /** gkrost/unidrive-cli#860: writes a new scope to the profile's `sync_path`; null = `scope.set` answers `wrong_mode`. */
+    internal var scopeConfig: ((List<String>) -> Unit)? = null
+
+    // gkrost/unidrive-cli#860: the hold of the row-adding hydration verbs across a live scope change (ScopeWriteGate).
+    private val scopeWriteGate = org.krost.unidrive.engine.ScopeWriteGate()
+
     private var lock: ProcessLock? = null
     private var db: StateDatabase? = null
 
@@ -576,7 +582,7 @@ class DaemonRuntime(
                     // The hydration layer is built above whenever mountMode holds.
                     val ipc = requireNotNull(hydrationIpc) { "mount mode without a hydration layer" }
                     server.registerHandler(verb) { connId, json ->
-                        val reply = ipc.handle(connectionId = connId, jsonRequest = json)
+                        val reply = scopeWriteGate.around(verb) { ipc.handle(connectionId = connId, jsonRequest = json) } // #860: held across a scope change
                         // A READ-scope subscribe (an observer such as a status UI) never starts the enumerate:
                         // observing must not scan the remote. archive#657
                         if (verb == "hydration.subscribe" && isOkReplyLine(reply)) {
@@ -752,9 +758,11 @@ class DaemonRuntime(
                 // hosting contract before it sends a verb the profile refuses (additive, read-only). Fixed for the run, so
                 // rendered once here, not at every status request (gkrost/unidrive-cli#442).
                 val modeJson = ndjsonString(profileMode.wireName)
+                // gkrost/unidrive-cli#860: scope.get / scope.set; a mount daemon swaps its scope live, a mirror's stays as started.
+                val scopeRpc = registerScopeVerbs(server, engine.mountWiring.takeIf { mountMode }, scopeWriteGate, syncPaths, scopeConfig, cloud, { trash.contains(it) || backups.contains(it) || viewNamespaces.contains(it) }, { event -> runCatching { server.emit(serialiseHydrationEvent(event)) }; hydrationIpc?.dispatchEvent(event) }, serveScope, if (mountMode) ({ enumerateHandler.runGuarded(reset = false) }) else null)
                 // The history verbs' capabilities (gkrost/unidrive-cli#848) serve only where a history is open.
                 val capabilitiesJson =
-                    daemonCapabilitiesJson(profileMode, hydration != null, engine.uploadIgnore != null, viewNamespaces, shareCapable, historyOpen = transferHistory != null, vaultUnlockable = vault != null)
+                    daemonCapabilitiesJson(profileMode, hydration != null, engine.uploadIgnore != null, viewNamespaces, shareCapable, historyOpen = transferHistory != null, vaultUnlockable = vault != null, scopeSettable = scopeRpc.isSettable)
 
                 // daemon.status verb (spec §4.3). protocol_version is the
                 // additive cross-repo handshake field (IPC_PROTOCOL_VERSION):
@@ -777,9 +785,8 @@ class DaemonRuntime(
                     val refreshInFlight = refreshHandler.isInFlight()
                     val refreshJobId = refreshHandler.inFlightJobId()
                     val jobIdJson = if (refreshJobId != null) "\"$refreshJobId\"" else "null"
-                    // sync_paths: the effective scope (sync_path entries the daemon was started
-                    // with; empty = whole drive). Additive field, read-only over IPC.
-                    val syncPathsJson = syncPaths.joinToString(",", "[", "]") { ndjsonString(it) }
+                    // sync_paths: the effective scope (the sync_path entries, as scope.set last changed them; empty = whole drive).
+                    val syncPathsJson = scopeRpc.included().joinToString(",", "[", "]") { ndjsonString(it) }
                     val providerJson = ndjsonString(provider.id)
                     val providerNameJson = ndjsonString(provider.displayName)
                     val enumerationStatus = mount.enumerationStatus()
@@ -1200,7 +1207,7 @@ class DaemonRuntime(
         // on a breaking change and engine_version does not order dev builds. IpcContractLevelTest pins the IPC surface
         // of each level and fails when the surface changes without a raise. 8 (gkrost/unidrive-cli#851) shipped on main;
         // the history verbs (gkrost/unidrive-cli#848, merged here at their own 8) are the raise to 9 on top of it.
-        const val IPC_CONTRACT_LEVEL: Int = 11
+        const val IPC_CONTRACT_LEVEL: Int = 12
 
         /**
          * Whether a successful `hydration.subscribe` is followed by the one guarded enumerate: only for a

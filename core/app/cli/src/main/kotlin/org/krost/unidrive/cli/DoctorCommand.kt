@@ -64,6 +64,7 @@ import java.time.ZoneOffset
     description = ["Read-only diagnostic: drift, staleness, destructive-activity, scope, hydration"],
     mixinStandardHelpOptions = true,
 )
+@Suppress("TooManyFunctions") // one command, one function per diagnostic section
 class DoctorCommand : Runnable {
     @ParentCommand
     lateinit var parent: Main

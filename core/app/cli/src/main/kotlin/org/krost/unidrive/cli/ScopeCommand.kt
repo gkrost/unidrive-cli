@@ -229,7 +229,7 @@ class ScopeCommand {
 }
 
 /** The config.toml side of `scope set` / `scope clear`. */
-private object ScopeConfig {
+internal object ScopeConfig {
     fun readProfile(
         configPath: Path,
         name: String,

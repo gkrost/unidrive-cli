@@ -59,7 +59,7 @@ internal class AuthLogoutRpcHandler(
                 handleLocked(jsonRequest)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (@Suppress("TooGenericExceptionCaught") e: Exception) { // whatever the cleanup throws is answered as internal_error
                 log.warn("auth.logout: cleanup failed ({})", e.javaClass.simpleName)
                 lifecycleErrorJson(LifecycleError("internal_error", "unexpected failure: ${e.javaClass.simpleName}")).toString()
             }

@@ -111,6 +111,7 @@ class MountCommand : Runnable {
     /** What the daemon's own status check found after the co-daemon exited. */
     enum class DaemonStatus { ANSWERING, SOCKET_NOT_ANSWERING, NOT_RUNNING }
 
+    @Suppress("TooManyFunctions") // the co-daemon launch helpers, kept together and unit-tested through the companion
     companion object {
         const val EX_CONFIG: Int = 78
         const val EX_USAGE: Int = 64

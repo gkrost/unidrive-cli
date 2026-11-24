@@ -156,7 +156,7 @@ class S3ProviderTest {
             assertEquals(listOf(bytes.size.toLong(), bytes.size.toLong()), progress.takeLast(2))
             assertEquals("1770091506.123000000", fake.objects.getValue("big.bin").meta["mtime"])
             assertEquals(0, fake.openUploads)
-            assertTrue(Files.list(dir.resolve("s3-uploads")).use { it.count() } == 0L)
+            assertTrue(MultipartStore(dir.resolve("s3-uploads")).all().isEmpty())
         }
 
     @Test
