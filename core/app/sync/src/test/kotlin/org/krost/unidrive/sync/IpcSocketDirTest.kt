@@ -143,7 +143,7 @@ class IpcSocketDirTest {
         Files.setPosixFilePermissions(runDir, PosixFilePermissions.fromString("rwxr-xr-x"))
         assertEquals(fallback, IpcSocketDir.posixSocketDirectory(tmp, me, runDir), "mode 755")
 
-        assertEquals(fallback, IpcSocketDir.posixSocketDirectory(tmp, uid, runDir, FakeOps(existing = good.copy(ownerUid = 0))), "owner 0")
+        assertEquals(fallback, IpcSocketDir.posixSocketDirectory(tmp, me, runDir, FakeOps(existing = good.copy(ownerUid = 0))), "owner 0")
 
         Files.setPosixFilePermissions(runDir, PosixFilePermissions.fromString("rwx------"))
         val link = Files.createSymbolicLink(tmp.resolve("run-link"), runDir)
