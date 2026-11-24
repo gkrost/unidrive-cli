@@ -826,7 +826,8 @@ noticed at once, not when the download ends. Requests the client sends while one
   path, the cache copy still exists and the provider has not refused these exact bytes. Terminal outcomes (`conflict`,
   a refused name, a permanent refusal such as `parent_gone`) get no rounds. A client's own `open_write` of the path
   resets the count, a landed upload ends it, and so does the daemon's `history.retry` verb, which starts a
-  round in the place of the pending one (unidrive-daemon-design.md section 4.8). The timer lives in the daemon's memory: a restart drops it and replays the
+  round in the place of the pending one (unidrive-daemon-design.md section 4.8). The host's own operations reach the
+  history through `history.report` (same section): it adds one row with its source named and starts no transfer. The timer lives in the daemon's memory: a restart drops it and replays the
   row through the start-up replay below, as before. While a path waits for a round the daemon keeps no `retrying` or
   `next_try_at_ms` record (those describe the 2 s and 10 s backoff only): it is `pending` and, when never uploaded,
   `failed`. Each round runs the ladder of attempts again.
@@ -900,6 +901,8 @@ noticed at once, not when the download ends. Requests the client sends while one
 | `invalid_path` | every verb with a path | a `.` or `..` segment, a control character, an empty segment other than that of a leading or trailing slash, or a segment over 255 UTF-16 units; a new name the host's file system cannot hold (create, mkdir, rename); a path whose cache file would lie outside the profile's hydration cache folder. Refused before anything is changed |
 | `invalid_handle_id` | open_read, open_write, open_write_begin, create | the client named a handle id with the prefix `dh-` of the ids the daemon issues (section 2); nothing was opened |
 | `unknown_view` | view.page | the profile shows no view of that kind (section 4.2) |
+| `unknown_source` | history.report | the `source` is not on the daemon's allow-list (unidrive-daemon-design.md section 4.8); nothing was written |
+| `report_not_recorded` | history.report | the report was valid but the history could not put the row on file (a full queue or a failed write); nothing is recorded and the host may send it again |
 | `invalid_since_seq` / `missing_run_id` | subscribe | a `since_seq` that is not a non-negative whole number, or one without the `run_id` it was read in (section 4); nothing was subscribed |
 | `missing_kind` / `invalid_offset` / `invalid_limit` | view.page | no `kind`, or an `offset` or `limit` that is not a whole number in its range (section 4.2); the provider was not asked |
 | `unknown_verb` / `missing_verb` | any | request-level refusal (startup-safe) |

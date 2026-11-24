@@ -104,7 +104,7 @@ class IpcContractCorpusTest {
             // gkrost/unidrive-cli#860: before any enumeration, so the effect of the narrowing is the empty state's.
             "scope.get", "scope.set",
             "metrics.query", "sync.subscribe", "refresh.run", "sync.enumerate",
-            "history.list", "history.subscribe", "history.retry", "ignore.explain", "share.create",
+            "history.list", "history.subscribe", "history.retry", "history.report", "ignore.explain", "share.create",
             // auth.logout deletes the corpus daemon's (absent) credential files and is idempotent; it must
             // run before daemon.shutdown, which stops the daemon the other verbs are replayed against.
             "auth.logout",

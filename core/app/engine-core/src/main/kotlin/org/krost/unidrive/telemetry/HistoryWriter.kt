@@ -62,6 +62,12 @@ internal class HistoryWriter(
         val state = AtomicInteger(PENDING)
     }
 
+    private class RecordHostReport(
+        val row: TransferRow,
+        val errorFingerprint: String,
+        val done: CompletableFuture<HostReportWrite>,
+    ) : Op<TransferRow>
+
     // Terminal snapshots a full queue could not take: the writer drains this every turn. A row that
     // lost its final snapshot stands `running` in the file for ever, and the retention skips running
     // rows, so the loss would accumulate.
@@ -158,6 +164,13 @@ internal class HistoryWriter(
         return if (answer == FRESH) RetryOutcomeWrite.Recorded else RetryOutcomeWrite.Existing(answer)
     }
 
+    fun recordHostReport(
+        row: TransferRow,
+        errorFingerprint: String,
+        timeoutMs: Long,
+    ): HostReportWrite =
+        controlWithResult<HostReportWrite>(timeoutMs) { RecordHostReport(row, errorFingerprint, it) } ?: HostReportWrite.NOT_RECORDED
+
     fun flush(timeoutMs: Long): Boolean = control(timeoutMs) { Op.Barrier(it) }
 
     fun pruneNow() {
@@ -188,6 +201,7 @@ internal class HistoryWriter(
     }
 
     override fun onExtraOp(op: Op<TransferRow>) {
+        if (op is RecordHostReport) writeHostReport(op)
         if (op is Replace) {
             writePending()
             replaceRow(op.row, op.previousId)
@@ -202,6 +216,27 @@ internal class HistoryWriter(
                 log.warn("History for {}: the retry outcome could not be recorded ({})", profile, HistorySanitizer.message(e.message))
                 op.done.completeExceptionally(e)
             }
+        }
+    }
+
+    @Suppress("TooGenericExceptionCaught") // history is never a correctness dependency
+    private fun writeHostReport(op: RecordHostReport) {
+        writePending()
+        try {
+            val result = store.recordHostReport(op.row, op.errorFingerprint)
+            if (result == HostReportWrite.RECORDED) {
+                written.incrementAndGet()
+                writtenSincePrune++
+                tail.publish(listOf(op.row))
+                recordGapIfAny()
+            }
+            op.done.complete(result)
+        } catch (e: SQLException) {
+            writeFailed(1, e)
+            op.done.complete(HostReportWrite.NOT_RECORDED)
+        } catch (e: RuntimeException) {
+            writeFailed(1, e)
+            op.done.complete(HostReportWrite.NOT_RECORDED)
         }
     }
 

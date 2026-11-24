@@ -677,6 +677,21 @@ class HistoryRpcHandlerTest {
     }
 
     @Test
+    fun `a later host report does not supersede a failed upload`() = runBlocking {
+        val engine = ScriptedRetryEngine { _, _, _ -> HistoryRetryOutcome.Admitted("new-row-id") }
+        val h = openWithRetry(engine)
+        val failedId = seedFailedUpload("/docs/f.txt")
+        val report = obj(h.report(
+            """{"verb":"history.report","request_id":"00000000-0000-0000-0000-000000000001","source":"windows-host","operation":"pin","path":"/docs/f.txt","result":"success","finished_at_ms":20000}""",
+        ))
+        assertTrue(report.getValue("ok").jsonPrimitive.boolean)
+
+        val reply = obj(h.retry(retry(failedId, "00000000-0000-0000-0000-000000000002")))
+        assertTrue(reply.getValue("accepted").jsonPrimitive.boolean)
+        assertEquals(failedId, engine.calls.single().second)
+    }
+
+    @Test
     fun `a row a later row of its path superseded is not the newest and is not retryable`() = runBlocking {
         val engine = ScriptedRetryEngine { _, _, _ -> HistoryRetryOutcome.Admitted("new-row-id") }
         val h = openWithRetry(engine)

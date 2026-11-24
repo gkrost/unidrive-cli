@@ -91,7 +91,9 @@ internal class TelemetryStore private constructor(
                     old_hash      TEXT,
                     new_hash      TEXT,
                     max_attempts  INTEGER,
-                    next_try_at_ms INTEGER
+                    next_try_at_ms INTEGER,
+                    source        TEXT,
+                    operation     TEXT
                 ) WITHOUT ROWID
                 """.trimIndent(),
             )
@@ -125,8 +127,8 @@ internal class TelemetryStore private constructor(
             c.createStatement().use { st ->
                 st.executeQuery("PRAGMA table_info(transfers)").use { rs -> buildSet { while (rs.next()) add(rs.getString("name")) } }
             }
-        for (column in ADDED_TRANSFER_COLUMNS) {
-            if (column !in have) c.createStatement().use { it.execute("ALTER TABLE transfers ADD COLUMN $column INTEGER") }
+        for ((column, type) in ADDED_TRANSFER_COLUMNS) {
+            if (column !in have) c.createStatement().use { it.execute("ALTER TABLE transfers ADD COLUMN $column $type") }
         }
     }
 
@@ -166,6 +168,30 @@ internal class TelemetryStore private constructor(
             runCatching { c.autoCommit = true }
         }
     }
+
+    @Synchronized
+    fun recordHostReport(row: TransferRow, errorFingerprint: String): HostReportWrite =
+        inTransaction { c ->
+            val inserted = c.prepareStatement(INSERT_HOST_REPORT).use { ps ->
+                TransferRowCodec.bind(ps, row)
+                ps.setString(22, errorFingerprint)
+                ps.executeUpdate() == 1
+            }
+            if (inserted) return@inTransaction HostReportWrite.RECORDED
+            c.prepareStatement("SELECT * FROM transfers WHERE operation_id = ?").use { ps ->
+                ps.setString(1, row.operationId)
+                ps.executeQuery().use { rs ->
+                    check(rs.next()) { "conflicting host report row disappeared inside its transaction" }
+                    val storedFingerprint = rs.getString("report_error_fingerprint")
+                    // Older host rows carry only the sanitized form of the error.
+                    if (TransferRowCodec.read(rs) == row && (storedFingerprint == null || storedFingerprint == errorFingerprint)) {
+                        HostReportWrite.REPLAYED
+                    } else {
+                        HostReportWrite.CONFLICT
+                    }
+                }
+            }
+        }
 
     @Synchronized
     fun replace(row: TransferRow, previousId: String) {
@@ -368,12 +394,13 @@ internal class TelemetryStore private constructor(
         return removed
     }
 
-    private fun inTransaction(block: (Connection) -> Unit) {
+    private fun <T> inTransaction(block: (Connection) -> T): T {
         val c = connection()
         c.autoCommit = false
         try {
-            block(c)
+            val result = block(c)
             c.commit()
+            return result
         } catch (e: Throwable) {
             // Throwable, not Exception: the finally below turns auto-commit back on, and JDBC commits the
             // open transaction then, so a RuntimeException escaping here would commit what was written so far.
@@ -462,13 +489,18 @@ internal class TelemetryStore private constructor(
         private val SETTINGS = SqliteConnections.Settings(synchronous = SqliteConnections.Synchronous.NORMAL)
 
         /** Columns the transfers table gained after its first shape (see [addMissingTransferColumns]). */
-        private val ADDED_TRANSFER_COLUMNS = listOf("max_attempts", "next_try_at_ms")
+        private val ADDED_TRANSFER_COLUMNS =
+            listOf("max_attempts" to "INTEGER", "next_try_at_ms" to "INTEGER", "source" to "TEXT", "operation" to "TEXT", "report_error_fingerprint" to "TEXT")
 
         private const val COLUMNS =
             "operation_id, profile, direction, path, queued_at, started_at, finished_at, queue_wait_ms, transfer_ms, " +
-                "bytes_total, bytes_done, result, error_class, error_message, attempts, old_hash, new_hash, max_attempts, next_try_at_ms"
+                "bytes_total, bytes_done, result, error_class, error_message, attempts, old_hash, new_hash, max_attempts, next_try_at_ms, source, operation"
+        private val INSERT_HOST_REPORT =
+            "INSERT INTO transfers($COLUMNS, report_error_fingerprint) VALUES (${List(22) { "?" }.joinToString(",")}) " +
+                "ON CONFLICT(operation_id) DO NOTHING"
+
         private val UPSERT =
-            "INSERT INTO transfers($COLUMNS) VALUES (${List(19) { "?" }.joinToString(",")}) " +
+            "INSERT INTO transfers($COLUMNS) VALUES (${List(21) { "?" }.joinToString(",")}) " +
                 "ON CONFLICT(operation_id) DO UPDATE SET " +
                 COLUMNS.split(", ").drop(1).joinToString(", ") { "$it = excluded.$it" }
 
@@ -523,6 +555,8 @@ internal object TransferRowCodec {
         ps.setString(17, r.newHash)
         ps.setObject(18, r.maxAttempts)
         ps.setObject(19, r.nextTryAtMs)
+        ps.setString(20, r.source)
+        ps.setString(21, r.operation)
     }
 
     fun read(rs: ResultSet): TransferRow {
@@ -547,6 +581,8 @@ internal object TransferRowCodec {
             newHash = rs.getString("new_hash"),
             maxAttempts = long("max_attempts")?.toInt(),
             nextTryAtMs = long("next_try_at_ms"),
+            source = rs.getString("source"),
+            operation = rs.getString("operation"),
         )
     }
 }

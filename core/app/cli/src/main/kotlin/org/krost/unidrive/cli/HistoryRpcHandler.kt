@@ -83,6 +83,8 @@ internal class HistoryRpcHandler(
      * daemon, or a mount whose history did not open — and the verb answers `retry_unavailable`.
      */
     private val retry: HistoryRetryEngine? = null,
+    // The instant `history.report` checks a reported finish against (a host clock far ahead is refused).
+    private val clock: () -> Long = System::currentTimeMillis,
 ) : AutoCloseable {
     private class Tail(
         val seq: Long,
@@ -136,6 +138,7 @@ internal class HistoryRpcHandler(
             reply
         }
         server.registerHandler("history.retry") { _, json -> retry(json) }
+        server.registerHandler("history.report") { _, json -> report(json) }
         server.registerConnectionCloseListener { connId -> onConnectionClosed(connId) }
         // A tail subscriber sits idle between rows: it is not closed for that (no history, no stream, no exemption).
         if (history != null) server.registerIdleExemptVerbs(listOf("history.subscribe"))
@@ -252,6 +255,23 @@ internal class HistoryRpcHandler(
                 }
             } catch (e: SQLException) {
                 log.warn("history.retry: reading telemetry.db failed ({}: {})", e.javaClass.simpleName, e.message)
+                dropReader()
+                unavailable(READ_FAILED)
+            }
+        }
+    }
+
+    /**
+     * `history.report` (gkrost/unidrive-cli#848 item 3): the mount host reports an operation of its own, validated and
+     * written as one row with its source named ([HistoryReportVerb]). No history at all answers like the list verbs do.
+     */
+    suspend fun report(jsonRequest: String): String {
+        val h = history ?: return unavailable(unavailableReason)
+        return withContext(readDispatcher) {
+            try {
+                HistoryReportVerb.answer(h, clock(), jsonRequest)
+            } catch (e: SQLException) {
+                log.warn("history.report: reading telemetry.db failed ({}: {})", e.javaClass.simpleName, e.message)
                 dropReader()
                 unavailable(READ_FAILED)
             }
@@ -414,6 +434,9 @@ internal class HistoryRpcHandler(
                 put("attempts", row.attempts?.let { JsonPrimitive(it) } ?: JsonNull)
                 put("max_attempts", row.maxAttempts?.let { JsonPrimitive(it) } ?: JsonNull)
                 put("next_try_at_ms", row.nextTryAtMs.orNull())
+                // Only a row a host reported has them (gkrost/unidrive-cli#848): an engine row carries neither member.
+                row.source?.let { put("source", JsonPrimitive(it)) }
+                row.operation?.let { put("operation", JsonPrimitive(it)) }
             }
 
         private fun Long?.orNull(): JsonElement = this?.let { JsonPrimitive(it) } ?: JsonNull

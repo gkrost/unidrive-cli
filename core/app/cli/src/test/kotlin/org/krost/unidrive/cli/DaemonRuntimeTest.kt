@@ -491,6 +491,7 @@ class DaemonRuntimeTest {
                     """{"verb":"history.list"}""",
                     """{"verb":"history.subscribe"}""",
                     """{"verb":"history.retry","operation_id":"00000000-0000-0000-0000-000000000001","request_id":"00000000-0000-0000-0000-000000000001"}""", // gkrost/unidrive-cli#848: answered (refused on the empty state), never unknown_verb
+                    """{"verb":"history.report"}""", // gkrost/unidrive-cli#848: answered (invalid_request), never unknown_verb
                     """{"verb":"refresh.run"}""",
                     """{"verb":"sync.enumerate"}""",
                     """{"verb":"metrics.query"}""",

@@ -90,7 +90,7 @@ Classified by the exact wire string; a verb that is not listed is `admin` (defau
 | Class | Verbs |
 |---|---|
 | read | `hydration.close_read`, `daemon.status`, `hydration.list`, `hydration.stat`, `hydration.locate`, `hydration.handle_status`, `hydration.last_synced`, `hydration.subscribe`, `sync.subscribe`, `hydration.open_read`, `history.list`, `history.subscribe`, `metrics.query`, `ignore.explain`, `view.page`, `scope.get` |
-| write | `hydration.hydrate`, `hydration.dehydrate`, `hydration.create`, `hydration.open_write`, `hydration.open_write_begin`, `hydration.close_handle`, `hydration.mkdir`, `hydration.unlink`, `hydration.rmdir`, `hydration.rename`, `hydration.cancel`, `sync.enumerate`, `hydration.matches_local`, `hydration.refuse_name`, `share.create`, `history.retry` |
+| write | `hydration.hydrate`, `hydration.dehydrate`, `hydration.create`, `hydration.open_write`, `hydration.open_write_begin`, `hydration.close_handle`, `hydration.mkdir`, `hydration.unlink`, `hydration.rmdir`, `hydration.rename`, `hydration.cancel`, `sync.enumerate`, `hydration.matches_local`, `hydration.refuse_name`, `share.create`, `history.retry`, `history.report` |
 | admin | `daemon.shutdown`, `daemon.pause`, `daemon.resume`, `refresh.run`, `auth.logout`, `auth.begin`, `auth.complete`, `auth.login`, `auth.check`, `vault.unlock`, `vault.lock`, `scope.set` |
 
 Scope `full` may call every verb; scope `read` only the read class. A refused request gets

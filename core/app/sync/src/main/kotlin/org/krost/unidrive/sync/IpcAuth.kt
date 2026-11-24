@@ -228,6 +228,8 @@ class IpcAuth(
                     // history.retry (gkrost/unidrive-cli#848): queues one upload of one path on the caller's say-so —
                     // a write the read scope must not reach, like the open_write it takes its turn with.
                     "history.retry",
+                    // history.report (gkrost/unidrive-cli#848): the host writes one row of the history on its say-so.
+                    "history.report",
                 ).forEach { put(it, VerbClass.WRITE) }
                 listOf("daemon.shutdown", "daemon.pause", "daemon.resume", "refresh.run", "auth.logout").forEach { put(it, VerbClass.ADMIN) }
                 // The sign-in steps carry a password or a code in their body: owner-only (full scope), like auth.logout. auth.check carries nothing
