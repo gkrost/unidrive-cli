@@ -346,6 +346,40 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  internxt-walk-repetition:
+    name: Internxt walk repetition (advisory)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Repeat the quarantined walk fallback test
+        working-directory: core
+        env:
+          UNIDRIVE_REPEAT_INTERNXT_WALK: "true"
+        run: ./gradlew :providers:internxt:flakyTest --tests '*InternxtScopedDeltaTest' flakyReport --continue --no-daemon
+
+      - name: Upload walk repetition report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: internxt-walk-repetition
+          path: |
+            core/providers/internxt/build/reports/tests/flakyTest
+            core/providers/internxt/build/test-results/flakyTest
+          if-no-files-found: ignore
+          retention-days: 14
+
   # Builds the packaged distribution's jlink runtime image (:app:cli:runtimeImage) and boots the
   # packaged launcher once against it, on the platforms a package ships for — Linux and Windows.
   # The task itself repeats the jdeps module-set guard of RuntimeModulesTest, so a drifted module
