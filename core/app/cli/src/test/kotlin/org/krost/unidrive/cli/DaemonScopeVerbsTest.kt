@@ -1,5 +1,6 @@
 package org.krost.unidrive.cli
 
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -27,6 +28,8 @@ import java.nio.file.Path
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -146,10 +149,11 @@ class DaemonScopeVerbsTest {
 
     private suspend fun <T> daemon(
         mode: ProfileMode = ProfileMode.MOUNT,
+        persistScope: (List<String>) -> Unit = { persisted += it },
         body: suspend () -> T,
     ): T =
         runBlocking {
-            val runtime = runtime(mode)
+            val runtime = runtime(mode).also { it.scopeConfig = persistScope }
             val job = launch { runtime.start() }
             awaitDaemonSocket(socketPath, job)
             try {
@@ -157,6 +161,44 @@ class DaemonScopeVerbsTest {
             } finally {
                 runtime.close()
                 job.join()
+            }
+        }
+
+    @Test
+    fun scope_reads_keep_the_committed_scope_while_persistence_is_pending_and_after_it_fails() =
+        runBlocking {
+            val persisting = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val release = CountDownLatch(1)
+            daemon(persistScope = {
+                persisting.complete(Unit)
+                check(release.await(10, TimeUnit.SECONDS))
+                throw java.io.IOException("cannot write config")
+            }) {
+                val before = ask("""{"verb":"scope.get"}""")
+                val setting = async {
+                    ask("""{"verb":"scope.set","included":["/A"],"version":"${before.str("version")}"}""")
+                }
+                try {
+                    kotlinx.coroutines.withTimeout(5_000) { persisting.await() }
+                    assertEquals(before, ask("""{"verb":"scope.get"}"""))
+                    assertEquals(before.strings("included"), ask("""{"verb":"daemon.status"}""").strings("sync_paths"))
+                } finally {
+                    release.countDown()
+                }
+                assertEquals("write_failed", setting.await().str("error"))
+                assertEquals(before, ask("""{"verb":"scope.get"}"""))
+                assertEquals(before.strings("included"), ask("""{"verb":"daemon.status"}""").strings("sync_paths"))
+            }
+        }
+
+    @Test
+    fun excluded_folders_do_not_include_ancestors_of_a_nested_scope() =
+        runBlocking {
+            daemon {
+                val before = ask("""{"verb":"scope.get"}""")
+                val set = ask("""{"verb":"scope.set","included":["/A/nested"],"version":"${before.str("version")}"}""")
+                assertTrue(set.ok(), set.toString())
+                assertEquals(listOf("/B", "/C"), ask("""{"verb":"scope.get","list_excluded":true}""").strings("excluded"))
             }
         }
 

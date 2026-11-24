@@ -68,11 +68,15 @@ internal class ScopeRpcHandler(
     private val listing = Mutex()
     private var rootFolders: Pair<Long, List<String>>? = null
 
+    // The guard may tentatively narrow during a swap. Both IPC read paths use the last accepted scope.
+    @Volatile
+    private var committedScope = control?.current() ?: fixedScope
+
     /** Whether `scope.set` changes the scope: `daemon.status` lists `scope.set` only then. */
     val isSettable: Boolean get() = control != null
 
     /** The scope the daemon tracks now (`daemon.status` `sync_paths`). */
-    fun included(): List<String> = control?.current() ?: fixedScope
+    fun included(): List<String> = committedScope
 
     suspend fun get(json: String): String {
         val body = json.asJsonObjectOrNull() ?: JsonObject(emptyMap())
@@ -91,7 +95,8 @@ internal class ScopeRpcHandler(
                     log.warn("scope.get: the cloud root could not be listed: {}", e.javaClass.simpleName)
                     return error("listing_failed")
                 }
-                put("excluded", strings(folders.filter { !SyncScope.contains(it, scope) }))
+                val ancestors = SyncScope.ancestors(scope)
+                put("excluded", strings(folders.filter { it !in ancestors && !SyncScope.contains(it, scope) }))
             }
         }.toString()
     }
@@ -109,7 +114,7 @@ internal class ScopeRpcHandler(
             }
         val swap = control ?: return error("wrong_mode")
         return oneAtATime.withLock {
-            val current = swap.current()
+            val current = included()
             val currentVersion = ScopeSwap.versionOf(current)
             if (requestedVersion != currentVersion) {
                 return@withLock buildJsonObject {
@@ -137,6 +142,7 @@ internal class ScopeRpcHandler(
                 ScopeSwap.Outcome.Busy -> error("busy")
                 is ScopeSwap.Outcome.Refused -> refused(outcome.effect)
                 is ScopeSwap.Outcome.Applied -> {
+                    committedScope = outcome.scope
                     val version = ScopeSwap.versionOf(outcome.scope)
                     publish(HydrationEvent.ScopeChanged(outcome.scope, version))
                     if (outcome.effect.reEnumerate) afterWiden()
