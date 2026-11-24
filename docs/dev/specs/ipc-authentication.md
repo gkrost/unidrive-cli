@@ -214,3 +214,7 @@ vectors and the refusal shapes over a live socket (one connection per file).
   engine that speaks protocol 2.
 - The Linux co-daemon is started by `unidrive mount` with the socket path only; it finds the token in the
   profile's config folder (or a later argument agreed with that repository).
+
+### Handle lifetime (contract level 11)
+
+Each connection can hold 1,024 distinct handle IDs, including opens in progress. A new ID beyond that limit returns `too_many_handles`. Release a read handle with `hydration.close_read` and its `handle_id` on the original connection. This idempotent READ verb ignores unknown IDs and write handles. FULL clients can still use `hydration.close_handle` with pooled connections.

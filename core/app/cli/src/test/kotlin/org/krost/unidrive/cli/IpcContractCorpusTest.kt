@@ -1659,6 +1659,7 @@ class IpcContractCorpusTest {
         }
 
         override suspend fun openForRead(connectionId: String, handleId: String, path: String): OpenResult = when {
+            path == "/at-cap" -> OpenResult.Failed(HydrationError.Generic("too_many_handles"))
             path.startsWith("/missing") -> OpenResult.Failed(HydrationError.UnknownPath)
             // A cloud download while the daemon is paused: refused at once (archive#778).
             path.startsWith("/paused") -> OpenResult.Failed(HydrationError.Paused)

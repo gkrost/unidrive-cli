@@ -20,3 +20,5 @@
 {"ok":false,"error":"remote_incomplete: got 298844160 of 360951317 bytes"}
 {"verb":"hydration.open_read","handle_id":"h-1","path":"/cancelled/report.txt"}
 {"ok":false,"error":"cancelled"}
+{"verb":"hydration.open_read","handle_id":"at-cap","path":"/at-cap"}
+{"ok":false,"error":"too_many_handles"}

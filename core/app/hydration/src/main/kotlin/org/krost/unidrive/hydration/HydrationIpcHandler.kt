@@ -521,6 +521,7 @@ class HydrationIpcHandler(
             "hydration.open_read",
             "hydration.open_write",
             "hydration.open_write_begin",
+            "hydration.close_read",
             "hydration.close_handle",
             "hydration.hydrate",
             "hydration.dehydrate",
@@ -647,9 +648,9 @@ class HydrationIpcHandler(
                     is OpenResult.Failed -> reply(ok = false, error = r.error.message)
                 }
             }
-            "hydration.close_handle" -> {
+            "hydration.close_read", "hydration.close_handle" -> {
                 val handleId = request.string("handle_id") ?: return reply(ok = false, error = "missing_handle_id")
-                hydration.closeHandle(connectionId, handleId)
+                if (verb == "hydration.close_read") hydration.closeReadHandle(connectionId, handleId) else hydration.closeHandle(connectionId, handleId)
                 reply(ok = true)
             }
             "hydration.hydrate" -> {
