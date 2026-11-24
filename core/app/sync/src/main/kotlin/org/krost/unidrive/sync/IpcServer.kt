@@ -52,6 +52,12 @@ class IpcServer(
     // gkrost/unidrive-cli#794). Not a constructor parameter: the tests set it before start(), like the wait above.
     internal var socketWatchIntervalMs: Long = SOCKET_WATCH_INTERVAL_MS
 
+    // gkrost/unidrive-cli#926 S2: what the watcher takes for the socket file's identity; a test stands in for a file system that reuses an inode.
+    internal var socketFileIdentity: (Path) -> Any? = IpcSocketWatcher::fileIdentity
+
+    // Connections the accept loops took, refused ones included: the watcher's proof that the path still leads here.
+    private val accepted = java.util.concurrent.atomic.AtomicLong()
+
     // Captured at construction so a later companion-object change can't accidentally
     // re-read the env var mid-flight. Multiply once into nanos so writeNonBlocking
     // does no per-call arithmetic.
@@ -369,6 +375,7 @@ class IpcServer(
                 while (isActive) {
                     try {
                         val sc = listener.accept()
+                        accepted.incrementAndGet()
                         if (clients.size >= maxClients) {
                             log.warn("IPC: max clients ({}) reached, refusing connection", maxClients)
                             refuse(sc, scope, transport)
@@ -467,7 +474,7 @@ class IpcServer(
                 }
             }
         acceptJob = launchAcceptLoop(server)
-        val watcher = IpcSocketWatcher(socketPath, socketWatchIntervalMs, { closing }) { installListener(it) { next -> launchAcceptLoop(next) } }
+        val watcher = IpcSocketWatcher(socketPath, socketWatchIntervalMs, { closing }, socketFileIdentity, accepted::get) { installListener(it) { next -> launchAcceptLoop(next) } }
         socketWatcher = watcher
         if (socketWatchIntervalMs > 0) socketWatchJob = scope.launch(transport) { watcher.run() }
 

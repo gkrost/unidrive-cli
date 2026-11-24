@@ -180,6 +180,33 @@ class IpcServerSocketWatchTest {
             }
         }
 
+    // A file system can give the replacement the inode the deleted file freed (CI's did): the same dev+ino, another listener.
+    @Test
+    fun watcher_rebinds_when_a_replacement_reuses_the_inode() =
+        runBlocking(Dispatchers.IO) {
+            val scope = CoroutineScope(coroutineContext + SupervisorJob())
+            val foreign = java.nio.channels.ServerSocketChannel.open(StandardProtocolFamily.UNIX)
+            try {
+                val socket = base.resolve("d.sock")
+                server =
+                    IpcServer(socket).also {
+                        it.socketWatchIntervalMs = 200
+                        it.socketFileIdentity = { "the same inode" }
+                        it.start(scope)
+                    }
+                assertTrue(answers(socket), "the daemon answers before the swap")
+
+                Files.delete(socket)
+                foreign.bind(UnixDomainSocketAddress.of(socket))
+
+                assertTrue(await { server!!.socketRebinds == 1 }, "the watcher sees that its listener no longer answers there")
+                assertTrue(answers(socket), "our listener serves the name again")
+            } finally {
+                foreign.close()
+                scope.cancel()
+            }
+        }
+
     @Test
     fun `a closed server does not bind its socket again`() =
         runBlocking(Dispatchers.IO) {

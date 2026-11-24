@@ -9,22 +9,17 @@ import java.io.IOException
 import java.net.StandardProtocolFamily
 import java.net.UnixDomainSocketAddress
 import java.nio.channels.ServerSocketChannel
+import java.nio.channels.SocketChannel
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
-
-/** `unix:dev` and `unix:ino` of [path] (not following a link); null where the file system has no `unix` view (Windows). */
-private fun fileIdentity(path: Path): Any? =
-    runCatching {
-        listOf(Files.getAttribute(path, "unix:dev", LinkOption.NOFOLLOW_LINKS), Files.getAttribute(path, "unix:ino", LinkOption.NOFOLLOW_LINKS))
-    }.getOrNull()
 
 /**
  * gkrost/unidrive-cli#794: a daemon binds its socket once, and a cleanup of the temp folder (or anything else that deletes the
  * file) leaves it healthy but unreachable: nothing can connect, a stop through IPC fails, and the daemon says nothing. Every
  * [intervalMs] [run] checks that the socket file is still the one it bound (gkrost/unidrive-cli#926 S2: the same `unix:dev` and
- * `unix:ino` where the file system has them, else that it is there) and, when it is not, checks the folder (making it again
- * if it is gone) and binds the file again; the connections already open are not touched. A failed attempt is reported once per episode
+ * `unix:ino` where the file system has them, and a connect to it reaches this server's [accepted] count) and, when it is not,
+ * checks the folder (making it again if it is gone) and binds the file again; the connections already open are not touched. A failed attempt is reported once per episode
  * and tried again on the next round.
  *
  * The swap of the new listener into the server is [install], which the server does under its own lock and which answers false
@@ -34,8 +29,21 @@ internal class IpcSocketWatcher(
     private val socketPath: Path,
     private val intervalMs: Long,
     private val isClosing: () -> Boolean,
+    private val fileIdentity: (Path) -> Any?,
+    private val accepted: () -> Long,
     private val install: (ServerSocketChannel) -> Boolean,
 ) {
+    companion object {
+        private const val PROBE_WAIT_MS = 2_000L
+        private const val PROBE_POLL_MS = 5L
+
+        /** `unix:dev` and `unix:ino` of [path] (not following a link); null where the file system has no `unix` view (Windows). */
+        fun fileIdentity(path: Path): Any? =
+            runCatching {
+                listOf(Files.getAttribute(path, "unix:dev", LinkOption.NOFOLLOW_LINKS), Files.getAttribute(path, "unix:ino", LinkOption.NOFOLLOW_LINKS))
+            }.getOrNull()
+    }
+
     private val log = LoggerFactory.getLogger(IpcSocketWatcher::class.java)
 
     /** How often the socket file had to be bound again. */
@@ -84,9 +92,25 @@ internal class IpcSocketWatcher(
         }
     }
 
-    private fun isOurs(): Boolean {
+    private suspend fun isOurs(): Boolean {
         if (!Files.exists(socketPath, LinkOption.NOFOLLOW_LINKS)) return false
-        return bound == null || fileIdentity(socketPath) == bound
+        if (bound != null && fileIdentity(socketPath) != bound) return false
+        return leadsHere()
+    }
+
+    // A replacement can get the inode the deleted file freed, so the same identity is not proof enough: a connect to the
+    // path must reach this server's accept loop. Nothing else can make that count move while the path leads elsewhere.
+    private suspend fun leadsHere(): Boolean {
+        val before = accepted()
+        try {
+            SocketChannel.open(UnixDomainSocketAddress.of(socketPath)).use {
+                val deadline = System.nanoTime() + PROBE_WAIT_MS * 1_000_000L
+                while (accepted() == before && System.nanoTime() < deadline) delay(PROBE_POLL_MS)
+            }
+        } catch (_: IOException) {
+            return false
+        }
+        return accepted() != before
     }
 
     /** Binds [socketPath] again with a new listener and hands it to [install]; false when the server was closed first. */
