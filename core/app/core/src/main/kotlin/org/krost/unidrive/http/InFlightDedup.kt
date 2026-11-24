@@ -197,7 +197,7 @@ class InFlightDedup<K : Any, V>(
     ): Any? =
         try {
             withTimeout(joinPatienceMs) { entry.deferred.await() }
-        } catch (e: TimeoutCancellationException) {
+        } catch (_: TimeoutCancellationException) {
             // Our patience, not an outer cancellation: withTimeout's own timeout leaves this coroutine active,
             // an outer withTimeout or job cancellation does not.
             currentCoroutineContext().ensureActive()
