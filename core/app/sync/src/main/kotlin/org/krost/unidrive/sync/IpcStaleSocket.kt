@@ -77,9 +77,11 @@ internal object IpcStaleSocket {
         }
         try {
             Files.move(path, aside, StandardCopyOption.ATOMIC_MOVE)
+        } catch (_: NoSuchFileException) {
+            Files.deleteIfExists(aside)
+            return Outcome.CHANGED
         } catch (e: IOException) {
             Files.deleteIfExists(aside)
-            if (e is NoSuchFileException) return Outcome.CHANGED
             throw e
         }
         val probe = probeRenamedSocket(aside)
