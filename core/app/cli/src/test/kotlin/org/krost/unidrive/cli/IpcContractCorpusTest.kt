@@ -1175,21 +1175,24 @@ class IpcContractCorpusTest {
         try {
             awaitDaemonSocket(socketPath)
 
-            // Each connection is confirmed by a daemon.status reply before the next one opens,
-            // so the daemon has counted it; the first connection past the cap reads the refusal
-            // line instead of the reply.
+            // The slots are filled with authenticated connections (gkrost/unidrive-cli#926 S4: one still in its handshake
+            // does not take a slot); once the handshake itself is refused, a raw connection reads the refusal line.
+            val endpoint = IpcEndpoint(socketPath, tempDir, "contract_profile")
             var refusal: String? = null
             for (attempt in 1..64) {
+                val authed = runCatching { IpcAuthClient.connect(endpoint, IpcAuth.Scope.FULL) }.getOrNull()
+                if (authed != null) {
+                    held += authed
+                    continue
+                }
                 val channel = SocketChannel.open(UnixDomainSocketAddress.of(socketPath))
                 held += channel
                 channel.configureBlocking(false)
                 channel.write(ByteBuffer.wrap(("""{"verb":"daemon.status"}""" + "\n").toByteArray()))
                 val line = readFirstLine(channel, timeoutMs = 5_000)
                 val error = (Json.parseToJsonElement(line) as JsonObject)["error"]
-                if ((error as? JsonPrimitive)?.content == "too_many_clients") {
-                    refusal = line
-                    break
-                }
+                if ((error as? JsonPrimitive)?.content == "too_many_clients") refusal = line
+                break
             }
             assertJsonMatches(
                 expected = Json.parseToJsonElement(expected),

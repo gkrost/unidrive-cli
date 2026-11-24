@@ -4223,6 +4223,8 @@ class HydrationImpl(
         path: String,
     ): String? = uploadSlots.entries.firstOrNull { it.value === slot }?.key?.takeIf { PathNormalizer.nfc(it) != PathNormalizer.nfc(path) }
 
+    override fun holdsHandles(connectionId: String): Boolean = handles.paths[connectionId]?.isNotEmpty() == true
+
     override fun onConnectionClosed(connectionId: String) {
         // gkrost/unidrive-cli#23: its reads and hydrates stop waiting; a download nobody else waits for stops.
         downloads.cancelConnection(connectionId)
