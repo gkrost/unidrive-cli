@@ -37,11 +37,4 @@ internal object IpcClientSlots {
             else -> Admission.Admit
         }
     }
-
-    /** True when the idle timeout spares a connection: see the class comment. */
-    fun idleExempt(
-        usedExemptVerb: Boolean,
-        readScope: Boolean,
-        holds: Boolean,
-    ): Boolean = holds || (usedExemptVerb && !readScope)
 }
