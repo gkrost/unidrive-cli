@@ -34,21 +34,20 @@ class InternxtProviderFactory(
             benchmarkGrade = "C",
             // archive#457: the wizard for a NEW profile prints this ("no account yet?"); a sign-up through it credits the project.
             affiliateUrl = "https://internxt.cello.so/wboSPv4MM19",
-            // UD-263: matches the official Internxt SDK's 2-drive Bottleneck
-            // pacer. The encryption-vs-retry boundary in the 5-stage upload
-            // pipeline (audit §4.3) makes higher concurrency dangerous —
-            // IV-pinning means a parallel-retry race can corrupt files.
-            maxConcurrentTransfers = 2,
+            // gkrost/unidrive-cli#413: 4 uploads at once. The official clients run 4 (drive-desktop), 6 (drive-web) and
+            // 10 (internxt/cli); the IV hazards are per file and guarded (retry IV pinning, the resume content
+            // fingerprint). Live check of 2026-11-22: 326 files, SHA-256 identical at 2, 4 and 8, no 429 or
+            // finishUpload 409, resume after kill -9 held, 1.60x the throughput at 4 over 2.
+            maxConcurrentTransfers = 4,
             // gkrost/unidrive-cli#392: a download is three serial round trips (Drive file meta, Bridge file info, the
             // shard GET) and the upload's IV-pinning hazard above does not apply to it. None of them holds a permit of
             // the service's budgets: the Drive meta call is paced only (no spacing until a throttle, then 500 ms, 1 s in
             // a storm) and the Bridge budget is pace-only too. The bench of 2026-11-05 ran 4 at once with no throttle;
             // the reference client does about 10 small files a second. 8 small ones at once.
             maxConcurrentSmallDownloads = 8,
-            // gkrost/unidrive-cli#392: large downloads were held to the upload cap of 2 above since #403; the engine ran 4
-            // before that without a throttle, and 4 is the Bridge budget's audited width (InternxtApiService's
-            // bridgeBudget, maxConcurrency 4, the reference client's Bottleneck). So 4 at once; a throttle narrows every
-            // download back to the 2 of maxConcurrentTransfers for 60 s.
+            // gkrost/unidrive-cli#392: 4 is the Bridge budget's audited width (InternxtApiService's bridgeBudget,
+            // maxConcurrency 4, the reference client's Bottleneck). So 4 at once; a throttle narrows every download to
+            // maxConcurrentTransfers (also 4) for 60 s, which only cuts the small ones from 8 to 4.
             maxConcurrentLargeDownloads = 4,
         )
 

@@ -1013,7 +1013,7 @@ class DaemonRuntimeTest {
                     throttled = true,
                 ),
             )
-            assertEquals(2, transferBudgetOf(sendOneRequest("""{"verb":"daemon.status"}""")), "a throttle narrows it to the transfer cap")
+            assertEquals(4, transferBudgetOf(sendOneRequest("""{"verb":"daemon.status"}""")), "a throttle narrows it to the transfer cap")
         } finally {
             runtime.close()
             daemonJob.join()

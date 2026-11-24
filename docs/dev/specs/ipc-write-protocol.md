@@ -746,7 +746,7 @@ noticed at once, not when the download ends. Requests the client sends while one
 - **Per-path FIFO:** same-path uploads run strictly in submission order; a
   burst of saves cannot land an older save after a newer one.
 - **Daemon-wide transfer budget:** all uploads — mount submissions and sync
-  passes — share one per-provider cap (`ProviderMetadata.maxConcurrentTransfers`: Internxt 2, Dropbox 4, OneDrive,
+  passes — share one per-provider cap (`ProviderMetadata.maxConcurrentTransfers`: Internxt 4 (the provider default; a lower profile `max_concurrent_transfers` narrows it, never widens it), Dropbox 4, OneDrive,
   S3 and localfs 8; 4 for a provider that declares none). A burst larger
   than the cap waits, not races the provider's rate limits.
 - **Bounded waiting queue with back-pressure:** at most

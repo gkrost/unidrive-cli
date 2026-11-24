@@ -24,8 +24,8 @@ import org.krost.unidrive.testing.TestScratch
 
 /**
  * gkrost/unidrive-cli#392 (G1): the engine an Internxt profile runs builds its download budget from the Internxt
- * metadata. Large downloads run 4 at once (they inherited the upload cap of 2 since #403); the uploads keep that cap of
- * 2 (the IV-pinning upload race); a throttle narrows the downloads to 2 again. Looked up by type through the
+ * metadata. Large downloads run 4 at once; uploads run 4 at once (#413); a throttle narrows every download to the
+ * transfer cap of 4, which only cuts the small ones from 8. Looked up by type through the
  * ServiceLoader, as the daemon does: this module's factory is on the classpath.
  */
 class InternxtDownloadBudgetWiringTest {
@@ -76,7 +76,7 @@ class InternxtDownloadBudgetWiringTest {
             val budget = guard().downloadBudget
             val peak = Peak()
             (1..6).map { async { budget.withPermit(LARGE) { peak.hold(1_000) } } }.awaitAll()
-            assertEquals(4, peak.value, "large downloads run at maxConcurrentLargeDownloads, not the upload cap of 2")
+            assertEquals(4, peak.value, "large downloads run at maxConcurrentLargeDownloads")
         }
 
     @Test
@@ -89,12 +89,12 @@ class InternxtDownloadBudgetWiringTest {
         }
 
     @Test
-    fun `uploads keep the transfer cap of two`() =
+    fun `uploads run at the transfer cap of four`() =
         runTest {
             val guard = guard()
             val peak = Peak()
             (1..6).map { async { guard.withTransferPermit { peak.hold(1_000) } } }.awaitAll()
-            assertEquals(2, peak.value, "the IV-pinning upload race: never more than 2 uploads at once")
+            assertEquals(4, peak.value, "uploads run at maxConcurrentTransfers (#413), never more")
         }
 
     @Test
@@ -105,17 +105,17 @@ class InternxtDownloadBudgetWiringTest {
     }
 
     @Test
-    fun `a throttle narrows every download to the upload cap of two`() =
+    fun `a throttle narrows every download to the transfer cap`() =
         runTest {
             // The guard's clock is the wall clock; virtual time does not move it, so the throttle holds for the case.
             val budget = guard().downloadBudget
             budget.noteThrottle()
-            assertEquals(2, budget.recommended, "transfer_budget follows the throttle")
+            assertEquals(4, budget.recommended, "transfer_budget follows the throttle")
             val peak = Peak()
             val larges = (1..6).map { async { budget.withPermit(LARGE) { peak.hold(1_000) } } }
             val smalls = (1..6).map { async { budget.withPermit(SMALL) { peak.hold(1_000) } } }
             (larges + smalls).awaitAll()
-            assertEquals(2, peak.value, "while throttled no more than maxConcurrentTransfers downloads start at once")
+            assertEquals(4, peak.value, "while throttled no more than maxConcurrentTransfers downloads start at once")
         }
 
     // The engine is only built here; nothing in these cases reaches the provider.

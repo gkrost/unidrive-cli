@@ -37,7 +37,8 @@ class DownloadBudgetTest {
     private val small = 300_000L
     private val large = 4_000_000L
 
-    // The budget the Internxt profile runs with: 8 small at once, 4 large (G1), and a throttle narrows to its transfer cap of 2.
+    // A synthetic 8/4/2 fixture, not the Internxt profile (which throttles to 4 since #413): it keeps the three widths distinct
+    // so each test tells the small, large and throttle pools apart.
     private fun TestScope.internxtLike() =
         DownloadBudget(smallPermits = 8, largePermits = 4, throttledPermits = 2, clock = { currentTime })
 
