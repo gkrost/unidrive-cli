@@ -275,7 +275,7 @@ class PresenceProofsTest {
         val nonce = IpcAuth.encode(ByteArray(32) { 1 })
         assertEquals(
             "unidrive-presence-v1|2:p1|auth.logout|RBNvo1WzZ4oRRq0W9-hknpT7T8If536DEMBg9hyq_4o|$nonce",
-            PresenceProofs.message("p1", "auth.logout", "RBNvo1WzZ4oRRq0W9-hknpT7T8If536DEMBg9hyq_4o", nonce).decodeToString(),
+            PresenceProofs.message("p1", "auth.logout", PresenceProofs.paramsHash(JsonObject(emptyMap())), nonce).decodeToString(),
         )
     }
 
