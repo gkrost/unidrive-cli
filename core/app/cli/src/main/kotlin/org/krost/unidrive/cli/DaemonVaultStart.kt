@@ -86,7 +86,10 @@ private fun Main.readVaultForDaemon(
     passphrase: CharArray,
 ): Map<String, Map<String, String>> =
     try {
-        vault.read(passphrase).also { vaultDataCache = it }
+        vault.read(passphrase).also {
+            installCredentialSeal(it)
+            vaultDataCache = it
+        }
     } catch (_: javax.crypto.AEADBadTagException) {
         System.err.println("Error: Wrong vault passphrase.")
         kotlin.system.exitProcess(1)
@@ -103,6 +106,7 @@ internal fun Main.daemonUnlockVault(passphrase: CharArray): VaultUnlockOutcome {
     val vault = Vault(baseConfigDir.resolve("vault.enc"))
     return try {
         VaultUnlockOutcome.Ok(vault.read(passphrase).also { data ->
+            installCredentialSeal(data)
             vaultDataCache = data
             daemonVaultLocked = false
         })
@@ -113,9 +117,10 @@ internal fun Main.daemonUnlockVault(passphrase: CharArray): VaultUnlockOutcome {
     }
 }
 
-/** The `vault.lock` side (issue#796): the data is gone from memory until the next unlock. */
+/** The `vault.lock` side (issue#796): the data — and the credential seal key (#797) — is gone from memory until the next unlock. */
 internal fun Main.dropVaultData() {
     vaultDataCache = null
+    installCredentialSeal(null)
     daemonVaultLocked = true
 }
 
@@ -152,10 +157,13 @@ internal fun Main.vaultPassphraseMatches(passphrase: CharArray): Boolean =
  * required prompt (S3's `access_key_id`) is still a field the vault stores and can supply
  * (issue#796 review). The environment mappings are read in their declared direction — env var →
  * config field — so a credential the provider takes from the environment counts as available.
+ * A profile whose credentials.json is sealed under the vault key (#797) needs the vault too: it stays locked until
+ * vault.unlock brings the seal key.
  */
 internal fun Main.profileNeedsVaultedFields(profile: ProfileInfo): Boolean {
     if (profileNeedsVaultedXtraPassphrase(profile)) return true
     val factory = ProviderRegistry.get(profile.type) ?: return false
+    if (factory.needsCredentialSeal(baseConfigDir.resolve(profile.name))) return true
     val vaultFields = factory.credentialPrompts().filter { it.required && it.key in Vault.SENSITIVE_FIELDS }
     if (vaultFields.isEmpty()) return false
     val rp =

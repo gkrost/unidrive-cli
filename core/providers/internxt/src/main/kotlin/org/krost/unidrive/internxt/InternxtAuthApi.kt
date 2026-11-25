@@ -25,6 +25,6 @@ suspend fun authenticateInternxt(
     tfaCode: String? = null,
 ): InternxtCredentials =
     AuthService(config).use { svc ->
-        svc.initialize()
+        svc.initializeForSignIn()
         svc.authenticate(email, password, tfaCode)
     }

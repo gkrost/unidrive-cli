@@ -144,7 +144,14 @@ for that file. The transfer-history retry keeps the refusal in force until it ex
 - `trash` — trash emulation (`list`, `restore`, `purge`)
 - `versions` — versioned files (`list`, `restore`, `purge`)
 - `relocate` — migrate data between cloud providers (`--from`, `--to`, `--delete-source`; the delete pass removes only what the migration transferred, by id, and is refused after any failed or size-only-skipped file)
-- `vault` — credential vault (`init`, `encrypt`, `decrypt`, `change-passphrase`)
+- `vault` — credential vault (`init`, `encrypt`, `decrypt`, `change-passphrase`, `forget`, `seal-credentials`)
+  - `vault seal-credentials on` seals the Internxt mnemonic (`credentials.json`) under a key kept in the vault, inside
+    the platform protection (DPAPI, Keychain, Secret Service). **Recovery:** if the vault is lost (deleted, or its
+    passphrase forgotten), the sealed mnemonic cannot be read from disk any more. Sign in again with
+    `unidrive auth login` (e-mail + password); the mnemonic comes back from the account and replaces the sealed file.
+    `unidrive auth login` never reads the vault and asks for no vault passphrase, so every sign-in (a first one or a
+    re-login) writes the file with the platform protection only; it is sealed the next time a process that has unlocked
+    the vault reads it (with sealing on, after `vault init` and `vault seal-credentials on`).
 - `sweep` — detect and rehydrate zero-byte stub files (`--null-bytes` scan; `--dry-run` and `--rehydrate` modify it)
 
 ### Tracking-set engine (experimental, frozen)

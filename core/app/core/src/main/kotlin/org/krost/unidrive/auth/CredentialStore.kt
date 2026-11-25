@@ -75,11 +75,13 @@ public class CredentialStore<T>(
             // failure, and reading it as null sent the daemon into a needless re-sign-in (CredentialProtector's own
             // contract). One retry through the local-I/O lock window; every non-missing failure then propagates.
             val raw = withLocalIoRetryBlocking { readFile(file) }
+            requireSealReadable(raw)
             val decoded = protector?.let { decodeWithAnyId(it, raw) }
             if (migrate && decoded != null && !decoded.protected) {
                 // Protect even malformed legacy content before parsing it. This removes any
-                // plaintext tokens from disk without making migration depend on valid JSON.
-                saveSerialized { raw }
+                // plaintext tokens from disk without making migration depend on valid JSON. The decoded text, not
+                // the raw file: a re-seal (#797) rewrites a value that was protected by another layer.
+                saveSerialized { decoded.plaintext }
             }
             val parsed = json.decodeFromString(serializer, decoded?.plaintext ?: raw)
             if (!validate(parsed)) {
@@ -132,7 +134,18 @@ public class CredentialStore<T>(
         saveSerialized { json.encodeToString(serializer, value) }
     }
 
-    private fun saveSerialized(serialize: () -> String) {
+    /**
+     * Like [save], and may replace a file sealed under a key this process lacks: for a sign-in, which brings new
+     * credentials from the account. [save] stays strict, so a refresh in a locked process never downgrades a sealed file.
+     */
+    public fun saveReplacingSealed(value: T) {
+        saveSerialized(replaceSealed = true) { json.encodeToString(serializer, value) }
+    }
+
+    private fun saveSerialized(
+        replaceSealed: Boolean = false,
+        serialize: () -> String,
+    ) {
         Files.createDirectories(dir)
         OwnerOnly.requireDirectory(dir)
         val previousReference = if (Files.exists(file)) Files.readString(file) else null
@@ -146,7 +159,10 @@ public class CredentialStore<T>(
             // power loss never leaves a renamed-but-empty credential file.
             OwnerOnlyAtomicWrite.replace(file, {
                 val serialized = serialize()
-                val written = protector?.protect(id, serialized) ?: serialized
+                val written =
+                    protector?.let { p ->
+                        if (replaceSealed && p is KeyedCredentialProtector) p.protectReplacingSealed(id, serialized) else p.protect(id, serialized)
+                    } ?: serialized
                 onDisk = written
                 written.toByteArray(Charsets.UTF_8)
             })
@@ -169,6 +185,13 @@ public class CredentialStore<T>(
     public fun delete() {
         protector?.let { p -> candidateIds().forEach { p.delete(it) } }
         Files.deleteIfExists(file)
+    }
+
+    // #797: a file sealed under the vault key is never "legacy plaintext" to a reader without the seal layer.
+    private fun requireSealReadable(raw: String) {
+        if (raw.startsWith(KeyedCredentialProtector.PREFIX) && protector !is KeyedCredentialProtector) {
+            throw CredentialProtectionException("$file is sealed under the vault key; this reader has no credential seal")
+        }
     }
 
     private fun literalId(): String = file.toAbsolutePath().normalize().toString()

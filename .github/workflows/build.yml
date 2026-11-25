@@ -495,6 +495,8 @@ jobs:
           ./gradlew --continue --no-daemon \
             :app:core:test \
             --tests 'org.krost.unidrive.auth.CredentialStoreTest' \
+            --tests 'org.krost.unidrive.auth.KeyedCredentialProtector*' \
+            --tests 'org.krost.unidrive.auth.WindowsDpapiCredentialProtectorTest' \
             --tests 'org.krost.unidrive.io.OwnerOnlyTest' \
             --tests 'org.krost.unidrive.io.OwnerOnlyGrantsTest' \
             --tests 'org.krost.unidrive.io.LocalIoRetryTest' \
@@ -504,7 +506,6 @@ jobs:
             :app:hydration:test \
             --tests 'org.krost.unidrive.hydration.HydrationUploadQueueTest' \
             :providers:internxt:test \
-            --tests 'org.krost.unidrive.internxt.WindowsDpapiCredentialProtectorTest' \
             --tests 'org.krost.unidrive.internxt.InternxtUploadWritebackTest'
 
   # The full suite on Windows, advisory. On a pull request only when `changes` says `full` (a build change); main and

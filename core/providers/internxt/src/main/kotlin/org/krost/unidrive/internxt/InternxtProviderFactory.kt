@@ -4,8 +4,9 @@ import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.CredentialHealth
 import org.krost.unidrive.ProviderFactory
 import org.krost.unidrive.ProviderMetadata
+import org.krost.unidrive.auth.CredentialLockedException
 import org.krost.unidrive.auth.CredentialProtector
-import org.krost.unidrive.auth.CredentialProtectors
+import org.krost.unidrive.auth.KeyedCredentialProtector
 import org.krost.unidrive.auth.CredentialProtectionException
 import org.krost.unidrive.auth.CredentialStore
 import org.krost.unidrive.auth.JwtExtractor
@@ -14,7 +15,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 class InternxtProviderFactory(
-    private val credentialProtector: CredentialProtector? = CredentialProtectors.forCurrentPlatform(),
+    private val credentialProtector: CredentialProtector? = internxtCredentialProtector(),
 ) : ProviderFactory {
     override val id = "internxt"
 
@@ -129,6 +130,10 @@ class InternxtProviderFactory(
         }
     }
 
+    // gkrost/unidrive-cli#797 (P3): the mnemonic file is sealed under the vault key, so the profile starts locked.
+    override fun needsCredentialSeal(profileDir: Path): Boolean =
+        KeyedCredentialProtector.isSealed(profileDir.resolve("credentials.json"))
+
     override fun checkCredentialHealth(
         properties: Map<String, String?>,
         profileDir: Path,
@@ -147,6 +152,8 @@ class InternxtProviderFactory(
                 return CredentialHealth.ExpiresIn(0, "JWT expired")
             }
             CredentialHealth.Ok
+        } catch (e: CredentialLockedException) {
+            CredentialHealth.Warning(e.message ?: "the credential is sealed; unlock the vault")
         } catch (e: CredentialProtectionException) {
             CredentialHealth.Missing(e.message ?: "Linux Secret Service unavailable")
         } catch (e: Exception) {

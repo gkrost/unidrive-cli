@@ -116,6 +116,19 @@ open class AuthService(
     }
 
     /**
+     * [initialize] for a sign-in: a stored file sealed under a vault key this process lacks is not read (the sign-in
+     * replaces it, see [CredentialStore.saveReplacingSealed]); any other protection failure still throws.
+     */
+    suspend fun initializeForSignIn() {
+        val loaded = try {
+            loadCredentials()
+        } catch (_: org.krost.unidrive.auth.CredentialLockedException) {
+            null
+        }
+        refreshLatch.replace { credentials = loaded }
+    }
+
+    /**
      * Drops the credentials from memory after a sign-out removed the stored ones (archive#1186): [getValidCredentials] fails
      * as not authenticated from now on, and a refresh still under way stores nothing. The stored credentials are not
      * touched.
@@ -237,7 +250,8 @@ open class AuthService(
             bridgeUserId = loginResult.user.userId ?: "",
             bucket = loginResult.user.bucket ?: "",
         )
-        saveCredentials(creds)
+        // A sign-in brings fresh credentials: it may replace a file sealed under a key this process lacks.
+        credentialStore.saveReplacingSealed(creds)
         credentials = creds
         // The login answer's user.uuid is the proven id: it replaces an id start-up took from the token's claim.
         if (unprovenId != null) {

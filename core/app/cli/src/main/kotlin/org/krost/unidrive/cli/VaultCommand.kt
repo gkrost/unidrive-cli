@@ -25,6 +25,7 @@ import java.nio.file.Files
         VaultForgetCommand::class,
         VaultXtraSetCommand::class,
         VaultXtraClearCommand::class,
+        VaultSealCredentialsCommand::class,
     ],
 )
 class VaultCommand : Runnable {
@@ -32,7 +33,7 @@ class VaultCommand : Runnable {
     lateinit var parent: Main
 
     override fun run() {
-        println("Usage: unidrive vault <init|encrypt|decrypt|change-passphrase|forget|xtra-set|xtra-clear>")
+        println("Usage: unidrive vault <init|encrypt|decrypt|change-passphrase|forget|xtra-set|xtra-clear|seal-credentials>")
     }
 }
 
@@ -291,17 +292,30 @@ internal fun decryptVault(
 ): String {
     val vault = Vault(baseDir.resolve("vault.enc"))
     val all = vault.read(passphrase)
-    // The X-tra passphrase has no config section to go back into: it stays in the vault (issue#796).
-    val xtraEntry = all[XTRA_VAULT_ENTRY]
-    val data = all - XTRA_VAULT_ENTRY
     val configPath = baseDir.resolve("config.toml")
     return ConfigFileTransaction.withLock(configPath) {
-        if (data.isEmpty() && xtraEntry != null) {
-            return@withLock "The vault holds only the X-tra passphrase, which stays in it; drop it with `unidrive vault xtra-clear`, then decrypt again."
-        }
+        // Reserved entries are no profile's: they have no config section to go back into and stay in the vault
+        // (the X-tra passphrase, issue#796; the credential seal key, #797). A seal key that is switched off is a leftover
+        // like any other once no credentials file is sealed under it.
+        val sealEnabled = all[CREDENTIAL_SEAL_SECTION]?.get("enabled") == "true"
+        val sealKept = all[CREDENTIAL_SEAL_SECTION] != null && (sealEnabled || anyCredentialsSealed(baseDir))
+        val reserved = all.filterKeys { isReservedVaultSection(it) && (it != CREDENTIAL_SEAL_SECTION || sealKept) }
+        val data = all.filterKeys { !isReservedVaultSection(it) }
+        val sealWhy = if (sealKept && !sealEnabled) " (sealing is off, but a credentials file is still sealed under it)" else ""
+        val keeps =
+            listOfNotNull(
+                if (CREDENTIAL_SEAL_SECTION in reserved) "the credential seal key$sealWhy" else null,
+                if (XTRA_VAULT_ENTRY in reserved) "the X-tra passphrase (drop it with `unidrive vault xtra-clear`)" else null,
+            ).joinToString(" and ")
         if (data.isEmpty()) {
-            vault.delete()
-            return@withLock "Vault is empty — nothing to restore."
+            if (reserved.isEmpty()) {
+                vault.delete()
+                return@withLock "Vault is empty — nothing to restore."
+            }
+            if (reserved.keys == setOf(XTRA_VAULT_ENTRY)) {
+                return@withLock "The vault holds only the X-tra passphrase, which stays in it; drop it with `unidrive vault xtra-clear`, then decrypt again."
+            }
+            return@withLock "Nothing to restore; the vault keeps only $keeps."
         }
         val configContent = if (Files.exists(configPath)) Files.readString(configPath) else "[general]\n"
         val configured = SyncConfig.parseRaw(configContent, configPath.toString()).providers.keys
@@ -313,16 +327,17 @@ internal fun decryptVault(
         if (restorable.isNotEmpty()) {
             ConfigFileTransaction.writeAtomically(configPath, restoreVaultCredentials(configContent, restorable))
         }
-        val kept = if (xtraEntry != null) orphans + (XTRA_VAULT_ENTRY to xtraEntry) else orphans
+        val kept = orphans + reserved
         if (kept.isEmpty()) {
             vault.delete()
             "Credentials restored to config.toml. Vault deleted."
         } else if (orphans.isEmpty()) {
             vault.write(passphrase, kept)
-            "Credentials restored to config.toml; the vault keeps the X-tra passphrase (drop it with `unidrive vault xtra-clear`)."
+            "Credentials restored to config.toml; the vault keeps only $keeps."
         } else {
             vault.write(passphrase, kept)
-            "Credentials of ${restorable.size} profile(s) restored to config.toml; the vault keeps ${orphans.size} orphan entry(ies)${if (xtraEntry != null) " and the X-tra passphrase" else ""}."
+            "Credentials of ${restorable.size} profile(s) restored to config.toml; the vault keeps ${orphans.size} orphan entry(ies)" +
+                (if (reserved.isEmpty()) "." else " and $keeps.")
         }
     }
 }
@@ -469,6 +484,13 @@ class VaultForgetCommand : java.util.concurrent.Callable<Int> {
             System.err.println("No vault found.")
             return 1
         }
+        if (isReservedVaultSection(profile)) {
+            System.err.println(
+                "'$profile' is a reserved vault entry, not a profile: the X-tra passphrase goes with 'unidrive vault xtra-clear', " +
+                    "and the credential seal key stays while sealed files may need it.",
+            )
+            return 1
+        }
         val configPath = baseDir.resolve("config.toml")
         val passphrase =
             if (passphraseStdin) readPassphraseStdin("--passphrase-stdin") else readPassphrase("Vault passphrase: ")
@@ -502,7 +524,8 @@ internal fun forgetVaultEntry(
     name: String,
 ): Boolean {
     val data = vault.read(passphrase)
-    if (name !in data) return false
+    // The seal key is never dropped here; the X-tra entry is, by `vault xtra-clear` (the `vault forget` command refuses both).
+    if (name == CREDENTIAL_SEAL_SECTION || name !in data) return false
     vault.write(passphrase, data - name)
     return true
 }
@@ -650,6 +673,70 @@ internal fun setVaultXtraPassphrase(
 ): Map<String, Map<String, String>> {
     require(passphrase.isNotEmpty()) { "the X-tra passphrase must not be empty" }
     return data + (XTRA_VAULT_ENTRY to mapOf(XTRA_VAULT_FIELD to passphrase))
+}
+
+// ── vault seal-credentials ───────────────────────────────────────────────────
+
+/**
+ * gkrost/unidrive-cli#797 (P3): turns the vault-key seal of the Internxt mnemonic (credentials.json) on or off. `on`
+ * creates the seal key in the vault on first use; `off` keeps it, so files sealed earlier can still be read. Each
+ * file is re-sealed (or, after `off`, rewritten platform-only) the next time a process that has unlocked the vault
+ * reads it.
+ */
+@Command(
+    name = "seal-credentials",
+    description = ["Seal the Internxt credentials under a key kept in the vault (on), or keep only the platform protection (off)"],
+    mixinStandardHelpOptions = true,
+)
+class VaultSealCredentialsCommand : java.util.concurrent.Callable<Int> {
+    @ParentCommand
+    lateinit var vaultCmd: VaultCommand
+
+    @Parameters(index = "0", paramLabel = "on|off", description = ["on or off"])
+    lateinit var state: String
+
+    @Option(
+        names = ["--passphrase-stdin"],
+        description = [
+            "Read the vault passphrase from the first line of standard input instead of the " +
+                "terminal (no interactive terminal required)",
+        ],
+    )
+    var passphraseStdin: Boolean = false
+
+    override fun call(): Int {
+        val enabled =
+            when (state) {
+                "on" -> true
+                "off" -> false
+                else -> {
+                    System.err.println("Error: expected on or off, got '$state'.")
+                    return 2
+                }
+            }
+        val baseDir = vaultCmd.parent.configBaseDir()
+        val vault = Vault(baseDir.resolve("vault.enc"))
+        if (!vault.exists()) {
+            System.err.println("No vault found. Run 'unidrive vault init' first.")
+            return 1
+        }
+        val passphrase =
+            if (passphraseStdin) readPassphraseStdin("--passphrase-stdin") else readPassphrase("Vault passphrase: ")
+        // The vault writers serialize on the config lock (vault encrypt / decrypt / forget).
+        ConfigFileTransaction.withLock(baseDir.resolve("config.toml")) {
+            vault.write(passphrase, withCredentialSeal(vault.read(passphrase), enabled))
+        }
+        println(
+            if (enabled) {
+                "Credential sealing is on: each Internxt credentials.json is sealed the next time an unlocked unidrive reads it. " +
+                    "A running daemon picks this up at its next vault.unlock or restart."
+            } else {
+                "Credential sealing is off: sealed credentials are rewritten with the platform protection only " +
+                    "the next time an unlocked unidrive reads them. A running daemon picks this up at its next vault.unlock or restart."
+            },
+        )
+        return 0
+    }
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────────────

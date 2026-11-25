@@ -59,6 +59,12 @@ interface ProviderFactory {
         }
 
     /**
+     * Whether a file of this provider in [profileDir] is sealed under the vault's credential seal key
+     * (gkrost/unidrive-cli#797): such a profile stays locked until `vault.unlock`. Default false: nothing sealed.
+     */
+    fun needsCredentialSeal(profileDir: Path): Boolean = false
+
+    /**
      * Human-readable one-liner describing the connection target for `--verbose` output.
      *
      * Implementations should include enough detail to identify *which* account/server
