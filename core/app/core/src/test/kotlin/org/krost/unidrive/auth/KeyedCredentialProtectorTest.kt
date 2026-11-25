@@ -151,6 +151,27 @@ class KeyedCredentialProtectorTest {
     }
 
     @Test
+    fun `a replacing save over a sealed file succeeds without the key and a plain save stays refused`() {
+        unlock()
+        store().save(value)
+        current = null
+        assertFailsWith<CredentialProtectionException> { store().save(value) }
+        val fresh = value.copy(jwt = "fresh")
+        store().saveReplacingSealed(fresh)
+        assertTrue(onDisk().startsWith(FakePlatformProtector.PREFIX), "written with the platform protection only")
+        assertEquals(fresh, store().load())
+        assertNoResidue()
+    }
+
+    @Test
+    fun `a replacing save with the key on seals as a plain save does`() {
+        unlock()
+        store().saveReplacingSealed(value)
+        assertTrue(onDisk().startsWith(KeyedCredentialProtector.PREFIX))
+        assertEquals(value, store().load())
+    }
+
+    @Test
     fun `without a vault key and no sealed file the platform protection is unchanged`() {
         store().save(value)
         assertTrue(onDisk().startsWith(FakePlatformProtector.PREFIX))

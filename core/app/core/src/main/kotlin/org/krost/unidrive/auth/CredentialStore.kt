@@ -134,7 +134,18 @@ public class CredentialStore<T>(
         saveSerialized { json.encodeToString(serializer, value) }
     }
 
-    private fun saveSerialized(serialize: () -> String) {
+    /**
+     * Like [save], and may replace a file sealed under a key this process lacks: for a sign-in, which brings new
+     * credentials from the account. [save] stays strict, so a refresh in a locked process never downgrades a sealed file.
+     */
+    public fun saveReplacingSealed(value: T) {
+        saveSerialized(replaceSealed = true) { json.encodeToString(serializer, value) }
+    }
+
+    private fun saveSerialized(
+        replaceSealed: Boolean = false,
+        serialize: () -> String,
+    ) {
         Files.createDirectories(dir)
         OwnerOnly.requireDirectory(dir)
         val previousReference = if (Files.exists(file)) Files.readString(file) else null
@@ -148,7 +159,10 @@ public class CredentialStore<T>(
             // power loss never leaves a renamed-but-empty credential file.
             OwnerOnlyAtomicWrite.replace(file, {
                 val serialized = serialize()
-                val written = protector?.protect(id, serialized) ?: serialized
+                val written =
+                    protector?.let { p ->
+                        if (replaceSealed && p is KeyedCredentialProtector) p.protectReplacingSealed(id, serialized) else p.protect(id, serialized)
+                    } ?: serialized
                 onDisk = written
                 written.toByteArray(Charsets.UTF_8)
             })

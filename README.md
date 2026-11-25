@@ -148,7 +148,9 @@ for that file. The transfer-history retry keeps the refusal in force until it ex
   - `vault seal-credentials on` seals the Internxt mnemonic (`credentials.json`) under a key kept in the vault, inside
     the platform protection (DPAPI, Keychain, Secret Service). **Recovery:** if the vault is lost (deleted, or its
     passphrase forgotten), the sealed mnemonic cannot be read from disk any more. Sign in again with
-    `unidrive auth login` (e-mail + password); the mnemonic comes back from the account and is written anew.
+    `unidrive auth login` (e-mail + password); the mnemonic comes back from the account and replaces the sealed file.
+    A sign-in without the vault key writes it with the platform protection only; it is sealed again the next time a
+    process that has unlocked the vault reads it (after `vault init` and `vault seal-credentials on`).
 - `sweep` — detect and rehydrate zero-byte stub files (`--null-bytes` scan; `--dry-run` and `--rehydrate` modify it)
 
 ### Tracking-set engine (experimental, frozen)

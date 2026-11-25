@@ -103,6 +103,15 @@ public class KeyedCredentialProtector(
         return PREFIX + inner.protect(id, seal(key, id, plaintext))
     }
 
+    /** [protect] for a sign-in: the sealed file it replaces cannot be opened without the key, and fresh credentials need no downgrade guard. */
+    internal fun protectReplacingSealed(
+        id: String,
+        plaintext: String,
+    ): String {
+        val key = sealKey()
+        return if (key == null || !key.enabled) inner.protect(id, plaintext) else PREFIX + inner.protect(id, seal(key, id, plaintext))
+    }
+
     override fun decode(id: String, stored: String): CredentialData {
         val key = sealKey()
         if (!stored.startsWith(PREFIX)) {
