@@ -171,4 +171,15 @@ class KeyedCredentialProtectorTest {
         val names = Files.list(dir).use { s -> s.map { it.fileName.toString() }.toList() }
         assertEquals(listOf("credentials.json"), names, "no temp or backup copy left behind")
     }
+
+    @Test
+    fun `the data key of a fixed secret is the pinned one`() {
+        // The on-disk format (unidrive-keyed-v1) bakes the KDF in: files sealed today must open under every later
+        // version. The vector was derived with an independent HKDF-SHA256 (Python hmac), info unidrive/credential-seal/v1.
+        val fixed = ByteArray(CredentialSealKey.SECRET_BYTES) { it.toByte() }
+        assertEquals(
+            "ee24f0e4bca945d4970ef337a04a641e8ddaa6ffc54b028ff46989705e68de03",
+            CredentialSealKey(fixed, enabled = true).dataKey.encoded.joinToString("") { "%02x".format(it) },
+        )
+    }
 }

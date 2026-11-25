@@ -300,7 +300,7 @@ open class Main : Runnable {
             }
         val data =
             try {
-                vault.read(passphrase)
+                vault.read(passphrase).also { installCredentialSeal(it) }
             } catch (e: javax.crypto.AEADBadTagException) {
                 System.err.println("Error: Wrong vault passphrase.")
                 System.exit(1)
@@ -311,7 +311,6 @@ open class Main : Runnable {
                 throw IllegalStateException("unreachable")
             }
         vaultDataCache = data
-        installCredentialSeal(data)
         return data
     }
 

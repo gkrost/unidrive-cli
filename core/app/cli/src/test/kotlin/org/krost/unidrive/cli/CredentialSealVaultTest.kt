@@ -15,6 +15,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -115,5 +116,68 @@ class CredentialSealVaultTest {
         vault.write(pass.toCharArray(), mapOf(CREDENTIAL_SEAL_SECTION to seal))
         assertFalse(forgetVaultEntry(vault, pass.toCharArray(), CREDENTIAL_SEAL_SECTION))
         assertEquals(seal, sealSection())
+    }
+
+    @Test
+    fun `a sealed credentials file of a provider that does not declare the seal does not lock the profile`() {
+        val profileDir = Files.createDirectories(dir.resolve("lf"))
+        Files.writeString(profileDir.resolve("credentials.json"), KeyedCredentialProtector.PREFIX + "c2VhbGVk")
+        val profile = ProfileInfo("lf", "localfs", dir, RawProvider(type = "localfs"))
+        assertFalse(main().profileNeedsVaultedFields(profile), "the provider's factory answers for its own files")
+    }
+
+    private fun stdoutOf(block: () -> Int): String {
+        val original = System.out
+        val buffer = java.io.ByteArrayOutputStream()
+        System.setOut(java.io.PrintStream(buffer, true, Charsets.UTF_8))
+        try {
+            assertEquals(0, block())
+        } finally {
+            System.setOut(original)
+        }
+        return buffer.toString(Charsets.UTF_8)
+    }
+
+    @Test
+    fun `seal-credentials says a running daemon picks the change up at its next vault unlock or restart`() {
+        vault.init(pass.toCharArray())
+        for (state in listOf("on", "off")) {
+            val out = stdoutOf { run("vault", "seal-credentials", state, "--passphrase-stdin", stdin = "$pass\n") }
+            assertTrue(out.contains("running daemon") && out.contains("vault.unlock") && out.contains("restart"), "$state: $out")
+        }
+    }
+
+    @Test
+    fun `an undecodable seal section fails the unlock naming the section instead of reading as locked`() {
+        for (bad in listOf("!!not-base64!!", Base64.getEncoder().encodeToString(ByteArray(7)))) {
+            vault.write(pass.toCharArray(), mapOf(CREDENTIAL_SEAL_SECTION to mapOf("key" to bad, "enabled" to "true")))
+            val outcome = main().daemonUnlockVault(pass.toCharArray())
+            val failed = assertIs<VaultUnlockOutcome.Failed>(outcome, "bad key '$bad'")
+            assertTrue(failed.message.contains("credential seal"), "names the seal section: ${failed.message}")
+            assertNull(CredentialSeal.current())
+        }
+    }
+
+    private fun disabledSeal() = mapOf("key" to Base64.getEncoder().encodeToString(ByteArray(32) { 7 }), "enabled" to "false")
+
+    @Test
+    fun `vault decrypt drops a disabled seal key when no credentials file is sealed any more`() {
+        Files.writeString(dir.resolve("config.toml"), "[general]\n")
+        vault.write(pass.toCharArray(), mapOf(CREDENTIAL_SEAL_SECTION to disabledSeal()))
+        val profileDir = Files.createDirectories(dir.resolve("ix"))
+        Files.writeString(profileDir.resolve("credentials.json"), "unidrive-dpapi-v1:AAAA")
+        decryptVault(dir, pass.toCharArray()) { }
+        assertFalse(vault.exists(), "a vault that holds only a retired seal key can be deleted")
+    }
+
+    @Test
+    fun `vault decrypt keeps a disabled seal key while a credentials file is still sealed and says why`() {
+        Files.writeString(dir.resolve("config.toml"), "[general]\n")
+        vault.write(pass.toCharArray(), mapOf(CREDENTIAL_SEAL_SECTION to disabledSeal()))
+        val profileDir = Files.createDirectories(dir.resolve("ix"))
+        Files.writeString(profileDir.resolve("credentials.json"), KeyedCredentialProtector.PREFIX + "c2VhbGVk")
+        val line = decryptVault(dir, pass.toCharArray()) { }
+        assertTrue(vault.exists())
+        assertTrue(line.contains("still sealed"), line)
     }
 }

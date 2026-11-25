@@ -2,9 +2,10 @@ package org.krost.unidrive.cli
 
 import org.krost.unidrive.auth.CredentialSeal
 import org.krost.unidrive.auth.CredentialSealKey
-import org.krost.unidrive.auth.KeyedCredentialProtector
+import org.krost.unidrive.ProviderRegistry
 import java.nio.file.Files
 import java.nio.file.Path
+import java.security.GeneralSecurityException
 import java.util.Base64
 
 /**
@@ -22,11 +23,18 @@ private const val SEAL_ENABLED_FIELD = "enabled"
 /** True for vault sections that are not a profile's credentials (`vault decrypt` / `vault forget` leave them alone). */
 internal fun isReservedVaultSection(name: String): Boolean = name == CREDENTIAL_SEAL_SECTION
 
-/** The seal key [data] holds, or null when the vault has none (sealing was never turned on). */
+/**
+ * The seal key [data] holds, or null when the vault has none (sealing was never turned on). A section that is present
+ * but undecodable (bad base64, wrong length) is not "no key": it throws, so the unlock fails naming the section
+ * instead of leaving a process that reads as locked.
+ */
 internal fun credentialSealFrom(data: Map<String, Map<String, String>>): CredentialSealKey? {
     val section = data[CREDENTIAL_SEAL_SECTION] ?: return null
-    val secret = section[SEAL_KEY_FIELD]?.let { runCatching { Base64.getDecoder().decode(it) }.getOrNull() } ?: return null
-    if (secret.size != CredentialSealKey.SECRET_BYTES) return null
+    val invalid = "the vault's credential seal section is invalid"
+    val secret =
+        section[SEAL_KEY_FIELD]?.let { runCatching { Base64.getDecoder().decode(it) }.getOrNull() }
+            ?: throw GeneralSecurityException("$invalid (the key is missing or not base64)")
+    if (secret.size != CredentialSealKey.SECRET_BYTES) throw GeneralSecurityException("$invalid (the key has the wrong length)")
     return CredentialSealKey(secret, enabled = section[SEAL_ENABLED_FIELD] == "true").also { secret.fill(0) }
 }
 
@@ -45,11 +53,8 @@ internal fun withCredentialSeal(
     return data + (CREDENTIAL_SEAL_SECTION to mapOf(SEAL_KEY_FIELD to key, SEAL_ENABLED_FIELD to enabled.toString()))
 }
 
-/** True when the profile's Internxt mnemonic file (credentials.json in [profileDir]) is sealed under the vault key. */
-internal fun profileCredentialsSealed(profileDir: Path): Boolean =
+/** True when any profile directory under [baseDir] still holds a credential file sealed under the vault key. */
+internal fun anyCredentialsSealed(baseDir: Path): Boolean =
     runCatching {
-        Files.newBufferedReader(profileDir.resolve("credentials.json")).use { reader ->
-            val head = CharArray(KeyedCredentialProtector.PREFIX.length)
-            reader.read(head) == head.size && String(head) == KeyedCredentialProtector.PREFIX
-        }
+        Files.newDirectoryStream(baseDir, Files::isDirectory).use { dirs -> dirs.any { dir -> ProviderRegistry.all().any { it.needsCredentialSeal(dir) } } }
     }.getOrDefault(false)

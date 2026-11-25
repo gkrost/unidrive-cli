@@ -96,7 +96,7 @@ public class KeyedCredentialProtector(
     override fun protect(id: String, plaintext: String): String {
         val key = sealKey()
         if (key == null) {
-            if (isSealedOnDisk(id)) throw CredentialProtectionException(lockedMessage(id))
+            if (isSealedOnDisk(id)) throw CredentialLockedException(lockedMessage(id))
             return inner.protect(id, plaintext)
         }
         if (!key.enabled) return inner.protect(id, plaintext)
@@ -111,7 +111,7 @@ public class KeyedCredentialProtector(
             return if (key?.enabled == true) CredentialData(platform.plaintext, false) else platform
         }
         // Locked: refuse before the platform store is asked (no Keychain prompt for a value that cannot open).
-        if (key == null) throw CredentialProtectionException(lockedMessage(id))
+        if (key == null) throw CredentialLockedException(lockedMessage(id))
         val platform = inner.decode(id, stored.removePrefix(PREFIX))
         // Sealing off: a sealed value reads as unprotected, so the store rewrites it platform-only.
         return CredentialData(open(key, id, platform.plaintext), platform.protected && key.enabled)
@@ -148,13 +148,7 @@ public class KeyedCredentialProtector(
     }
 
     // The store's id is the credential file's path (CredentialStore.canonicalId); a non-path id has no file to check.
-    private fun isSealedOnDisk(id: String): Boolean =
-        runCatching {
-            Files.newBufferedReader(Path.of(id)).use { reader ->
-                val head = CharArray(PREFIX.length)
-                reader.read(head) == PREFIX.length && String(head) == PREFIX
-            }
-        }.getOrDefault(false)
+    private fun isSealedOnDisk(id: String): Boolean = runCatching { isSealed(Path.of(id)) }.getOrDefault(false)
 
     private fun aad(id: String): ByteArray = (PREFIX + id).toByteArray(StandardCharsets.UTF_8)
 
@@ -162,6 +156,16 @@ public class KeyedCredentialProtector(
 
     companion object {
         const val PREFIX = "unidrive-keyed-v1:"
+
+        /** Whether [file] carries the sealed marker (false when it does not exist or cannot be read). */
+        fun isSealed(file: Path): Boolean =
+            runCatching {
+                Files.newBufferedReader(file).use { reader ->
+                    val head = CharArray(PREFIX.length)
+                    reader.read(head) == PREFIX.length && String(head) == PREFIX
+                }
+            }.getOrDefault(false)
+
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
         private const val IV_BYTES = 12
         private const val TAG_BITS = 128

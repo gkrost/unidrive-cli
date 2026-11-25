@@ -87,8 +87,8 @@ private fun Main.readVaultForDaemon(
 ): Map<String, Map<String, String>> =
     try {
         vault.read(passphrase).also {
-            vaultDataCache = it
             installCredentialSeal(it)
+            vaultDataCache = it
         }
     } catch (_: javax.crypto.AEADBadTagException) {
         System.err.println("Error: Wrong vault passphrase.")
@@ -106,8 +106,8 @@ internal fun Main.daemonUnlockVault(passphrase: CharArray): VaultUnlockOutcome {
     val vault = Vault(baseConfigDir.resolve("vault.enc"))
     return try {
         VaultUnlockOutcome.Ok(vault.read(passphrase).also { data ->
-            vaultDataCache = data
             installCredentialSeal(data)
+            vaultDataCache = data
             daemonVaultLocked = false
         })
     } catch (_: javax.crypto.AEADBadTagException) {
@@ -152,8 +152,8 @@ internal fun Main.daemonVault(start: DaemonVaultStart): DaemonVault? {
  * vault.unlock brings the seal key.
  */
 internal fun Main.profileNeedsVaultedFields(profile: ProfileInfo): Boolean {
-    if (profileCredentialsSealed(baseConfigDir.resolve(profile.name))) return true
     val factory = ProviderRegistry.get(profile.type) ?: return false
+    if (factory.needsCredentialSeal(baseConfigDir.resolve(profile.name))) return true
     val vaultFields = factory.credentialPrompts().filter { it.required && it.key in Vault.SENSITIVE_FIELDS }
     if (vaultFields.isEmpty()) return false
     val rp =

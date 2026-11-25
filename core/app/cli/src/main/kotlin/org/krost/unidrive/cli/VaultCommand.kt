@@ -290,18 +290,21 @@ internal fun decryptVault(
     val configPath = baseDir.resolve("config.toml")
     return ConfigFileTransaction.withLock(configPath) {
         // #797: the credential seal key is no profile's entry and never goes into config.toml; it stays in the vault.
-        val reserved = data.filterKeys(::isReservedVaultSection)
-        if (data.size == reserved.size) {
+        // A seal key that is switched off is a leftover like any other once no credentials file is sealed under it.
+        val sealInUse = data[CREDENTIAL_SEAL_SECTION]?.get("enabled") == "true" || anyCredentialsSealed(baseDir)
+        val reserved = data.filterKeys(::isReservedVaultSection).filterValues { sealInUse }
+        val sealWhy = if (reserved.isNotEmpty() && data[CREDENTIAL_SEAL_SECTION]?.get("enabled") != "true") " (sealing is off, but a credentials file is still sealed under it)" else ""
+        if (data.keys.all(::isReservedVaultSection)) {
             if (reserved.isEmpty()) {
                 vault.delete()
                 return@withLock "Vault is empty — nothing to restore."
             }
-            return@withLock "Nothing to restore; the vault keeps only the credential seal key."
+            return@withLock "Nothing to restore; the vault keeps only the credential seal key$sealWhy."
         }
         val configContent = if (Files.exists(configPath)) Files.readString(configPath) else "[general]\n"
         val configured = SyncConfig.parseRaw(configContent, configPath.toString()).providers.keys
         val restorable = data.filterKeys { it in configured }
-        val orphans = data - restorable.keys - reserved.keys
+        val orphans = data.filterKeys { it !in restorable.keys && !isReservedVaultSection(it) }
         for (name in orphans.keys) {
             warn("the vault entry of profile '$name' has no config section and was not restored; drop it with `unidrive vault forget $name`")
         }
@@ -313,7 +316,7 @@ internal fun decryptVault(
             "Credentials restored to config.toml. Vault deleted."
         } else if (orphans.isEmpty()) {
             vault.write(passphrase, reserved)
-            "Credentials restored to config.toml; the vault keeps only the credential seal key."
+            "Credentials restored to config.toml; the vault keeps only the credential seal key$sealWhy."
         } else {
             vault.write(passphrase, orphans + reserved)
             "Credentials of ${restorable.size} profile(s) restored to config.toml; the vault keeps ${orphans.size} orphan entry(ies)."
@@ -554,10 +557,11 @@ class VaultSealCredentialsCommand : java.util.concurrent.Callable<Int> {
         }
         println(
             if (enabled) {
-                "Credential sealing is on: each Internxt credentials.json is sealed the next time an unlocked unidrive reads it."
+                "Credential sealing is on: each Internxt credentials.json is sealed the next time an unlocked unidrive reads it. " +
+                    "A running daemon picks this up at its next vault.unlock or restart."
             } else {
                 "Credential sealing is off: sealed credentials are rewritten with the platform protection only " +
-                    "the next time an unlocked unidrive reads them."
+                    "the next time an unlocked unidrive reads them. A running daemon picks this up at its next vault.unlock or restart."
             },
         )
         return 0

@@ -21,5 +21,8 @@ public data class CredentialData(
 )
 
 /** A protection backend failure must never be treated as a missing credential. */
-public class CredentialProtectionException(message: String, cause: Throwable? = null) :
+public open class CredentialProtectionException(message: String, cause: Throwable? = null) :
     IllegalStateException(message, cause)
+
+/** The credential is sealed under the vault key and this process holds no key: neither missing nor corrupt. */
+public class CredentialLockedException(message: String) : CredentialProtectionException(message)

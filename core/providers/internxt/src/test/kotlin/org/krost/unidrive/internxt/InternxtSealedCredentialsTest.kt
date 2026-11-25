@@ -59,7 +59,8 @@ class InternxtSealedCredentialsTest {
         factory.checkCredentialHealth(emptyMap(), profileDir) // seals
         current = null
         val locked = factory.checkCredentialHealth(emptyMap(), profileDir)
-        assertIs<CredentialHealth.Missing>(locked)
+        // Locked is neither signed out (Missing) nor corrupt: a front-end must not offer a sign-in it could not store.
+        assertIs<CredentialHealth.Warning>(locked)
         assertTrue(locked.message.contains("credentials.json") && locked.message.contains("vault"), "names the file and the vault: ${locked.message}")
         assertTrue(factory.describeConnection(emptyMap(), profileDir).startsWith("internxt (credentials unavailable"))
         current = CredentialSealKey(secret, enabled = true)
