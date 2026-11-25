@@ -75,16 +75,19 @@ public object CredentialSeal {
 }
 
 /**
- * gkrost/unidrive-cli#797 (P3): seals what the platform protector ([inner]: DPAPI, Keychain, Secret Service) stores
- * under AES-256-GCM with the vault-held key, so the platform layer alone recovers only ciphertext. On disk:
- * `unidrive-keyed-v1:` + base64(iv ‖ ciphertext ‖ tag), the GCM associated data being the prefix and the credential
- * id (its file), so a sealed value does not open under another file's name.
+ * gkrost/unidrive-cli#797 (P3): seals the credential under AES-256-GCM with the vault-held key INSIDE the platform
+ * protector ([inner]: DPAPI, Keychain, Secret Service): the platform store holds only the sealed value, so neither a
+ * DPAPI decrypt nor a Keychain / Secret Service lookup alone yields the secret (owner decision on #943). On disk:
+ * `unidrive-keyed-v1:` + the platform's own reference, whose payload is base64(iv ‖ ciphertext ‖ tag). The marker
+ * lets a locked process see a sealed file without asking the platform store; the GCM associated data is the marker
+ * and the credential id (its file), so a sealed value does not open under another file's name.
  *
  * - Without a key ([sealKey] null) a sealed value is a [CredentialProtectionException] naming the file, never
  *   "signed out", and a write over a sealed file is refused too, so a locked process never downgrades it.
  * - Migration rides [CredentialStore]'s rewrite of a value whose [CredentialData.protected] is false: with sealing on,
  *   a platform-only (or plaintext) value reads as unprotected and is re-sealed; with sealing off and the key known, a
- *   sealed value reads as unprotected and is rewritten platform-only. The rewrite is the store's atomic replace.
+ *   sealed value reads as unprotected and is rewritten platform-only. The rewrite is the store's atomic replace, and
+ *   the store then discards the prior platform item (Keychain / Secret Service), so no unsealed copy stays behind.
  */
 public class KeyedCredentialProtector(
     private val inner: CredentialProtector,
@@ -96,8 +99,8 @@ public class KeyedCredentialProtector(
             if (isSealedOnDisk(id)) throw CredentialProtectionException(lockedMessage(id))
             return inner.protect(id, plaintext)
         }
-        val platform = inner.protect(id, plaintext)
-        return if (key.enabled) seal(key, id, platform) else platform
+        if (!key.enabled) return inner.protect(id, plaintext)
+        return PREFIX + inner.protect(id, seal(key, id, plaintext))
     }
 
     override fun decode(id: String, stored: String): CredentialData {
@@ -107,33 +110,30 @@ public class KeyedCredentialProtector(
             // Sealing on: anything not yet sealed reads as unprotected, so the store re-seals it.
             return if (key?.enabled == true) CredentialData(platform.plaintext, false) else platform
         }
+        // Locked: refuse before the platform store is asked (no Keychain prompt for a value that cannot open).
         if (key == null) throw CredentialProtectionException(lockedMessage(id))
-        val platform = inner.decode(id, open(key, id, stored))
+        val platform = inner.decode(id, stored.removePrefix(PREFIX))
         // Sealing off: a sealed value reads as unprotected, so the store rewrites it platform-only.
-        return CredentialData(platform.plaintext, platform.protected && key.enabled)
+        return CredentialData(open(key, id, platform.plaintext), platform.protected && key.enabled)
     }
 
     override fun delete(id: String) = inner.delete(id)
 
-    override fun discard(id: String, reference: String) {
-        if (!reference.startsWith(PREFIX)) return inner.discard(id, reference)
-        val key = sealKey() ?: return
-        val platform = runCatching { open(key, id, reference) }.getOrNull() ?: return
-        inner.discard(id, platform)
-    }
+    // The platform reference follows the marker, so the prior item is discarded with or without the key.
+    override fun discard(id: String, reference: String) = inner.discard(id, reference.removePrefix(PREFIX))
 
-    private fun seal(key: CredentialSealKey, id: String, platform: String): String {
+    private fun seal(key: CredentialSealKey, id: String, plaintext: String): String {
         val iv = ByteArray(IV_BYTES).also { SecureRandom().nextBytes(it) }
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, key.dataKey, GCMParameterSpec(TAG_BITS, iv))
         cipher.updateAAD(aad(id))
-        val sealed = cipher.doFinal(platform.toByteArray(StandardCharsets.UTF_8))
-        return PREFIX + Base64.getEncoder().encodeToString(iv + sealed)
+        val sealed = cipher.doFinal(plaintext.toByteArray(StandardCharsets.UTF_8))
+        return Base64.getEncoder().encodeToString(iv + sealed)
     }
 
-    private fun open(key: CredentialSealKey, id: String, stored: String): String {
+    private fun open(key: CredentialSealKey, id: String, sealed: String): String {
         val blob =
-            runCatching { Base64.getDecoder().decode(stored.removePrefix(PREFIX)) }
+            runCatching { Base64.getDecoder().decode(sealed) }
                 .getOrNull()
                 ?.takeIf { it.size >= IV_BYTES + TAG_BITS / 8 }
                 ?: throw CredentialProtectionException("$id holds an invalid or truncated sealed credential")
