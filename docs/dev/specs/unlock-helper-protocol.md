@@ -86,20 +86,32 @@ The X-tra passphrase is a vault secret (Windows Hello design, section 2). `unidr
 stores it in `vault.enc` as the reserved entry `.xtra` (field `passphrase`; `.` is not valid in a
 profile name, so no profile collides with it) and `vault xtra-clear` drops it. The X-tra passphrase
 chain is: environment variable `UNIDRIVE_XTRA_PASS`, systemd credential `unidrive-xtra-pass`, the
-**unlocked vault's `.xtra` entry**, the unlock helper (`secret` = `xtra`), the console. So a daemon
-that was started locked and received `vault.unlock` needs no second unlock for an `xtra_encryption`
-profile, and the helper needs no `xtra` entry. The entry is read from the in-memory vault data only:
-the X-tra step never prompts for the vault passphrase, and `vault.lock` takes the passphrase out of
-reach again. A daemon whose profile sets `xtra_encryption` with no environment or credential source
-for the X-tra passphrase starts locked while the vault is locked (the same wait as a vaulted provider
-field). A daemon with `vault.enc` advertises the capability `vault-xtra:v1` (contract level 14) next to
+**vault's `.xtra` entry**, the unlock helper (`secret` = `xtra`), the console. The vault step reads the
+in-memory vault data and never prompts: a daemon that was started locked and received `vault.unlock` needs
+no second unlock for an `xtra_encryption` profile, and `vault.lock` takes the passphrase out of reach
+again. A one-shot CLI process (including `xtra import-key` and `import-age`) follows the same chain: it
+reads the vault first when the vault's passphrase is available without a prompt (environment, systemd
+credential, unlock helper), and otherwise skips the vault step.
+
+**Locked start and the marker.** Whether the vault holds `.xtra` is readable only after an unlock, but a
+locked daemon must decide at its start whether an `xtra_encryption` profile (no environment or credential
+source for the X-tra passphrase) waits for `vault.unlock`. It waits only when the vault is *known* to carry
+`.xtra`: an empty, non-secret marker file `vault.enc.xtra` beside `vault.enc`. Every vault write
+(`xtra-set`, `xtra-clear`, `encrypt`, `decrypt`, `change-passphrase`, `forget`, `profile remove`) and every
+vault read (so each unlock) brings the marker in line with what the vault holds; deleting the vault deletes
+the marker. A helper-only install (no marker) starts unlocked and asks the helper at the first content
+operation, as before; a vault written before the marker existed gets it on its first unlock. Under
+`require_vault = true` the exit-78 rule is unchanged and independent of the marker.
+
+A daemon with `vault.enc` advertises the capability `vault-xtra:v1` (contract level 14) next to
 `vault-unlock:v1`: this engine releases a vaulted X-tra passphrase on `vault.unlock`; whether the vault holds
-one is known only after the unlock. This start-locked rule applies whether or not the vault holds a `.xtra`
-entry, so an install whose helper answers `xtra` but cannot open `vault.enc` waits for `vault.unlock` (under
-`require_vault = true` it exits 78 at start). `vault xtra-set` proves the passphrase against the X-tra key
-files beside `config.toml` before storing it and refuses when none opens. The `xtra change-passphrase*`
-commands cannot read the vault; they remind to run `vault xtra-set` again. `vault decrypt`
-keeps the entry in the vault (it has no config section to go back into).
+one is known only after the unlock.
+
+**Commands.** `vault xtra-set` proves the passphrase against the X-tra key files beside `config.toml` before
+storing it and refuses when none opens. `xtra change-passphrase*` update the vault's `.xtra` entry in the same
+run when `vault.enc` exists and its passphrase is available without a prompt; otherwise they print the
+reminder to run `vault xtra-set` and exit non-zero. `vault decrypt` keeps the entry in the vault (it has no
+config section to go back into).
 
 ## Out of scope here
 

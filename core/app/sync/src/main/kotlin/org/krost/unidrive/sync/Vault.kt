@@ -40,6 +40,12 @@ class Vault(
         private const val GCM_TAG_BITS = 128
         const val MIN_PASSPHRASE_LENGTH = 8
 
+        /** The reserved entry that holds the X-tra passphrase (issue#796); `.` is not valid in a profile name. */
+        const val XTRA_ENTRY = ".xtra"
+
+        /** The suffix of the marker file beside the vault that says the vault carries [XTRA_ENTRY]. */
+        private const val XTRA_MARKER_SUFFIX = ".xtra"
+
         /** Known credential field names that should be vaulted. */
         val SENSITIVE_FIELDS =
             setOf(
@@ -52,6 +58,26 @@ class Vault(
     }
 
     fun exists(): Boolean = Files.exists(vaultPath)
+
+    /**
+     * The marker beside the vault (`vault.enc.xtra`, empty, not a secret): present exactly while the vault was last
+     * written or read holding [XTRA_ENTRY]. A locked daemon cannot read the vault, so the marker is how it knows
+     * before the unlock whether the vault is the X-tra passphrase's way in (issue#796).
+     */
+    val xtraMarker: Path get() = vaultPath.resolveSibling(vaultPath.fileName.toString() + XTRA_MARKER_SUFFIX)
+
+    val carriesXtra: Boolean get() = Files.exists(xtraMarker)
+
+    // Best effort: the marker only steers the locked start, so a read-only directory must not fail a read or a write.
+    private fun syncXtraMarker(data: Map<String, Map<String, String>>) {
+        runCatching {
+            if (XTRA_ENTRY in data) {
+                if (!Files.exists(xtraMarker)) Files.createFile(xtraMarker)
+            } else {
+                Files.deleteIfExists(xtraMarker)
+            }
+        }
+    }
 
     fun init(passphrase: CharArray) {
         requireMinLength(passphrase)
@@ -69,7 +95,7 @@ class Vault(
 
         val key = deriveKey(passphrase, salt)
         val plaintext = decrypt(key, iv, ciphertext)
-        return parseJson(String(plaintext, Charsets.UTF_8))
+        return parseJson(String(plaintext, Charsets.UTF_8)).also { syncXtraMarker(it) }
     }
 
     fun write(
@@ -92,10 +118,12 @@ class Vault(
                 throw IOException("The new vault is not what was written or does not decrypt; the old one was kept.")
             }
         }
+        syncXtraMarker(data)
     }
 
     fun delete() {
         Files.deleteIfExists(vaultPath)
+        runCatching { Files.deleteIfExists(xtraMarker) }
     }
 
     // True when [file] holds exactly [blob] (salt and iv included) and it decrypts, under [key], to [expected]: what a

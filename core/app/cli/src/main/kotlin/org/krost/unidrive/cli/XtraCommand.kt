@@ -158,9 +158,11 @@ class XtraChangePassphraseCommand : Runnable {
         if (!newPass.contentEquals(confirm)) { System.err.println("Passphrases don't match"); return }
         // Re-wraps the same key pair under the new passphrase; a fresh generate would orphan every file already
         // encrypted with the old key.
+        val newForVault = newPass.copyOf()
         km.changePassphrase(newPass)
         println("Passphrase changed successfully.")
         XtraAlgorithm.sharedPassphraseReminders(keyPath.parent, XtraAlgorithm.AES_GCM).forEach(::println)
+        if (!xtraCmd.parent.updateVaultXtraAfterChange(newForVault)) kotlin.system.exitProcess(1)
     }
 }
 
@@ -277,9 +279,11 @@ class XtraChangePassphraseAgeCommand : Runnable {
         if (!newPass.contentEquals(confirm)) { System.err.println("Passphrases don't match"); return }
         // Re-wraps the same identity under the new passphrase; a fresh generate would orphan every file already
         // encrypted to the old one.
+        val newForVault = newPass.copyOf()
         XtraAgeKeyStore(keyPath).changePassphrase(current, newPass)
         println("Passphrase changed successfully.")
         XtraAlgorithm.sharedPassphraseReminders(keyPath.parent, XtraAlgorithm.AGE_V1).forEach(::println)
+        if (!xtraCmd.parent.updateVaultXtraAfterChange(newForVault)) kotlin.system.exitProcess(1)
     }
 }
 
@@ -324,8 +328,10 @@ class XtraChangePassphraseTinkCommand : Runnable {
         val confirm = console.readPassword("Confirm passphrase: ")
         if (!newPass.contentEquals(confirm)) { System.err.println("Passphrases don't match"); return }
         // Re-wraps the same keyset under the new passphrase; a fresh generate would orphan every file it sealed.
+        val newForVault = newPass.copyOf()
         XtraTinkKeyStore(keyPath).changePassphrase(current, newPass)
         println("Passphrase changed successfully.")
         XtraAlgorithm.sharedPassphraseReminders(keyPath.parent, XtraAlgorithm.TINK_AES_GCM).forEach(::println)
+        if (!xtraCmd.parent.updateVaultXtraAfterChange(newForVault)) kotlin.system.exitProcess(1)
     }
 }
