@@ -30,6 +30,8 @@ internal class PassphraseSources(
     val consoleRead: (String) -> CharArray? = { prompt -> System.console()?.readPassword(prompt) },
     val helper: (helperPath: Path, secretKind: String, keyring: Path) -> UnlockHelper.Result =
         { path, kind, keyring -> UnlockHelper.run(path, kind, keyring) },
+    // The unlocked vault's copy of the secret, a fresh array the caller scrubs; null where the vault holds none.
+    val vaultSecret: () -> CharArray? = { null },
 ) {
     companion object {
         /** The sentinel env vars the chain's caller must never leak into a child process (#785). */
@@ -42,7 +44,7 @@ internal const val KEYRING_FILE_NAME = "keyring.hello"
 
 /**
  * Resolves one passphrase, in order: [envName], the systemd credential file [credentialName]
- * (under `CREDENTIALS_DIRECTORY`), the unlock helper when [helperConfig] names one, then the
+ * (under `CREDENTIALS_DIRECTORY`), the unlocked vault's copy ([PassphraseSources.vaultSecret]), the unlock helper when [helperConfig] names one, then the
  * console prompt [prompt]. A helper `declined`/`unavailable`/`locked_out` falls through to the
  * console; every other helper outcome stops the chain and is refused with the helper's code.
  */
@@ -62,6 +64,8 @@ internal fun resolvePassphrase(
             return PassphraseResolution.Secret(Files.readString(credential).trimEnd('\r', '\n').toCharArray())
         }
     }
+    // An unlocked vault that holds the secret answers ahead of the helper (the X-tra passphrase, issue#796).
+    sources.vaultSecret()?.let { return PassphraseResolution.Secret(it) }
     // The helper step. A configured helper is never silently skipped: a value that is not an
     // absolute path, and a path that is not a regular file, are errors that name the path — a
     // configured unlock factor that cannot run must not degrade to a weaker one unnoticed.

@@ -4,6 +4,9 @@ import org.krost.unidrive.sync.ConfigSecrets
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.Vault
 import org.krost.unidrive.sync.escapeTomlValue
+import org.krost.unidrive.xtra.XtraAgeKeyStore
+import org.krost.unidrive.xtra.XtraKeyManager
+import org.krost.unidrive.xtra.XtraTinkKeyStore
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
 import picocli.CommandLine.Parameters
@@ -21,6 +24,8 @@ import java.nio.file.Files
         VaultChangePassphraseCommand::class,
         VaultForgetCommand::class,
         VaultSealCredentialsCommand::class,
+        VaultXtraSetCommand::class,
+        VaultXtraClearCommand::class,
     ],
 )
 class VaultCommand : Runnable {
@@ -28,7 +33,7 @@ class VaultCommand : Runnable {
     lateinit var parent: Main
 
     override fun run() {
-        println("Usage: unidrive vault <init|encrypt|decrypt|change-passphrase|forget|seal-credentials>")
+        println("Usage: unidrive vault <init|encrypt|decrypt|change-passphrase|forget|seal-credentials|xtra-set|xtra-clear>")
     }
 }
 
@@ -286,7 +291,10 @@ internal fun decryptVault(
     warn: (String) -> Unit,
 ): String {
     val vault = Vault(baseDir.resolve("vault.enc"))
-    val data = vault.read(passphrase)
+    val all = vault.read(passphrase)
+    // The X-tra passphrase has no config section to go back into: it stays in the vault (issue#796).
+    val xtraEntry = all[XTRA_VAULT_ENTRY]
+    val data = all - XTRA_VAULT_ENTRY
     val configPath = baseDir.resolve("config.toml")
     return ConfigFileTransaction.withLock(configPath) {
         // #797: the credential seal key is no profile's entry and never goes into config.toml; it stays in the vault.
@@ -294,12 +302,23 @@ internal fun decryptVault(
         val sealInUse = data[CREDENTIAL_SEAL_SECTION]?.get("enabled") == "true" || anyCredentialsSealed(baseDir)
         val reserved = data.filterKeys(::isReservedVaultSection).filterValues { sealInUse }
         val sealWhy = if (reserved.isNotEmpty() && data[CREDENTIAL_SEAL_SECTION]?.get("enabled") != "true") " (sealing is off, but a credentials file is still sealed under it)" else ""
+        val xtraKept = if (xtraEntry != null) mapOf(XTRA_VAULT_ENTRY to xtraEntry) else emptyMap()
+        // What stays in the vault besides orphans, named for the messages.
+        val keeps = listOfNotNull(
+            if (reserved.isNotEmpty()) "the credential seal key$sealWhy" else null,
+            if (xtraEntry != null) "the X-tra passphrase (drop it with `unidrive vault xtra-clear`)" else null,
+        ).joinToString(" and ")
         if (data.keys.all(::isReservedVaultSection)) {
-            if (reserved.isEmpty()) {
+            if (reserved.isEmpty() && xtraEntry == null) {
                 vault.delete()
                 return@withLock "Vault is empty — nothing to restore."
             }
-            return@withLock "Nothing to restore; the vault keeps only the credential seal key$sealWhy."
+            if (reserved.isEmpty()) {
+                // Only an unused seal-key leftover (or nothing) besides the X-tra passphrase: the leftover goes.
+                if (data.isNotEmpty()) vault.write(passphrase, xtraKept)
+                return@withLock "The vault holds only the X-tra passphrase, which stays in it; drop it with `unidrive vault xtra-clear`, then decrypt again."
+            }
+            return@withLock "Nothing to restore; the vault keeps only $keeps."
         }
         val configContent = if (Files.exists(configPath)) Files.readString(configPath) else "[general]\n"
         val configured = SyncConfig.parseRaw(configContent, configPath.toString()).providers.keys
@@ -311,15 +330,17 @@ internal fun decryptVault(
         if (restorable.isNotEmpty()) {
             ConfigFileTransaction.writeAtomically(configPath, restoreVaultCredentials(configContent, restorable))
         }
-        if (orphans.isEmpty() && reserved.isEmpty()) {
+        val kept = orphans + reserved + xtraKept
+        if (kept.isEmpty()) {
             vault.delete()
             "Credentials restored to config.toml. Vault deleted."
         } else if (orphans.isEmpty()) {
-            vault.write(passphrase, reserved)
-            "Credentials restored to config.toml; the vault keeps only the credential seal key$sealWhy."
+            vault.write(passphrase, kept)
+            "Credentials restored to config.toml; the vault keeps ${if (reserved.isNotEmpty() && xtraEntry == null) "only " else ""}$keeps."
         } else {
-            vault.write(passphrase, orphans + reserved)
-            "Credentials of ${restorable.size} profile(s) restored to config.toml; the vault keeps ${orphans.size} orphan entry(ies)."
+            vault.write(passphrase, kept)
+            val also = if (keeps.isEmpty()) "" else " and $keeps"
+            "Credentials of ${restorable.size} profile(s) restored to config.toml; the vault keeps ${orphans.size} orphan entry(ies)$also."
         }
     }
 }
@@ -566,6 +587,151 @@ class VaultSealCredentialsCommand : java.util.concurrent.Callable<Int> {
         )
         return 0
     }
+}
+
+// ── vault xtra-set / xtra-clear ──────────────────────────────────────────────
+
+@Command(
+    name = "xtra-set",
+    description = ["Store the X-tra passphrase in the vault, so vault.unlock releases it to a daemon with no other source"],
+    mixinStandardHelpOptions = true,
+)
+class VaultXtraSetCommand : java.util.concurrent.Callable<Int> {
+    @ParentCommand
+    lateinit var vaultCmd: VaultCommand
+
+    @Option(
+        names = ["--passphrase-stdin"],
+        description = [
+            "Read the vault passphrase from the first line of standard input instead of the " +
+                "terminal (no interactive terminal required)",
+        ],
+    )
+    var passphraseStdin: Boolean = false
+
+    @Option(
+        names = ["--xtra-passphrase-stdin"],
+        description = [
+            "Read the X-tra passphrase from the next line of standard input (after the vault passphrase " +
+                "when --passphrase-stdin is given) instead of the terminal; no confirmation line",
+        ],
+    )
+    var xtraPassphraseStdin: Boolean = false
+
+    override fun call(): Int {
+        val configDir = vaultCmd.parent.configBaseDir()
+        val vault = Vault(configDir.resolve("vault.enc"))
+        if (!vault.exists()) {
+            System.err.println("No vault found. Run 'unidrive vault init' first.")
+            return 1
+        }
+        val vaultPass =
+            if (passphraseStdin) readPassphraseStdin("--passphrase-stdin") else readPassphrase("Vault passphrase: ")
+        val xtraPass =
+            if (xtraPassphraseStdin) {
+                readPassphraseStdin("--xtra-passphrase-stdin")
+            } else {
+                val console = System.console()
+                if (console == null) {
+                    System.err.println("Error: interactive terminal required.")
+                    System.exit(1)
+                }
+                val pass = console.readPassword("X-tra passphrase: ") ?: run {
+                    System.err.println("Error: could not read passphrase.")
+                    kotlin.system.exitProcess(1)
+                }
+                val confirmed = console.readPassword("Confirm X-tra passphrase: ") ?: run {
+                    System.err.println("Error: could not read passphrase.")
+                    kotlin.system.exitProcess(1)
+                }
+                if (!pass.contentEquals(confirmed)) {
+                    System.err.println("Passphrases do not match.")
+                    System.exit(1)
+                }
+                pass
+            }
+        // The vault answers ahead of the helper and the console, so a wrong value would shadow a correct one:
+        // prove it against the key files the daemon will load with it before it is stored.
+        val present = XtraAlgorithm.entries.filter { Files.exists(configDir.resolve(it.keyFileName)) }
+        val opening = present.filter { xtraKeyFileOpens(it, configDir, xtraPass) }
+        if (present.isNotEmpty() && opening.isEmpty()) {
+            System.err.println("Error: the passphrase opens none of ${present.joinToString { it.keyFileName }}; nothing was stored.")
+            xtraPass.fill('\u0000')
+            return 1
+        }
+        val configPath = configDir.resolve("config.toml")
+        ConfigFileTransaction.withLock(configPath) {
+            vault.write(vaultPass, setVaultXtraPassphrase(vault.read(vaultPass), String(xtraPass)))
+        }
+        xtraPass.fill('\u0000')
+        println("Stored the X-tra passphrase in the vault.")
+        (present - opening.toSet()).forEach {
+            println("Note: ${it.keyFileName} is not under this passphrase (all X-tra key files share one); change it: ${it.changePassphraseCommand}")
+        }
+        println("A running daemon keeps its in-memory vault data until its next vault.unlock or a restart.")
+        return 0
+    }
+}
+
+@Command(
+    name = "xtra-clear",
+    description = ["Drop the X-tra passphrase from the vault"],
+    mixinStandardHelpOptions = true,
+)
+class VaultXtraClearCommand : java.util.concurrent.Callable<Int> {
+    @ParentCommand
+    lateinit var vaultCmd: VaultCommand
+
+    @Option(
+        names = ["--passphrase-stdin"],
+        description = [
+            "Read the vault passphrase from the first line of standard input instead of the " +
+                "terminal (no interactive terminal required)",
+        ],
+    )
+    var passphraseStdin: Boolean = false
+
+    override fun call(): Int {
+        val baseDir = vaultCmd.parent.configBaseDir()
+        val vault = Vault(baseDir.resolve("vault.enc"))
+        if (!vault.exists()) {
+            System.err.println("No vault found.")
+            return 1
+        }
+        val passphrase =
+            if (passphraseStdin) readPassphraseStdin("--passphrase-stdin") else readPassphrase("Vault passphrase: ")
+        val dropped =
+            ConfigFileTransaction.withLock(baseDir.resolve("config.toml")) {
+                forgetVaultEntry(vault, passphrase, XTRA_VAULT_ENTRY)
+            }
+        println(if (dropped) "Dropped the X-tra passphrase from the vault." else "The vault holds no X-tra passphrase.")
+        println("A running daemon keeps its in-memory vault data until its next vault.unlock or a restart.")
+        return 0
+    }
+}
+
+/** Whether [passphrase] opens [algorithm]'s key file in [configDir]; true when the file does not exist. */
+internal fun xtraKeyFileOpens(
+    algorithm: XtraAlgorithm,
+    configDir: java.nio.file.Path,
+    passphrase: CharArray,
+): Boolean {
+    val keyPath = configDir.resolve(algorithm.keyFileName)
+    if (!Files.exists(keyPath)) return true
+    return when (algorithm) {
+        XtraAlgorithm.AES_GCM -> runCatching { XtraKeyManager(keyPath).load(passphrase) }.isSuccess
+        XtraAlgorithm.AGE_V1 -> XtraAgeKeyStore(keyPath).opens(passphrase)
+        XtraAlgorithm.TINK_AES_GCM -> XtraTinkKeyStore(keyPath).opens(passphrase)
+    }
+}
+
+/** [data] with the X-tra passphrase set to [passphrase] (an empty one is refused); the other entries are unchanged. */
+internal fun setVaultXtraPassphrase(
+    data: Map<String, Map<String, String>>,
+    passphrase: String,
+): Map<String, Map<String, String>> {
+    require(passphrase.isNotEmpty()) { "the X-tra passphrase must not be empty" }
+    return data + (XTRA_VAULT_ENTRY to mapOf(XTRA_VAULT_FIELD to passphrase))
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────────────
