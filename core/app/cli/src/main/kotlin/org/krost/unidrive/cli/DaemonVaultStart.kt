@@ -190,14 +190,15 @@ internal fun Main.rawGeneral(): org.krost.unidrive.sync.RawGeneral {
 
 /**
  * Whether [profile] sets `xtra_encryption` and neither the environment nor a systemd credential supplies its
- * passphrase: then the vault's `.xtra` entry is the way in, so a vault that waits for its unlock keeps the
- * profile's daemon waiting too (issue#796). This holds whether or not the vault has a `.xtra` entry: that is
- * known only after the unlock. The helper (secret kind `xtra`) answers at the first content operation, after the
- * start, so an install whose helper holds `xtra` but cannot open `vault.enc` also waits (or exits 78 under
- * `require_vault`).
+ * passphrase, and the vault is known to carry the `.xtra` entry: then the vault is the way in, so a vault that waits
+ * for its unlock keeps the profile's daemon waiting too (issue#796). Whether the vault holds `.xtra` is readable only
+ * after an unlock, so it is known from the marker beside `vault.enc` ([Vault.carriesXtra]), kept by every vault
+ * write and read. Without the marker (a helper-only install, a vault never unlocked since the entry was set) the
+ * profile starts unlocked and the helper answers at the first content operation, as before.
  */
-private fun profileNeedsVaultedXtraPassphrase(profile: ProfileInfo): Boolean {
+private fun Main.profileNeedsVaultedXtraPassphrase(profile: ProfileInfo): Boolean {
     if (profile.rawProvider?.xtra_encryption != true) return false
+    if (!Vault(baseConfigDir.resolve("vault.enc")).carriesXtra) return false
     if (!LifecycleHooks.env(org.krost.unidrive.io.XTRA_PASSPHRASE_ENV).isNullOrBlank()) return false
     val credentials = LifecycleHooks.env("CREDENTIALS_DIRECTORY")
     return credentials.isNullOrBlank() || !Files.isRegularFile(Path.of(credentials).resolve("unidrive-xtra-pass"))

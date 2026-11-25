@@ -12,6 +12,8 @@ import org.junit.Assume.assumeFalse
 import org.junit.Assume.assumeTrue
 import org.krost.unidrive.io.Os
 import org.krost.unidrive.io.XTRA_PASSPHRASE_ENV
+import org.krost.unidrive.sync.ConfigSecrets
+import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.Vault
 import org.krost.unidrive.testing.TestScratch
 
@@ -71,22 +73,6 @@ class XtraPassphraseVaultTest {
     }
 
     @Test
-    fun `a profile with xtra_encryption and no environment source waits for the vault unlock`() {
-        val main = Main().apply { configDir = dir.toString() }
-        val profile = org.krost.unidrive.sync.ProfileInfo("p", "localfs", dir, org.krost.unidrive.sync.RawProvider(type = "localfs", xtra_encryption = true))
-        val plain = org.krost.unidrive.sync.ProfileInfo("q", "localfs", dir, org.krost.unidrive.sync.RawProvider(type = "localfs"))
-        try {
-            LifecycleHooks.env = { null }
-            assertTrue(main.profileNeedsVaultedFields(profile))
-            assertTrue(!main.profileNeedsVaultedFields(plain))
-            LifecycleHooks.env = { if (it == XTRA_PASSPHRASE_ENV) "from-env" else null }
-            assertTrue(!main.profileNeedsVaultedFields(profile), "the environment supplies the X-tra passphrase")
-        } finally {
-            LifecycleHooks.env = { System.getenv(it) }
-        }
-    }
-
-    @Test
     fun `xtra-set keeps the other entries and xtra-clear drops only the X-tra entry`() {
         val data = setVaultXtraPassphrase(mapOf("work" to mapOf("password" to "p")), xtraPass)
         assertEquals(mapOf("password" to "p"), data["work"])
@@ -107,7 +93,9 @@ class XtraPassphraseVaultTest {
         decryptVault(dir, vaultPass) { warnings += it }
         assertTrue(warnings.isEmpty(), "the X-tra entry is not an orphan profile: $warnings")
         assertEquals(setOf(XTRA_VAULT_ENTRY), vault.read(vaultPass).keys)
-        assertTrue(Files.readString(dir.resolve("config.toml")).contains("password = \"p\""))
+        val config = dir.resolve("config.toml")
+        val work = SyncConfig.parseRaw(Files.readString(config)).providers.getValue("work")
+        assertEquals("p", ConfigSecrets.decode(work, "work", config)?.password)
     }
 
     @Test
@@ -155,21 +143,6 @@ class XtraPassphraseVaultTest {
             assertFailsWith<IllegalStateException> { main.xtraPassphrase() }
             assertEquals("""{"ok":true}""", unlock(handler))
             assertEquals(xtraPass, String(main.xtraPassphrase()))
-        } finally {
-            LifecycleHooks.env = { System.getenv(it) }
-        }
-    }
-
-    // Intended (spec "starts locked"): vault.enc present + xtra profile + no env source waits for vault.unlock even
-    // when the vault holds no `.xtra` entry, because the daemon cannot know before the unlock.
-    @Test
-    fun `an xtra profile with a vault that holds no X-tra entry and a helper that declines the vault starts locked`() {
-        val (main, _) = lockedMain(emptyMap())
-        main.daemonVaultLocked = false
-        val profile = org.krost.unidrive.sync.ProfileInfo("p", "localfs", dir, org.krost.unidrive.sync.RawProvider(type = "localfs", xtra_encryption = true))
-        try {
-            LifecycleHooks.env = { null }
-            assertTrue(main.resolveDaemonVaultStart(profile, main.rawGeneral()) is DaemonVaultStart.Locked)
         } finally {
             LifecycleHooks.env = { System.getenv(it) }
         }

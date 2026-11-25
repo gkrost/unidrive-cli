@@ -5,6 +5,9 @@ import org.krost.unidrive.io.grantProblem
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import javax.crypto.AEADBadTagException
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -16,7 +19,7 @@ import kotlin.test.assertTrue
 import org.krost.unidrive.testing.TestScratch
 
 class VaultTest {
-    private fun tempVaultPath() = TestScratch.file("vault-test-", ".enc")
+    private fun tempVaultPath() = Files.createFile(TestScratch.directory("vault-test").resolve("vault.enc"))
 
     @Test
     fun `init creates vault file`() {
@@ -127,6 +130,36 @@ class VaultTest {
         Files.deleteIfExists(path)
     }
 
+    @Test
+    fun `a reader of an older generation leaves the newer X-tra marker intact`() {
+        val path = vaultFolder().resolve("vault.enc")
+        val pass = "testpassword".toCharArray()
+        val reader = Vault(path)
+        val writer = Vault(path)
+        val withXtra = mapOf(Vault.XTRA_ENTRY to mapOf("passphrase" to "test-xtra-password"))
+        writer.write(pass, emptyMap())
+
+        val decrypted = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        Executors.newSingleThreadExecutor().use { worker ->
+            val oldRead = worker.submit<Map<String, Map<String, String>>> {
+                reader.read(pass) {
+                    decrypted.countDown()
+                    check(resume.await(10, TimeUnit.SECONDS))
+                }
+            }
+            try {
+                assertTrue(decrypted.await(5, TimeUnit.SECONDS))
+                writer.write(pass, withXtra)
+                assertTrue(writer.carriesXtra)
+            } finally {
+                resume.countDown()
+            }
+            assertTrue(oldRead.get(5, TimeUnit.SECONDS).isEmpty())
+            assertTrue(writer.carriesXtra)
+        }
+    }
+
     // -- archive#1053: the write is atomic and owner-only from the first byte -----------------------------------------
 
     private val oldData = mapOf("old" to mapOf("secret_access_key" to "old-secret"))
@@ -155,7 +188,7 @@ class VaultTest {
 
         assertEquals(oldData, Vault(path).read("old-passphrase".toCharArray()), "the old vault still decrypts")
         assertTrue(before.contentEquals(Files.readAllBytes(path)), "and is byte for byte what it was")
-        assertEquals(listOf("vault.enc"), filesIn(folder), "no temp file is left behind")
+        assertEquals(listOf("vault.enc", "vault.enc.lock"), filesIn(folder), "no temp file is left behind")
         folder.toFile().deleteRecursively()
     }
 
@@ -174,7 +207,7 @@ class VaultTest {
         assertFailsWith<IOException> { damaged.write("new-passphrase".toCharArray(), newData) }
 
         assertEquals(oldData, Vault(path).read("old-passphrase".toCharArray()))
-        assertEquals(listOf("vault.enc"), filesIn(folder))
+        assertEquals(listOf("vault.enc", "vault.enc.lock"), filesIn(folder))
         folder.toFile().deleteRecursively()
     }
 
@@ -186,7 +219,7 @@ class VaultTest {
         assertFailsWith<IOException> { Vault(path) { throw IOException("simulated crash") }.init("new-passphrase".toCharArray()) }
 
         assertFalse(Vault(path).exists())
-        assertEquals(emptyList(), filesIn(folder))
+        assertEquals(listOf("vault.enc.lock"), filesIn(folder))
         folder.toFile().deleteRecursively()
     }
 
@@ -214,7 +247,7 @@ class VaultTest {
 
         assertEquals(oldData, Vault(path).read("new-passphrase".toCharArray()))
         assertFails { Vault(path).read("old-passphrase".toCharArray()) }
-        assertEquals(listOf("vault.enc"), filesIn(folder))
+        assertEquals(listOf("vault.enc", "vault.enc.lock"), filesIn(folder))
         folder.toFile().deleteRecursively()
     }
 }

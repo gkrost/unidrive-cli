@@ -8,6 +8,7 @@ import picocli.CommandLine.Option
 import picocli.CommandLine.ParentCommand
 import java.nio.file.Files
 import java.nio.file.Paths
+import java.util.concurrent.Callable
 
 /**
  * Key management of the X-tra layer (client-side encryption of a profile's file content, config key
@@ -142,25 +143,31 @@ class XtraImportCommand : Runnable {
 // ── xtra change-passphrase ────────────────────────────────────────────────────
 
 @Command(name = "change-passphrase", description = ["Change the encryption key's passphrase"], mixinStandardHelpOptions = true)
-class XtraChangePassphraseCommand : Runnable {
+class XtraChangePassphraseCommand : Callable<Int> {
     @ParentCommand
     lateinit var xtraCmd: XtraCommand
 
-    override fun run() {
+    override fun call(): Int {
         val keyPath = xtraCmd.parent.configBaseDir().resolve("xtra.key")
-        if (!Files.exists(keyPath)) { System.err.println("No key found. Run 'unidrive xtra init' first."); return }
-        val console = System.console() ?: run { System.err.println("No console available"); return }
+        if (!Files.exists(keyPath)) { System.err.println("No key found. Run 'unidrive xtra init' first."); return 0 }
+        val console = System.console() ?: run { System.err.println("No console available"); return 0 }
         val km = XtraKeyManager(keyPath)
-        km.load(console.readPassword("Current passphrase: ") ?: return)
+        km.load(console.readPassword("Current passphrase: ") ?: return 0)
         val newPass = console.readPassword("New passphrase (min ${XtraKeyManager.MIN_PASSPHRASE_LENGTH} chars): ")
-            ?: return
+            ?: return 0
         val confirm = console.readPassword("Confirm passphrase: ")
-        if (!newPass.contentEquals(confirm)) { System.err.println("Passphrases don't match"); return }
+        if (!newPass.contentEquals(confirm)) { System.err.println("Passphrases don't match"); return 0 }
         // Re-wraps the same key pair under the new passphrase; a fresh generate would orphan every file already
         // encrypted with the old key.
+        val newForVault = newPass.copyOf()
         km.changePassphrase(newPass)
         println("Passphrase changed successfully.")
         XtraAlgorithm.sharedPassphraseReminders(keyPath.parent, XtraAlgorithm.AES_GCM).forEach(::println)
+        return try {
+            xtraCmd.parent.updateVaultXtraAfterChange(newForVault)
+        } finally {
+            newForVault.fill('\u0000')
+        }
     }
 }
 
@@ -262,24 +269,30 @@ class XtraImportAgeCommand : Runnable {
 // ── xtra change-passphrase-age ────────────────────────────────────────────────
 
 @Command(name = "change-passphrase-age", description = ["Change the age identity's passphrase (the identity itself is unchanged)"], mixinStandardHelpOptions = true)
-class XtraChangePassphraseAgeCommand : Runnable {
+class XtraChangePassphraseAgeCommand : Callable<Int> {
     @ParentCommand
     lateinit var xtraCmd: XtraCommand
 
-    override fun run() {
+    override fun call(): Int {
         val keyPath = xtraCmd.parent.configBaseDir().resolve("xtra-age.key")
-        if (!Files.exists(keyPath)) { System.err.println("No age identity found. Run 'unidrive xtra init-age' first."); return }
-        val console = System.console() ?: run { System.err.println("No console available"); return }
-        val current = console.readPassword("Current passphrase: ") ?: return
+        if (!Files.exists(keyPath)) { System.err.println("No age identity found. Run 'unidrive xtra init-age' first."); return 0 }
+        val console = System.console() ?: run { System.err.println("No console available"); return 0 }
+        val current = console.readPassword("Current passphrase: ") ?: return 0
         val newPass = console.readPassword("New passphrase (min ${XtraKeyManager.MIN_PASSPHRASE_LENGTH} chars): ")
-            ?: return
+            ?: return 0
         val confirm = console.readPassword("Confirm passphrase: ")
-        if (!newPass.contentEquals(confirm)) { System.err.println("Passphrases don't match"); return }
+        if (!newPass.contentEquals(confirm)) { System.err.println("Passphrases don't match"); return 0 }
         // Re-wraps the same identity under the new passphrase; a fresh generate would orphan every file already
         // encrypted to the old one.
+        val newForVault = newPass.copyOf()
         XtraAgeKeyStore(keyPath).changePassphrase(current, newPass)
         println("Passphrase changed successfully.")
         XtraAlgorithm.sharedPassphraseReminders(keyPath.parent, XtraAlgorithm.AGE_V1).forEach(::println)
+        return try {
+            xtraCmd.parent.updateVaultXtraAfterChange(newForVault)
+        } finally {
+            newForVault.fill('\u0000')
+        }
     }
 }
 
@@ -310,22 +323,28 @@ class XtraInitTinkCommand : Runnable {
 // ── xtra change-passphrase-tink ───────────────────────────────────────────────
 
 @Command(name = "change-passphrase-tink", description = ["Change the tink keyset's passphrase (the keyset itself is unchanged)"], mixinStandardHelpOptions = true)
-class XtraChangePassphraseTinkCommand : Runnable {
+class XtraChangePassphraseTinkCommand : Callable<Int> {
     @ParentCommand
     lateinit var xtraCmd: XtraCommand
 
-    override fun run() {
+    override fun call(): Int {
         val keyPath = xtraCmd.parent.configBaseDir().resolve(XtraAlgorithm.TINK_AES_GCM.keyFileName)
-        if (!Files.exists(keyPath)) { System.err.println("No tink keyset found. Run 'unidrive xtra init-tink' first."); return }
-        val console = System.console() ?: run { System.err.println("No console available"); return }
-        val current = console.readPassword("Current passphrase: ") ?: return
+        if (!Files.exists(keyPath)) { System.err.println("No tink keyset found. Run 'unidrive xtra init-tink' first."); return 0 }
+        val console = System.console() ?: run { System.err.println("No console available"); return 0 }
+        val current = console.readPassword("Current passphrase: ") ?: return 0
         val newPass = console.readPassword("New passphrase (min ${XtraKeyManager.MIN_PASSPHRASE_LENGTH} chars): ")
-            ?: return
+            ?: return 0
         val confirm = console.readPassword("Confirm passphrase: ")
-        if (!newPass.contentEquals(confirm)) { System.err.println("Passphrases don't match"); return }
+        if (!newPass.contentEquals(confirm)) { System.err.println("Passphrases don't match"); return 0 }
         // Re-wraps the same keyset under the new passphrase; a fresh generate would orphan every file it sealed.
+        val newForVault = newPass.copyOf()
         XtraTinkKeyStore(keyPath).changePassphrase(current, newPass)
         println("Passphrase changed successfully.")
         XtraAlgorithm.sharedPassphraseReminders(keyPath.parent, XtraAlgorithm.TINK_AES_GCM).forEach(::println)
+        return try {
+            xtraCmd.parent.updateVaultXtraAfterChange(newForVault)
+        } finally {
+            newForVault.fill('\u0000')
+        }
     }
 }

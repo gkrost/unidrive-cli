@@ -2,7 +2,9 @@ package org.krost.unidrive.cli
 
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.io.XTRA_PASSPHRASE_ENV
+import org.krost.unidrive.io.VAULT_PASSPHRASE_ENV
 import org.krost.unidrive.sync.RawProvider
+import org.krost.unidrive.sync.Vault
 import org.krost.unidrive.xtra.AgeV1Strategy
 import org.krost.unidrive.xtra.AesGcmStrategy
 import org.krost.unidrive.xtra.TinkStreamingStrategy
@@ -60,7 +62,9 @@ internal fun Main.wrapWithXtra(
  * credential, the unlocked vault's `.xtra` entry (released by `vault.unlock`, issue#796), the unlock
  * helper (secret kind `xtra`), then a console prompt.
  */
-internal fun Main.xtraPassphrase(): CharArray =
+internal fun Main.xtraPassphrase(): CharArray = xtraPassphrase(PassphraseSources())
+
+internal fun Main.xtraPassphrase(sources: PassphraseSources): CharArray =
     when (val resolution = resolvePassphrase(
         secretKind = "xtra",
         envName = XTRA_PASSPHRASE_ENV,
@@ -68,7 +72,16 @@ internal fun Main.xtraPassphrase(): CharArray =
         configDir = baseConfigDir,
         helperConfig = rawGeneral().unlock_helper,
         prompt = "X-tra passphrase: ",
-        sources = PassphraseSources(vaultSecret = { vaultXtraPassphrase() }),
+        sources = PassphraseSources(
+            env = sources.env,
+            helper = sources.helper,
+            consolePresent = sources.consolePresent,
+            consoleRead = sources.consoleRead,
+            vaultSecret = {
+                loadVaultForXtra(sources)
+                vaultXtraPassphrase()
+            },
+        ),
     )) {
         is PassphraseResolution.Secret -> resolution.chars
         is PassphraseResolution.Refused ->
@@ -88,7 +101,7 @@ internal fun Main.xtraPassphrase(): CharArray =
     }
 
 /** The reserved vault entry that holds the X-tra passphrase; not a valid profile name, so no profile can collide with it. */
-internal const val XTRA_VAULT_ENTRY = ".xtra"
+internal const val XTRA_VAULT_ENTRY = Vault.XTRA_ENTRY
 
 /** The field of [XTRA_VAULT_ENTRY] that holds the passphrase. */
 internal const val XTRA_VAULT_FIELD = "passphrase"
@@ -96,3 +109,68 @@ internal const val XTRA_VAULT_FIELD = "passphrase"
 /** A fresh copy of the X-tra passphrase in the in-memory vault data, or null while the vault is locked, not loaded, or holds none. */
 internal fun Main.vaultXtraPassphrase(): CharArray? =
     vaultDataCache?.get(XTRA_VAULT_ENTRY)?.get(XTRA_VAULT_FIELD)?.takeIf { it.isNotEmpty() }?.toCharArray()
+
+/**
+ * A one-shot CLI process (not a daemon, whose vault data is already there or deliberately locked) has not read the
+ * vault when the X-tra step asks for its `.xtra` entry: read it when the vault's passphrase is available without a
+ * prompt (environment, systemd credential, unlock helper), so the CLI and the daemon agree on what "this
+ * installation's passphrase" is (issue#796). Any failure leaves the vault step out; the rest of the chain answers.
+ */
+private fun Main.loadVaultForXtra(sources: PassphraseSources) {
+    if (vaultDataCache != null || daemonVaultLocked) return
+    val vault = Vault(baseConfigDir.resolve("vault.enc"))
+    if (!vault.exists()) return
+    val passphrase = vaultPassphraseNoPrompt(sources) ?: return
+    runCatching { vault.read(passphrase) }.onSuccess { vaultDataCache = it }
+    passphrase.fill('\u0000')
+}
+
+private fun Main.vaultPassphraseNoPrompt(sources: PassphraseSources): CharArray? =
+    (
+        resolvePassphrase(
+            secretKind = "vault",
+            envName = VAULT_PASSPHRASE_ENV,
+            credentialName = "unidrive-vault-pass",
+            configDir = baseConfigDir,
+            helperConfig = rawGeneral().unlock_helper,
+            prompt = "Vault passphrase: ",
+            sources = PassphraseSources(env = sources.env, helper = sources.helper, consolePresent = { false }),
+        ) as? PassphraseResolution.Secret
+    )?.chars
+
+/** Returns the exit status after bringing the optional vaulted copy in step with the re-wrapped key. */
+@Suppress("TooGenericExceptionCaught") // any failure after the key was re-wrapped needs the same recovery command
+internal fun Main.updateVaultXtraAfterChange(
+    newPassphrase: CharArray,
+    sources: PassphraseSources = PassphraseSources(),
+    vault: Vault = Vault(baseConfigDir.resolve("vault.enc")),
+): Int {
+    try {
+        if (!vault.exists()) return 0
+        val passphrase = vaultPassphraseNoPrompt(sources)
+            ?: return vaultXtraUpdateFailed("the vault passphrase is unavailable without a prompt")
+        try {
+            ConfigFileTransaction.withLock(baseConfigDir.resolve("config.toml")) {
+                if (!vault.exists()) return@withLock
+                val data = vault.read(passphrase)
+                if (XTRA_VAULT_ENTRY in data) {
+                    vault.write(passphrase, setVaultXtraPassphrase(data, String(newPassphrase)))
+                    println("Updated the vault's X-tra passphrase.")
+                }
+            }
+        } finally {
+            passphrase.fill('\u0000')
+        }
+        return 0
+    } catch (e: Exception) {
+        return vaultXtraUpdateFailed(e.javaClass.simpleName)
+    }
+}
+
+private fun vaultXtraUpdateFailed(reason: String): Int {
+    System.err.println(
+        "Error: the X-tra key file already changed, but its vaulted passphrase could not be updated ($reason). " +
+            "Update it with: unidrive vault xtra-set",
+    )
+    return 1
+}
