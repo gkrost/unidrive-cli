@@ -149,8 +149,9 @@ for that file. The transfer-history retry keeps the refusal in force until it ex
     the platform protection (DPAPI, Keychain, Secret Service). **Recovery:** if the vault is lost (deleted, or its
     passphrase forgotten), the sealed mnemonic cannot be read from disk any more. Sign in again with
     `unidrive auth login` (e-mail + password); the mnemonic comes back from the account and replaces the sealed file.
-    A sign-in without the vault key writes it with the platform protection only; it is sealed again the next time a
-    process that has unlocked the vault reads it (after `vault init` and `vault seal-credentials on`).
+    `unidrive auth login` never reads the vault and asks for no vault passphrase, so every sign-in (a first one or a
+    re-login) writes the file with the platform protection only; it is sealed the next time a process that has unlocked
+    the vault reads it (with sealing on, after `vault init` and `vault seal-credentials on`).
 - `sweep` — detect and rehydrate zero-byte stub files (`--null-bytes` scan; `--dry-run` and `--rehydrate` modify it)
 
 ### Tracking-set engine (experimental, frozen)
