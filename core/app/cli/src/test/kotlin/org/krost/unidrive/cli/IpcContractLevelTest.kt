@@ -155,6 +155,9 @@ class IpcContractLevelTest {
                 // 13 (gkrost/unidrive-cli#848 item 3): history.report lets the mount host report an operation of its own
                 // (a journal replay, a placeholder or pin action) as one row of the history, its source named.
                 setOf("verb:history.report", "capability:history.report.v1"),
+                // 14 (issue#796): the vault carries the X-tra passphrase and vault.unlock releases it to the X-tra wiring;
+                // the capability names it on a daemon whose vault.enc exists.
+                setOf("capability:vault-xtra:v1"),
             )
     }
 }
