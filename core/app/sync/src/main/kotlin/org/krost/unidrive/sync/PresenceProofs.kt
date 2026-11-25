@@ -188,7 +188,9 @@ class PresenceProofs(
         if (current == null) {
             if (passphrase == null) return PASSPHRASE_REQUIRED
             val matches = passphraseMatches ?: return VAULT_ABSENT
-            if (!matches(passphrase)) {
+            // A vault that vanished or cannot be read since the daemon started is no vault: a worded refusal, not a thrown handler.
+            val ok = try { matches(passphrase) } catch (_: IOException) { return VAULT_ABSENT }
+            if (!ok) {
                 delay(failureDelayMs)
                 return BAD_PASSPHRASE
             }

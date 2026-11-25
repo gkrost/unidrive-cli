@@ -351,6 +351,20 @@ class PresenceProofsTest {
         }
 
     @Test
+    fun a_vault_that_cannot_be_read_during_a_first_enrollment_is_a_worded_refusal() =
+        runTest {
+            val p =
+                PresenceProofs(
+                    dir.resolve(PresenceProofs.ANCHOR_FILE), "p1", PresencePolicy.DESTRUCTIVE,
+                    { throw java.nio.file.NoSuchFileException("vault.enc") },
+                    nowNanos = { now * 1_000_000 }, failureDelayMs = 0,
+                )
+            assertEquals("vault_absent", error(p.enroll(enrollRequest(p, keyPair(), passphrase = passphrase))))
+            assertFalse(p.enrolled)
+            assertFalse(Files.exists(dir.resolve(PresenceProofs.ANCHOR_FILE)))
+        }
+
+    @Test
     fun a_challenge_with_a_bad_target_or_hash_is_refused() {
         val p = proofs()
         assertEquals("invalid_target", error(p.challenge("""{"verb":"presence.challenge"}""")))

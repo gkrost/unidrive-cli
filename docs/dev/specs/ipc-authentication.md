@@ -203,7 +203,7 @@ by the **current** anchor over the same message. In order:
 | `missing_proof` | no string `nonce` or `signature` |
 | `presence_invalid` / `presence_expired` (with `"verb":"presence.enroll"`) | the possession proof does not hold, as for a guarded verb (the nonce is spent from here on) |
 | `passphrase_required` | no anchor yet, and no `passphrase` |
-| `vault_absent` | no anchor yet, and the profile has no `vault.enc`: a first enrollment needs the vault passphrase |
+| `vault_absent` | no anchor yet, and the profile has no `vault.enc` or it cannot be read (it vanished or failed to read since the daemon started): a first enrollment needs the vault passphrase |
 | `vault_bad_passphrase` | no anchor yet, and the passphrase does not open `vault.enc` (after 250 ms) |
 | `presence_required` (with `"enrolled":true`) | an anchor exists, and no `anchor_signature`: the passphrase alone never replaces an anchor |
 | `presence_invalid` | an anchor exists, and `anchor_signature` does not verify under it |
