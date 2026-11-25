@@ -311,6 +311,7 @@ open class Main : Runnable {
                 throw IllegalStateException("unreachable")
             }
         vaultDataCache = data
+        installCredentialSeal(data)
         return data
     }
 

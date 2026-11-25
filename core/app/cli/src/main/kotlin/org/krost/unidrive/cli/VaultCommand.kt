@@ -20,6 +20,7 @@ import java.nio.file.Files
         VaultDecryptCommand::class,
         VaultChangePassphraseCommand::class,
         VaultForgetCommand::class,
+        VaultSealCredentialsCommand::class,
     ],
 )
 class VaultCommand : Runnable {
@@ -27,7 +28,7 @@ class VaultCommand : Runnable {
     lateinit var parent: Main
 
     override fun run() {
-        println("Usage: unidrive vault <init|encrypt|decrypt|change-passphrase|forget>")
+        println("Usage: unidrive vault <init|encrypt|decrypt|change-passphrase|forget|seal-credentials>")
     }
 }
 
@@ -288,25 +289,33 @@ internal fun decryptVault(
     val data = vault.read(passphrase)
     val configPath = baseDir.resolve("config.toml")
     return ConfigFileTransaction.withLock(configPath) {
-        if (data.isEmpty()) {
-            vault.delete()
-            return@withLock "Vault is empty — nothing to restore."
+        // #797: the credential seal key is no profile's entry and never goes into config.toml; it stays in the vault.
+        val reserved = data.filterKeys(::isReservedVaultSection)
+        if (data.size == reserved.size) {
+            if (reserved.isEmpty()) {
+                vault.delete()
+                return@withLock "Vault is empty — nothing to restore."
+            }
+            return@withLock "Nothing to restore; the vault keeps only the credential seal key."
         }
         val configContent = if (Files.exists(configPath)) Files.readString(configPath) else "[general]\n"
         val configured = SyncConfig.parseRaw(configContent, configPath.toString()).providers.keys
         val restorable = data.filterKeys { it in configured }
-        val orphans = data - restorable.keys
+        val orphans = data - restorable.keys - reserved.keys
         for (name in orphans.keys) {
             warn("the vault entry of profile '$name' has no config section and was not restored; drop it with `unidrive vault forget $name`")
         }
         if (restorable.isNotEmpty()) {
             ConfigFileTransaction.writeAtomically(configPath, restoreVaultCredentials(configContent, restorable))
         }
-        if (orphans.isEmpty()) {
+        if (orphans.isEmpty() && reserved.isEmpty()) {
             vault.delete()
             "Credentials restored to config.toml. Vault deleted."
+        } else if (orphans.isEmpty()) {
+            vault.write(passphrase, reserved)
+            "Credentials restored to config.toml; the vault keeps only the credential seal key."
         } else {
-            vault.write(passphrase, orphans)
+            vault.write(passphrase, orphans + reserved)
             "Credentials of ${restorable.size} profile(s) restored to config.toml; the vault keeps ${orphans.size} orphan entry(ies)."
         }
     }
@@ -487,9 +496,72 @@ internal fun forgetVaultEntry(
     name: String,
 ): Boolean {
     val data = vault.read(passphrase)
-    if (name !in data) return false
+    if (isReservedVaultSection(name) || name !in data) return false
     vault.write(passphrase, data - name)
     return true
+}
+
+// ── vault seal-credentials ───────────────────────────────────────────────────
+
+/**
+ * gkrost/unidrive-cli#797 (P3): turns the vault-key seal of the Internxt mnemonic (credentials.json) on or off. `on`
+ * creates the seal key in the vault on first use; `off` keeps it, so files sealed earlier can still be read. Each
+ * file is re-sealed (or, after `off`, rewritten platform-only) the next time a process that has unlocked the vault
+ * reads it.
+ */
+@Command(
+    name = "seal-credentials",
+    description = ["Seal the Internxt credentials under a key kept in the vault (on), or keep only the platform protection (off)"],
+    mixinStandardHelpOptions = true,
+)
+class VaultSealCredentialsCommand : java.util.concurrent.Callable<Int> {
+    @ParentCommand
+    lateinit var vaultCmd: VaultCommand
+
+    @Parameters(index = "0", paramLabel = "on|off", description = ["on or off"])
+    lateinit var state: String
+
+    @Option(
+        names = ["--passphrase-stdin"],
+        description = [
+            "Read the vault passphrase from the first line of standard input instead of the " +
+                "terminal (no interactive terminal required)",
+        ],
+    )
+    var passphraseStdin: Boolean = false
+
+    override fun call(): Int {
+        val enabled =
+            when (state) {
+                "on" -> true
+                "off" -> false
+                else -> {
+                    System.err.println("Error: expected on or off, got '$state'.")
+                    return 2
+                }
+            }
+        val baseDir = vaultCmd.parent.configBaseDir()
+        val vault = Vault(baseDir.resolve("vault.enc"))
+        if (!vault.exists()) {
+            System.err.println("No vault found. Run 'unidrive vault init' first.")
+            return 1
+        }
+        val passphrase =
+            if (passphraseStdin) readPassphraseStdin("--passphrase-stdin") else readPassphrase("Vault passphrase: ")
+        // The vault writers serialize on the config lock (vault encrypt / decrypt / forget).
+        ConfigFileTransaction.withLock(baseDir.resolve("config.toml")) {
+            vault.write(passphrase, withCredentialSeal(vault.read(passphrase), enabled))
+        }
+        println(
+            if (enabled) {
+                "Credential sealing is on: each Internxt credentials.json is sealed the next time an unlocked unidrive reads it."
+            } else {
+                "Credential sealing is off: sealed credentials are rewritten with the platform protection only " +
+                    "the next time an unlocked unidrive reads them."
+            },
+        )
+        return 0
+    }
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────────────

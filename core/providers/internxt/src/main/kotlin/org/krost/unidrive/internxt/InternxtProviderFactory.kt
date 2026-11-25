@@ -5,7 +5,6 @@ import org.krost.unidrive.CredentialHealth
 import org.krost.unidrive.ProviderFactory
 import org.krost.unidrive.ProviderMetadata
 import org.krost.unidrive.auth.CredentialProtector
-import org.krost.unidrive.auth.CredentialProtectors
 import org.krost.unidrive.auth.CredentialProtectionException
 import org.krost.unidrive.auth.CredentialStore
 import org.krost.unidrive.auth.JwtExtractor
@@ -14,7 +13,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 class InternxtProviderFactory(
-    private val credentialProtector: CredentialProtector? = CredentialProtectors.forCurrentPlatform(),
+    private val credentialProtector: CredentialProtector? = internxtCredentialProtector(),
 ) : ProviderFactory {
     override val id = "internxt"
 

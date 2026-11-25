@@ -3,6 +3,7 @@ package org.krost.unidrive.internxt
 import org.krost.unidrive.io.defaultTokenPath
 import org.krost.unidrive.auth.CredentialProtector
 import org.krost.unidrive.auth.CredentialProtectors
+import org.krost.unidrive.auth.KeyedCredentialProtector
 import java.nio.file.Path
 
 data class InternxtConfig(
@@ -30,8 +31,11 @@ data class InternxtConfig(
     // INTERNXT_NOTIFICATIONS=off (also 0 / false) skips the socket.io wake-signal client;
     // sync then relies on the adaptive poll alone. Anything else, or unset, keeps it on.
     val notificationsEnabled: Boolean = parseNotificationsEnabled(System.getenv("INTERNXT_NOTIFICATIONS")),
-    /** The current host's native credential store is the secure default for every auth entrypoint. */
-    val credentialProtector: CredentialProtector? = CredentialProtectors.forCurrentPlatform(),
+    /**
+     * The current host's native credential store is the secure default for every auth entrypoint, under the vault-key
+     * seal of gkrost/unidrive-cli#797 (a no-op until the vault turns sealing on).
+     */
+    val credentialProtector: CredentialProtector? = internxtCredentialProtector(),
 ) {
     companion object {
         internal fun parseNotificationsEnabled(raw: String?): Boolean = raw?.trim()?.lowercase() !in setOf("off", "0", "false")
@@ -93,3 +97,6 @@ data class InternxtConfig(
         const val SYNC_PAGE_SIZE: Int = 1000
     }
 }
+
+/** The protector of the mnemonic file (credentials.json): the platform one under the vault-key seal (#797). */
+fun internxtCredentialProtector(): CredentialProtector = KeyedCredentialProtector(CredentialProtectors.forCurrentPlatform())

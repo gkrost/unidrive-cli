@@ -144,7 +144,7 @@ for that file. The transfer-history retry keeps the refusal in force until it ex
 - `trash` — trash emulation (`list`, `restore`, `purge`)
 - `versions` — versioned files (`list`, `restore`, `purge`)
 - `relocate` — migrate data between cloud providers (`--from`, `--to`, `--delete-source`; the delete pass removes only what the migration transferred, by id, and is refused after any failed or size-only-skipped file)
-- `vault` — credential vault (`init`, `encrypt`, `decrypt`, `change-passphrase`)
+- `vault` — credential vault (`init`, `encrypt`, `decrypt`, `change-passphrase`, `forget`, `seal-credentials`)
 - `sweep` — detect and rehydrate zero-byte stub files (`--null-bytes` scan; `--dry-run` and `--rehydrate` modify it)
 
 ### Tracking-set engine (experimental, frozen)
