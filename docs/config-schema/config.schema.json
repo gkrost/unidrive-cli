@@ -37,7 +37,8 @@
         "version_retention_days": { "type": "integer", "minimum": 1 },
         "streaming_reconciliation": { "type": "boolean" },
         "unlock_helper": { "type": "string" },
-        "require_vault": { "type": "boolean" }
+        "require_vault": { "type": "boolean" },
+        "require_presence": { "type": "string", "enum": ["off", "destructive", "admin"] }
       }
     },
     "providers": {

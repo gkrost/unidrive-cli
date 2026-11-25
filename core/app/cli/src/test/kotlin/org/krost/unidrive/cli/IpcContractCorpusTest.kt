@@ -52,6 +52,7 @@ import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcAuthClient
 import org.krost.unidrive.sync.IpcEndpoint
 import org.krost.unidrive.sync.IpcServer
+import org.krost.unidrive.sync.PresencePolicy
 import org.krost.unidrive.telemetry.TransferDirection
 import org.krost.unidrive.telemetry.TransferHistory
 import org.krost.unidrive.telemetry.TransferResult
@@ -115,6 +116,9 @@ class IpcContractCorpusTest {
             // nothing between vault.lock and daemon.shutdown reads the paused state. The
             // lock → status → unlock cycle is sessions/vault-lock.ndjson against its own daemon.
             "vault.unlock", "vault.lock",
+            // gkrost/unidrive-cli#798: policy off and no anchor, so only the param shapes and one issued nonce (the counter
+            // seam's first) — the enroll corpus spends it for the wrong verb. sessions/presence-destructive.ndjson has the rest.
+            "presence.challenge", "presence.enroll",
             "daemon.shutdown",
         )
 
@@ -197,6 +201,8 @@ class IpcContractCorpusTest {
         runtime.vault = scriptedVault()
         // gkrost/unidrive-cli#860: scope.set persists the new set; the corpus daemon has no config.toml to write.
         runtime.scopeConfig = {}
+        // gkrost/unidrive-cli#798: the nonces the corpus spells (policy off, the default).
+        runtime.presence = PresenceSettings(nonces = counterNonces())
         // The sign-in verbs (§4.11) sign an Internxt-typed profile in; the library sign-in is a fake that knows one
         // password, one bad two-factor code and one other user (no network, no real account).
         runtime.signInTarget = ProfileTarget("contract_profile", "internxt", tempDir)
@@ -320,6 +326,67 @@ class IpcContractCorpusTest {
             daemonJob.join()
             runCatching { tempDir.toFile().deleteRecursively() }
         }
+    }
+
+    /**
+     * `sessions/presence-destructive.ndjson` (gkrost/unidrive-cli#798): request/reply pairs replayed in order on ONE
+     * connection against a live mount daemon with `require_presence = "destructive"` and a vault. The refused first
+     * enrollments (no passphrase, a wrong one), the enrollment, the status that lists `user-presence:v1`, the guarded
+     * `auth.logout` without a proof, with a changed param, with a valid proof, replayed, for another verb and expired,
+     * then a rotation refused without a proof under the current anchor and done with one, after which only the new key's
+     * proofs pass. The public keys and signatures are fixed (PKCS#1 v1.5 is deterministic, the nonces are the counter
+     * seam's); the replay lets the nonce expire (the clock moves past its TTL) before a request whose pinned reply is
+     * `presence_expired`.
+     */
+    @Test
+    fun presence_destructive_session_matches_corpus_over_live_socket() = runBlocking {
+        val pairs = loadSession("presence-destructive")
+        val tempDir = TestScratch.directory("ipc-contract-presence")
+        val socketPath = tempDir.resolve("daemon.sock")
+        val runtime = DaemonRuntime(
+            profileMode = ProfileMode.MOUNT,
+            profileName = "contract_profile",
+            lockFile = tempDir.resolve(".lock"),
+            dbPath = tempDir.resolve("state.db"),
+            syncRoot = tempDir,
+            socketPath = socketPath,
+            providerFactory = { StubProvider() },
+            providerHasQuota = false,
+        )
+        runtime.vault = scriptedVault()
+        runtime.scopeConfig = {}
+        var now = 1_700_000_000_000L
+        runtime.presence = PresenceSettings(PresencePolicy.DESTRUCTIVE, counterNonces(), { now })
+        val daemonJob = launch { runtime.start() }
+        try {
+            awaitDaemonSocket(socketPath)
+            val session = IpcAuthClient.connect(IpcEndpoint(socketPath, tempDir, "contract_profile"), IpcAuth.Scope.FULL)
+            try {
+                session.configureBlocking(false)
+                for ((request, expectedReply) in pairs) {
+                    if (expectedReply.contains("\"presence_expired\"")) now += org.krost.unidrive.sync.PresenceProofs.NONCE_TTL_MS + 1
+                    session.write(ByteBuffer.wrap((request + "\n").toByteArray()))
+                    assertJsonMatches(
+                        expected = Json.parseToJsonElement(expectedReply),
+                        actual = Json.parseToJsonElement(readFirstLine(session, timeoutMs = 5_000)),
+                        at = "presence-destructive: reply to ${request.take(120)}",
+                    )
+                }
+            } finally {
+                session.close()
+            }
+            assertTrue(Files.exists(tempDir.resolve(org.krost.unidrive.sync.PresenceProofs.ANCHOR_FILE)), "the anchor is beside the IPC tokens")
+        } finally {
+            runtime.close()
+            daemonJob.join()
+            runCatching { tempDir.toFile().deleteRecursively() }
+        }
+    }
+
+    /** gkrost/unidrive-cli#798: nonce i is 32 bytes with the big-endian int i at the start, as the corpus spells them. */
+    private fun counterNonces(): () -> ByteArray {
+        var counter = 0
+        return { ByteArray(32).also { ByteBuffer.wrap(it).putInt(++counter) } }
     }
 
     /**
@@ -1587,6 +1654,7 @@ class IpcContractCorpusTest {
                 }
             },
             dropData = {},
+            passphraseMatches = { it.contentEquals(CORPUS_VAULT_PASSPHRASE.toCharArray()) },
         )
 
     private fun loadSession(name: String): List<Pair<String, String>> {

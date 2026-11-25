@@ -155,6 +155,9 @@ class IpcContractLevelTest {
                 // 13 (gkrost/unidrive-cli#848 item 3): history.report lets the mount host report an operation of its own
                 // (a journal replay, a placeholder or pin action) as one row of the history, its source named.
                 setOf("verb:history.report", "capability:history.report.v1"),
+                // 14 (gkrost/unidrive-cli#798): presence proofs — presence.challenge issues a bound single-use nonce,
+                // presence.enroll stores the anchor, and user-presence:v1 is listed once one exists.
+                setOf("verb:presence.challenge", "verb:presence.enroll", "capability:user-presence:v1"),
             )
     }
 }

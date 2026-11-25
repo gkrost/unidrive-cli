@@ -38,6 +38,9 @@ internal class DaemonVault(
     val gate: VaultGate,
     val unlockAttempt: (CharArray) -> VaultUnlockOutcome,
     val dropData: () -> Unit,
+    // gkrost/unidrive-cli#798: the co-factor of a first presence enrollment — whether a passphrase opens vault.enc,
+    // with no side effect (the data is neither cached nor the gate moved).
+    val passphraseMatches: (CharArray) -> Boolean = { false },
 )
 
 /**

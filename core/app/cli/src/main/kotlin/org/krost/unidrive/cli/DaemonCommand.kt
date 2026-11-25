@@ -226,7 +226,7 @@ class DaemonRunCommand : Runnable {
             maxBandwidthKib = effectiveBandwidthKib(maxBandwidthKib, config.maxBandwidthKbps),
             // issue#796: the vault seam — the verbs and the `vault-unlock:v1` capability exist when
             // vault.enc exists; the gate starts locked exactly on a locked start.
-        ).apply { scopeConfig = { scope -> ScopeConfig.writeScope(parent.configBaseDir().resolve("config.toml"), profile.name, scope) } } // #860: sync_path, as `scope set`
+        ).apply { scopeConfig = { scope -> ScopeConfig.writeScope(parent.configBaseDir().resolve("config.toml"), profile.name, scope) }; presence = presenceSettings(parent) } // #860: sync_path, as `scope set`; #798: [general] require_presence
         runtime.vault = parent.daemonVault(vaultStart)
         // archive#813: the profile the sign-in verbs sign in (its non-secret config, as `auth begin/complete/login` resolve it).
         // A config that cannot be read for it leaves them answering sign_in_unavailable; the daemon runs either way.

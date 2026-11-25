@@ -1,0 +1,8 @@
+{"verb":"presence.challenge"}
+{"ok":false,"error":"invalid_target"}
+{"verb":"presence.challenge","target":"auth.logout"}
+{"ok":false,"error":"invalid_params_hash"}
+{"verb":"presence.challenge","target":"auth.logout","params_hash":"AAAA"}
+{"ok":false,"error":"invalid_params_hash"}
+{"verb":"presence.challenge","target":"auth.logout","params_hash":"RBNvo1WzZ4oRRq0W9-hknpT7T8If536DEMBg9hyq_4o"}
+{"ok":true,"nonce":"AAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","expires_in_ms":60000}
