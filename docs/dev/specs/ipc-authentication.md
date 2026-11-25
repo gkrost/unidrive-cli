@@ -133,6 +133,7 @@ daemon only verifies; it never prompts and never talks to a platform API.
 | `admin` | every admin-class verb of section 4 except `presence.enroll` and `presence.challenge` |
 
 Any other value is a configuration error: `daemon run` exits 78 and names the value (a typo is never read as `off`).
+`admin` is an opt-in strict tier. It also refuses the CLI's own admin-class requests, for example the `daemon.shutdown` that `profile remove --stop` sends, with `presence_required`: the CLI cannot sign a proof yet, so under `admin` such a command fails until the daemon is stopped another way or the policy is lowered.
 The `destructive` row is `IpcAuth.PRESENCE_DESTRUCTIVE_VERBS`. Of the design's destructive list, only `auth.logout` is an
 IPC verb today. `profile remove`, `trash purge --remote`, `relocate --delete-source`, `xtra export-key` and
 `vault change-passphrase` are CLI commands that run without the daemon. The client's drain of its delete hold

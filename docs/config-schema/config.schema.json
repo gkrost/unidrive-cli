@@ -38,7 +38,7 @@
         "streaming_reconciliation": { "type": "boolean" },
         "unlock_helper": { "type": "string" },
         "require_vault": { "type": "boolean" },
-        "require_presence": { "type": "string", "enum": ["off", "destructive", "admin"] }
+        "require_presence": { "type": "string", "enum": ["off", "destructive", "admin"], "description": "Daemon presence proofs (docs/dev/specs/ipc-authentication.md section 4a). off (default): none. destructive: auth.logout. admin: opt-in strict tier, every admin-class verb; it also refuses the CLI's own daemon.shutdown (profile remove --stop and the like) until the CLI can sign." }
       }
     },
     "providers": {
