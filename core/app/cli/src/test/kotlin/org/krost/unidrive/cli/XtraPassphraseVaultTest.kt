@@ -111,6 +111,29 @@ class XtraPassphraseVaultTest {
     }
 
     @Test
+    fun `without a vault file an xtra profile starts unlocked and resolves through the helper`() {
+        assumeFalse(Os.isWindows())
+        assumeTrue(System.getenv(XTRA_PASSPHRASE_ENV) == null && System.getenv("CREDENTIALS_DIRECTORY") == null)
+        val helper = dir.resolve("answering-helper.sh")
+        val b64 = java.util.Base64.getEncoder().encodeToString(xtraPass.toByteArray())
+        Files.writeString(helper, "#!/bin/sh\ncat >/dev/null\necho '{\"secret\":\"$b64\"}'\n")
+        Files.setPosixFilePermissions(helper, PosixFilePermissions.fromString("rwx------"))
+        Files.writeString(dir.resolve("config.toml"), "[general]\nunlock_helper = \"$helper\"\n")
+        val main = Main().apply { configDir = dir.toString() }
+        val profile = org.krost.unidrive.sync.ProfileInfo("p", "localfs", dir, org.krost.unidrive.sync.RawProvider(type = "localfs", xtra_encryption = true))
+        try {
+            LifecycleHooks.env = { null }
+            val start = main.resolveDaemonVaultStart(profile, main.rawGeneral())
+            assertTrue(start is DaemonVaultStart.Ready, "no vault.enc: nothing can wait for vault.unlock, got $start")
+            assertTrue(!main.daemonVaultLocked)
+            assertEquals(null, main.daemonVault(start))
+            assertEquals(xtraPass, String(main.xtraPassphrase()))
+        } finally {
+            LifecycleHooks.env = { System.getenv(it) }
+        }
+    }
+
+    @Test
     fun `the vault-xtra capability is advertised with vault-unlock only`() {
         val on = daemonCapabilitiesJson(org.krost.unidrive.sync.ProfileMode.MOUNT, false, false, org.krost.unidrive.engine.ViewNamespaces.NONE, false, vaultUnlockable = true)
         val off = daemonCapabilitiesJson(org.krost.unidrive.sync.ProfileMode.MOUNT, false, false, org.krost.unidrive.engine.ViewNamespaces.NONE, false)
