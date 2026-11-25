@@ -3,3 +3,6 @@
 # and no rule or path is weakened: a new finding anywhere else still fails the scan.
 0a629806dd9cad1b18284eaf4828157fac7bcccb:core/providers/s3/src/test/kotlin/org/krost/unidrive/s3/S3ConfigToStringTest.kt:aws-access-token:16
 0a629806dd9cad1b18284eaf4828157fac7bcccb:core/providers/s3/src/test/kotlin/org/krost/unidrive/s3/S3ConfigToStringTest.kt:aws-access-token:22
+# PR #944: f1321a7 passed the SHA-256 of an empty params object (a test vector, not a secret) to PresenceProofs.message in
+# PresenceProofsTest; 195e1d0 computes it instead, so the file at HEAD has nothing to find.
+f1321a778a56ad26fdd2bc530ecec569da7dbf03:core/app/sync/src/test/kotlin/org/krost/unidrive/sync/PresenceProofsTest.kt:generic-api-key:278
