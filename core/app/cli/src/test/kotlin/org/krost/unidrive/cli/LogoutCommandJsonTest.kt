@@ -383,6 +383,20 @@ class LogoutCommandJsonTest {
     }
 
     @Test
+    fun `a daemon that needs a presence proof for the sign-out says so and names the alternatives`() {
+        fakeDaemon()
+        LogoutHooks.requestLogout = { _, _ ->
+            Json.parseToJsonElement("""{"ok":false,"error":"presence_required","verb":"auth.logout","enrolled":true}""").jsonObject
+        }
+
+        assertEquals(1, run("logout", "--json"), stderr())
+        assertEquals("presence_required", errorToken())
+        val message = json().getValue("message").jsonPrimitive.content
+        assertTrue("presence proof" in message && "auth.logout" in message, message)
+        assertTrue("require_presence" in message && "daemon stop" in message, message)
+    }
+
+    @Test
     fun `a daemon without the verb refuses with daemon_running`() {
         fakeDaemon()
         LogoutHooks.requestLogout = { _, _ ->

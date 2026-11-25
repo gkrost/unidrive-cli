@@ -24,6 +24,7 @@ internal fun lockedCapabilitiesJson(profileMode: ProfileMode): String =
 internal fun lockedDaemonStatusJson(
     modeJson: String,
     capabilitiesJson: String,
+    presenceJson: String,
     uptimeMs: Long,
     clientsConnected: Int,
     ipcJson: String,
@@ -36,6 +37,7 @@ internal fun lockedDaemonStatusJson(
         .put("engine_build_time_ms", BuildInfoReport.buildTimeMs()?.toString() ?: "null")
         .put("mode", modeJson)
         .put("capabilities", capabilitiesJson)
+        .put("presence", presenceJson)
         .put("uptime_ms", uptimeMs.toString())
         .put("clients_connected", clientsConnected.toString())
         .put("locked", "true")

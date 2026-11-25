@@ -235,6 +235,7 @@ internal fun askDaemonToSignIn(
     val token = (reply["error"] as? JsonPrimitive)?.takeIf { it.isString }?.content
     val message = (reply["message"] as? JsonPrimitive)?.takeIf { it.isString }?.content
     throw when (token) {
+        "presence_required", "presence_invalid", "presence_expired" -> presenceRefusal(target.name, token, reply)
         "unknown_verb" ->
             LifecycleError(
                 "daemon_too_old",

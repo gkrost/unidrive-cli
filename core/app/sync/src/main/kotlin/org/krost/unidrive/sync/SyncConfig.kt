@@ -358,7 +358,6 @@ data class RawGeneral(
     // and defers deletion-bearing actions to scan-end so the
     // detectMissingAfterFullSync guard still gates them. Local changes no page
     // carries (uploads, local deletes) are planned once at scan-end.
-    //
     // Three-valued: true forces on, false forces off, null leaves it to
     // the migration default — on for new installs, off for upgrades, with
     // an auto-flip to on after the first successful streaming scan
@@ -375,6 +374,7 @@ data class RawGeneral(
     // instead of starting locked. False/unset = the daemon starts locked and waits for
     // `vault.unlock` when vault.enc exists and no passphrase source answers.
     val require_vault: Boolean? = null,
+    val require_presence: String? = null, // gkrost/unidrive-cli#798: off (default) | destructive | admin — PresencePolicy
 )
 
 @Serializable

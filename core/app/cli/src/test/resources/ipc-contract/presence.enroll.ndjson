@@ -1,0 +1,8 @@
+{"verb":"presence.enroll"}
+{"ok":false,"error":"presence_disabled"}
+{"verb":"presence.enroll","public_key":"AAAA"}
+{"ok":false,"error":"presence_disabled"}
+{"verb":"presence.enroll","public_key":"MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAr_A2DE4bND5lHWC4CE3YApxpK0xeNoyF-3I-yx8u_yXWCUfm9Ey_aJWTnaZHjmRpLXbn-37g-pfAgVKGy0hCVvxqO-YwYVvVjzMuUP7l029EUKVxeAnVQZQpFCf4sknUTXsOB4uVakNlKQEK6dcTaw97qX0AZpq1lL5wabsnTXH8qEFiET85aTo8WrpZnV1kSyXoy3_mf21xsXt3NSmbtdIK0njF6EpwLwquZXPcjyg-PwEsqyie0fQZT2HE6xmyh6BLMJimuiz4JitYGEH6SR-jpz5eXD8xtMT5_UqGHz6PRImkx-pNctry2cwfPAoqLYqWp6jpRPRVP6MlKBfGsQIDAQAB"}
+{"ok":false,"error":"presence_disabled"}
+{"verb":"presence.enroll","public_key":"MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAr_A2DE4bND5lHWC4CE3YApxpK0xeNoyF-3I-yx8u_yXWCUfm9Ey_aJWTnaZHjmRpLXbn-37g-pfAgVKGy0hCVvxqO-YwYVvVjzMuUP7l029EUKVxeAnVQZQpFCf4sknUTXsOB4uVakNlKQEK6dcTaw97qX0AZpq1lL5wabsnTXH8qEFiET85aTo8WrpZnV1kSyXoy3_mf21xsXt3NSmbtdIK0njF6EpwLwquZXPcjyg-PwEsqyie0fQZT2HE6xmyh6BLMJimuiz4JitYGEH6SR-jpz5eXD8xtMT5_UqGHz6PRImkx-pNctry2cwfPAoqLYqWp6jpRPRVP6MlKBfGsQIDAQAB","nonce":"AAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","signature":"AAAA","passphrase":"fixture-vault-pass-1"}
+{"ok":false,"error":"presence_disabled"}

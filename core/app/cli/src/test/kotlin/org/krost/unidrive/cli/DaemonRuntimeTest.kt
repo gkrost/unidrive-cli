@@ -517,6 +517,9 @@ class DaemonRuntimeTest {
                     // gkrost/unidrive-cli#860: this runtime persists no scope, so scope.set answers wrong_mode (still a reply).
                     """{"verb":"scope.get"}""",
                     """{"verb":"scope.set","included":["/A"],"version":"x"}""",
+                    // gkrost/unidrive-cli#798: registered on every daemon, whatever require_presence says.
+                    """{"verb":"presence.challenge"}""",
+                    """{"verb":"presence.enroll"}""",
                     """{"verb":"daemon.shutdown"}""",
                 )
                 // The IPC verb classes (IpcAuth) name exactly these verbs: each reaches a handler below,

@@ -226,7 +226,7 @@ class DaemonRunCommand : Runnable {
             maxBandwidthKib = effectiveBandwidthKib(maxBandwidthKib, config.maxBandwidthKbps),
             // issue#796: the vault seam — the verbs and the `vault-unlock:v1` capability exist when
             // vault.enc exists; the gate starts locked exactly on a locked start.
-        ).apply { scopeConfig = { scope -> ScopeConfig.writeScope(parent.configBaseDir().resolve("config.toml"), profile.name, scope) } } // #860: sync_path, as `scope set`
+        ).apply { scopeConfig = { scope -> ScopeConfig.writeScope(parent.configBaseDir().resolve("config.toml"), profile.name, scope) }; presence = presenceSettings(parent) } // #860: sync_path, as `scope set`; #798: [general] require_presence
         runtime.vault = parent.daemonVault(vaultStart)
         // archive#813: the profile the sign-in verbs sign in (its non-secret config, as `auth begin/complete/login` resolve it).
         // A config that cannot be read for it leaves them answering sign_in_unavailable; the daemon runs either way.
@@ -480,14 +480,24 @@ class DaemonStopCommand : Runnable {
         // which skips the shutdown hooks and leaves a stale socket and lock.
         val socketPath = IpcServer.defaultSocketPath(profile.name)
         val endpoint = IpcEndpoint(socketPath, parent.providerConfigDir(), profile.name)
+        var reply: ShutdownReply = ShutdownReply.Unavailable
         val outcome = stopDaemonProcess(
-            requestShutdown = { requestDaemonShutdown(endpoint) },
+            requestShutdown = { requestDaemonShutdownReply(endpoint).also { reply = it } == ShutdownReply.Accepted },
             awaitExit = { timeoutMs -> awaitProcessExit(handle, timeoutMs) },
             destroy = { handle.destroy() },
             gracefulDeadlineMs = STOP_DEADLINE_MS,
             forcedDeadlineMs = FORCED_STOP_DEADLINE_MS,
+            refused = { !force && reply.isPresenceRefusal() },
         )
         when (outcome) {
+            DaemonStopOutcome.REFUSED -> {
+                System.err.println(
+                    "refusing to stop daemon for profile '${profile.name}': it requires a presence proof for daemon.shutdown " +
+                        "([general] require_presence = \"admin\"). Stop it from the app that can sign, or re-run with --force " +
+                        "(terminates it without its shutdown hooks).",
+                )
+                System.exit(1)
+            }
             DaemonStopOutcome.GRACEFUL -> {
                 removeLeftoverSocket(profile.name)
                 println("daemon for profile '${profile.name}' stopped")
@@ -522,6 +532,9 @@ internal enum class DaemonStopOutcome {
 
     /** The daemon is still running after destroy. */
     FAILED,
+
+    /** The daemon refused `daemon.shutdown` for want of a presence proof; nothing was destroyed. */
+    REFUSED,
 }
 
 /**
@@ -536,8 +549,11 @@ internal fun stopDaemonProcess(
     destroy: () -> Unit,
     gracefulDeadlineMs: Long,
     forcedDeadlineMs: Long,
+    refused: () -> Boolean = { false },
 ): DaemonStopOutcome {
     if (requestShutdown() && awaitExit(gracefulDeadlineMs)) return DaemonStopOutcome.GRACEFUL
+    // A refusal for want of a presence proof is not a reason to terminate (destroy() skips the shutdown hooks).
+    if (refused()) return DaemonStopOutcome.REFUSED
     destroy()
     return if (awaitExit(forcedDeadlineMs)) DaemonStopOutcome.FORCED else DaemonStopOutcome.FAILED
 }
@@ -566,16 +582,37 @@ internal fun awaitProcessExit(
  * admin verb needs a full-scope connection), the request could not be written, or the reply is
  * negative or missing. Never throws.
  */
-internal fun requestDaemonShutdown(endpoint: IpcEndpoint, timeoutMs: Long = 3_000): Boolean {
-    if (!Files.exists(endpoint.socketPath)) return false
+internal fun requestDaemonShutdown(endpoint: IpcEndpoint, timeoutMs: Long = 3_000): Boolean =
+    requestDaemonShutdownReply(endpoint, timeoutMs) == ShutdownReply.Accepted
+
+/** The daemon's answer to `daemon.shutdown`: accepted, refused with its error token, or no answer (see [requestDaemonShutdown]). */
+internal sealed interface ShutdownReply {
+    data object Accepted : ShutdownReply
+
+    data class Refused(val token: String) : ShutdownReply
+
+    data object Unavailable : ShutdownReply
+
+    /** A refusal for want of a presence proof (`require_presence`), as opposed to any other failure. */
+    fun isPresenceRefusal(): Boolean = this is Refused && token.startsWith("presence_")
+}
+
+private fun shutdownReplyOf(body: kotlinx.serialization.json.JsonObject?): ShutdownReply {
+    if (body?.isOkReply() == true) return ShutdownReply.Accepted
+    val token = (body?.get("error") as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content
+    return if (token == null) ShutdownReply.Unavailable else ShutdownReply.Refused(token)
+}
+
+internal fun requestDaemonShutdownReply(endpoint: IpcEndpoint, timeoutMs: Long = 3_000): ShutdownReply {
+    if (!Files.exists(endpoint.socketPath)) return ShutdownReply.Unavailable
     return try {
         when (val reply = ipcRequest(endpoint, IpcAuth.Scope.FULL, """{"verb":"daemon.shutdown"}""", timeoutMs)) {
-            is IpcReply.Line -> reply.text.asJsonObjectOrNull()?.isOkReply() == true
-            IpcReply.Closed -> true
-            IpcReply.TimedOut, IpcReply.NotWritten -> false
+            is IpcReply.Line -> shutdownReplyOf(reply.text.asJsonObjectOrNull())
+            IpcReply.Closed -> ShutdownReply.Accepted
+            IpcReply.TimedOut, IpcReply.NotWritten -> ShutdownReply.Unavailable
         }
     } catch (_: java.io.IOException) {
-        false
+        ShutdownReply.Unavailable
     }
 }
 

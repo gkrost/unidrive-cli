@@ -6,9 +6,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import org.krost.unidrive.io.ndjsonString
+import org.krost.unidrive.sync.ConfigValueException
 import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcServer
+import org.krost.unidrive.sync.PresencePolicy
+import org.krost.unidrive.sync.PresenceProofs
 import org.krost.unidrive.sync.ProfileMode
+import org.krost.unidrive.sync.RawGeneral
 import org.krost.unidrive.telemetry.TransferHistory
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
@@ -36,7 +40,37 @@ internal class PreProviderIpc(
      * not run its provider tail — it goes straight to cleanup, which the outer finally runs.
      */
     val shutDownWhileLocked: Boolean,
-)
+) {
+    /** gkrost/unidrive-cli#798: the presence proofs of this run; the status renderers ask it for `user-presence:v1`. */
+    lateinit var presence: PresenceProofs
+}
+
+/**
+ * gkrost/unidrive-cli#798: `[general] require_presence` of a `daemon run`. A value outside the three is a config error
+ * (exit 78 with the value named), never read as off.
+ */
+internal fun presenceSettings(main: Main): PresenceSettings =
+    try {
+        PresenceSettings.of(main.rawGeneral())
+    } catch (e: ConfigValueException) {
+        System.err.println("Error: ${e.message}")
+        kotlin.system.exitProcess(main.MODE_REFUSAL_EXIT)
+    }
+
+/**
+ * gkrost/unidrive-cli#798: `[general] require_presence` of this run, and the nonce source and monotonic clock of its
+ * presence proofs (seams, so the corpus can pin nonces and let one expire).
+ */
+internal class PresenceSettings(
+    val policy: PresencePolicy = PresencePolicy.OFF,
+    val nonces: () -> ByteArray = { IpcAuth.randomBytes(PresenceProofs.NONCE_BYTES) },
+    val nowNanos: () -> Long = System::nanoTime,
+) {
+    companion object {
+        /** The settings of [general]; a `require_presence` outside the three throws [ConfigValueException]. */
+        fun of(general: RawGeneral): PresenceSettings = PresenceSettings(PresencePolicy.parse(general.require_presence))
+    }
+}
 
 private val preProviderLog = LoggerFactory.getLogger(DaemonRuntime::class.java)
 
@@ -69,9 +103,18 @@ internal suspend fun servePreProviderIpc(
     socketPath: Path,
     profileMode: ProfileMode,
     vault: DaemonVault?,
+    presenceSettings: PresenceSettings,
     hooks: PreProviderHooks,
 ): PreProviderIpc {
     val ipcAuth = IpcAuth.issueOrReport(ipcTokenDir, profileName, BuildInfo.versionString())
+    // gkrost/unidrive-cli#798: the anchor sits beside the IPC tokens; the gate runs before every handler, so it is set
+    // before the socket listens. The verbs exist on every daemon (the bind-last guarantee), whatever the policy.
+    val presence =
+        PresenceProofs(
+            ipcTokenDir.resolve(PresenceProofs.ANCHOR_FILE), profileName, presenceSettings.policy,
+            vault?.passphraseMatches, presenceSettings.nonces, presenceSettings.nowNanos,
+        )
+    ipcAuth.presence = presence
 
     Files.createDirectories(socketPath.parent)
     val server = IpcServer(socketPath, auth = ipcAuth)
@@ -106,7 +149,8 @@ internal suspend fun servePreProviderIpc(
         hooks.statusHandler()?.invoke()
             ?: lockedDaemonStatusJson(
                 modeJson = ndjsonString(profileMode.wireName),
-                capabilitiesJson = lockedCapabilitiesJson(profileMode),
+                capabilitiesJson = presence.withCapability(lockedCapabilitiesJson(profileMode)),
+                presenceJson = presence.statusJson(),
                 uptimeMs = System.currentTimeMillis() - hooks.startedAtMs(),
                 clientsConnected = server.clientCount,
                 ipcJson = ipcStatusJson(server.requestCounts()).toString(),
@@ -114,6 +158,8 @@ internal suspend fun servePreProviderIpc(
     }
     server.registerHandler("vault.unlock") { _, json -> vaultRpc.unlockVerb(json) }
     server.registerHandler("vault.lock") { _, _ -> vaultRpc.lockVerb() }
+    server.registerHandler(PresenceProofs.CHALLENGE) { _, json -> presence.challenge(json) }
+    server.registerHandler(PresenceProofs.ENROLL) { _, json -> presence.enroll(json) }
     server.registerHandler("daemon.shutdown") { connId, _ ->
         server.scheduleAfterReply(connId) { hooks.close() }
         """{"ok":true}"""
@@ -146,5 +192,5 @@ internal suspend fun servePreProviderIpc(
     }
     return PreProviderIpc(
         server, serveJob, serveScope, vaultRpc, hydrationLink, transferHistory, historyRpc, socketBoundEarly, shutDownWhileLocked,
-    )
+    ).also { it.presence = presence }
 }

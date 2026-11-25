@@ -158,6 +158,10 @@ class IpcContractLevelTest {
                 // 14 (issue#796): the vault carries the X-tra passphrase and vault.unlock releases it to the X-tra wiring;
                 // the capability names it on a daemon whose vault.enc exists.
                 setOf("capability:vault-xtra:v1"),
+                // 15 (gkrost/unidrive-cli#798): presence proofs — presence.challenge issues a bound single-use nonce,
+                // presence.enroll stores the anchor, user-presence:v1 is listed once one exists, and daemon.status carries
+                // `presence` (the policy and whether an anchor is enrolled).
+                setOf("verb:presence.challenge", "verb:presence.enroll", "capability:user-presence:v1", "field:daemon.status.presence"),
             )
     }
 }

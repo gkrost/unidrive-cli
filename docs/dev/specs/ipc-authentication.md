@@ -91,7 +91,7 @@ Classified by the exact wire string; a verb that is not listed is `admin` (defau
 |---|---|
 | read | `hydration.close_read`, `daemon.status`, `hydration.list`, `hydration.stat`, `hydration.locate`, `hydration.handle_status`, `hydration.last_synced`, `hydration.subscribe`, `sync.subscribe`, `hydration.open_read`, `history.list`, `history.subscribe`, `metrics.query`, `ignore.explain`, `view.page`, `scope.get` |
 | write | `hydration.hydrate`, `hydration.dehydrate`, `hydration.create`, `hydration.open_write`, `hydration.open_write_begin`, `hydration.close_handle`, `hydration.mkdir`, `hydration.unlink`, `hydration.rmdir`, `hydration.rename`, `hydration.cancel`, `sync.enumerate`, `hydration.matches_local`, `hydration.refuse_name`, `share.create`, `history.retry`, `history.report` |
-| admin | `daemon.shutdown`, `daemon.pause`, `daemon.resume`, `refresh.run`, `auth.logout`, `auth.begin`, `auth.complete`, `auth.login`, `auth.check`, `vault.unlock`, `vault.lock`, `scope.set` |
+| admin | `daemon.shutdown`, `daemon.pause`, `daemon.resume`, `refresh.run`, `auth.logout`, `auth.begin`, `auth.complete`, `auth.login`, `auth.check`, `vault.unlock`, `vault.lock`, `scope.set`, `presence.enroll`, `presence.challenge` |
 
 Scope `full` may call every verb; scope `read` only the read class. A refused request gets
 `{"ok":false,"error":"forbidden","scope":"read"}` and the connection stays open. For a `read`
@@ -116,6 +116,138 @@ so a read connection cannot make the daemon ask the provider more than a few tim
 
 `IpcContractCorpusTest` keeps the table equal to the contract corpus: every corpus verb has a class and
 the table holds no verb the daemon does not register.
+
+## 4a. Presence proofs (contract level 15)
+
+gkrost/unidrive-cli#798. A daemon can ask
+for a **presence proof** before it runs a dangerous verb: a signature, made by the user's platform credential (the
+Windows Hello keyring of the tray or the unlock helper), over a nonce the daemon issued for exactly that request. The
+daemon only verifies; it never prompts and never talks to a platform API.
+
+**Policy.** `[general] require_presence` in config.toml, read at daemon start:
+
+| Value | Guarded verbs |
+|---|---|
+| `off` (default, also when unset) | none: the daemon behaves as before |
+| `destructive` | `auth.logout` |
+| `admin` | every admin-class verb of section 4 except `presence.enroll` and `presence.challenge` |
+
+Any other value is a configuration error: `daemon run` exits 78 and names the value (a typo is never read as `off`).
+`admin` is an opt-in strict tier. It also refuses the CLI's own guarded requests with `presence_required`, because the CLI cannot sign a proof yet:
+
+- `profile remove --stop` sends `daemon.shutdown`, so under `admin` it fails until the daemon is stopped another way or the policy is lowered.
+- `unidrive daemon stop` does not turn that refusal into a kill. It prints that the daemon requires a presence proof for `daemon.shutdown` and exits 1; `daemon stop --force` terminates the process without its shutdown hooks.
+- `unidrive auth logout` against a running daemon fails with `presence_required` under `destructive` and `admin`: the sign-out is `auth.logout`. The sign-in steps (`auth login`, `auth begin`, `auth complete`, `auth check`) fail the same way under `admin`. Each says that the daemon needs a presence proof for that verb: do it from the app that can sign, or stop the daemon and run the command on the stopped profile.
+The `destructive` row is `IpcAuth.PRESENCE_DESTRUCTIVE_VERBS`. Of the design's destructive list, only `auth.logout` is an
+IPC verb today. `profile remove`, `trash purge --remote`, `relocate --delete-source`, `xtra export-key` and
+`vault change-passphrase` are CLI commands that run without the daemon. The client's drain of its delete hold
+(the marked `hydration.unlink` / `hydration.rmdir` requests, one per item) is a series of requests, not one. The daemon
+guards none of these yet.
+
+**Anchor.** The RSA public key (at least 2048 bits) the daemon verifies against, one per profile:
+`presence.anchor` beside the IPC tokens, one line holding the base64url of its X.509 SubjectPublicKeyInfo (DER),
+written owner-only like the tokens. A file that holds no such key counts as no anchor. While an anchor exists,
+`daemon.status` lists the capability `user-presence:v1` (also in the locked shape). That says an anchor is enrolled and no more.
+Whether a proof is needed is the `presence` member of `daemon.status`, in both shapes, always present:
+`"presence":{"policy":"off"|"destructive"|"admin","enrolled":true|false}`. A client reads it before it sends a guarded verb,
+and shows that the protection is on.
+
+**Signed message.** A client signs, with `SHA256withRSA` (RSASSA-PKCS1-v1_5 over SHA-256), the UTF-8 bytes of
+
+    unidrive-presence-v1|<profile byte length>:<profile>|<verb>|<params_hash>|<nonce>
+
+`<verb>` is the verb the proof is for. `<params_hash>` is the base64url (unpadded) SHA-256 of the canonical text of the
+request's params: the request object without the members the proof does not bind (for a guarded verb `verb` and
+`presence`; for `presence.enroll` see below). The canonical text has no whitespace and sorts the object members by name
+(UTF-16 code units, as RFC 8785), recursively. A string is its decoded value, written with the five short escapes
+(`\"`, `\\`, `\b`, `\f`, `\n`, `\r`, `\t`) and `\u00xx` (lowercase hex) for the other characters below U+0020; everything
+else is as is: `/`, DEL (U+007F), U+2028 and U+2029, and every non-ASCII character are written unescaped, in UTF-8. A client whose
+JSON encoder escapes non-ASCII or U+2028/U+2029 must switch that off for this text, or its hash differs and the proof is
+refused with `presence_invalid`. A repeated member keeps its last value. Numbers keep their literal, so a client writes
+integers without a fraction or exponent. A request that differs in any bound member has another hash, and its proof is
+refused.
+
+Under `admin` the bound members include secrets: `vault.unlock`'s `passphrase`, `auth.login`'s `password` and `totp`. The
+client hashes the request with the secret in it and hands only that digest to the signing helper; the daemon's nonce is in
+the signed message, so the digest inside a PKCS#1 v1.5 signature gives nothing away.
+
+**`presence.challenge`** `{"verb":"presence.challenge","target":"<verb>","params_hash":"<hash>"}` returns
+`{"ok":true,"nonce":"<base64url of 32 random bytes>","expires_in_ms":60000}`. The nonce is single use and bound to
+`target` and `params_hash`. At most 32 nonces are outstanding per daemon, and a new one drops the oldest. `target` must
+match `[a-z][a-z0-9_.]{0,63}` (else `invalid_target`), and `params_hash` must decode to 32 bytes (else
+`invalid_params_hash`). The daemon issues nonces with or without an anchor, so the enrollment uses them too.
+
+**A guarded verb** carries `"presence":{"nonce":"<nonce>","signature":"<base64url>"}`. Before its handler runs, after
+the scope check, the daemon refuses it fail-closed:
+
+| Refusal | When |
+|---|---|
+| `{"ok":false,"error":"presence_required","verb":"…","enrolled":false\|true}` | no `presence` member (or no string `nonce` / `signature` in it), or no anchor (`enrolled:false`) |
+| `{"ok":false,"error":"presence_invalid","verb":"…"}` | the nonce is unknown or spent, or it was issued for another verb or other params, or the signature does not verify under the anchor |
+| `{"ok":false,"error":"presence_expired","verb":"…"}` | the nonce was issued more than 60 s ago |
+
+Every check spends the nonce: a refused proof cannot be retried, and a replayed one is `presence_invalid`. With policy
+`off`, a `presence` member is ignored.
+
+**`presence.enroll`** stores or replaces the anchor:
+`{"verb":"presence.enroll","public_key":"<spki>","nonce":"…","signature":"…","passphrase":"…"}` for the first one, and
+`{…,"anchor_signature":"…"}` instead of `passphrase` for a rotation. The nonce comes from `presence.challenge` with
+target `presence.enroll` over the params without `verb`, `nonce`, `signature`, `anchor_signature` and `passphrase`
+(today: `{"public_key":"…"}`). `signature` is made by the **new** key and proves possession. `anchor_signature` is made
+by the **current** anchor over the same message. In order:
+
+| Reply | When |
+|---|---|
+| `presence_disabled` | the policy is `off`: the verb answers before it checks anything, and asks for no passphrase |
+| `invalid_public_key` | `public_key` is missing, or not an RSA SubjectPublicKeyInfo of at least 2048 bits |
+| `missing_proof` | no string `nonce` or `signature` |
+| `presence_invalid` / `presence_expired` (with `"verb":"presence.enroll"`) | the possession proof does not hold, as for a guarded verb (the nonce is spent from here on) |
+| `passphrase_required` | no anchor yet, and no `passphrase` |
+| `vault_absent` | no anchor yet, and the profile has no `vault.enc` or it cannot be read (it vanished or failed to read since the daemon started): a first enrollment needs the vault passphrase |
+| `vault_bad_passphrase` | no anchor yet, and the passphrase does not open `vault.enc` (after 250 ms) |
+| `presence_required` (with `"enrolled":true`) | an anchor exists, and no `anchor_signature`: the passphrase alone never replaces an anchor |
+| `presence_invalid` | an anchor exists, and `anchor_signature` does not verify under it |
+| `anchor_write_failed` | the anchor file cannot be written owner-only |
+| `{"ok":true,"rotated":false\|true,"anchor":"<base64url SHA-256 of the SPKI>"}` | stored; it takes effect at once |
+
+A client enrolls after `require_presence` is set to `destructive` or `admin` and the daemon has been restarted. The verbs stay
+registered under `off` (the bind-last guarantee), so a daemon that never asked for presence proofs does not check the vault
+passphrase for a client.
+
+A lost credential (a reset PIN, a new machine) cannot rotate: stop the daemon, delete `presence.anchor`, and enroll
+again with the passphrase.
+
+**Decisions.** What the control covers, so that the gaps below are decisions and not oversights:
+
+- It holds against the use of a copied IPC token alone. A same-user process that can also change the profile's own files (the config switch, the anchor) is outside it; see Limits. `daemon.shutdown` is not guarded under `destructive`.
+- The gate hashes the request as the JSON parser reads it, and a repeated member keeps its last value. The handlers of the
+  guarded verbs parse the same way, and the dispatcher already refuses a repeated `verb`, so the proof and the handler agree
+  on one request. Refusing a repeated member on guarded requests would make that independent of the handlers; it is not done.
+- A proof under `admin` can cover a request with a secret in it (see the canonical text above); the signing helper sees only
+  its digest.
+
+**Limits.** Any full-scope connection can evict another client's outstanding nonce by issuing 32 challenges; the evicted proof is
+refused with `presence_invalid` and the client retries with a new challenge. That is availability only. A proof shows that a human approved a prompt, not which program asked for it. A same-user process can
+start the helper too, and it can also rewrite `presence.anchor` or `require_presence` in the profile's own files. The
+named-operation prompt is the defence. This is not a sandbox.
+
+**Test vectors.** Profile `p1`. The params `{ "force" : true }` canonicalise to `{"force":true}`. The empty params `{}`
+hash to `RBNvo1WzZ4oRRq0W9-hknpT7T8If536DEMBg9hyq_4o`. With nonce bytes `01 01 … 01` (32 bytes,
+`AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE`), `auth.logout` with empty params signs
+`unidrive-presence-v1|2:p1|auth.logout|RBNvo1WzZ4oRRq0W9-hknpT7T8If536DEMBg9hyq_4o|AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE`.
+Canonical text of the request params (`PresenceProofsTest.canonical_text_pins_numbers_escapes_repeats_and_member_order`):
+
+| Params | Canonical text |
+|---|---|
+| `{"n":[1.0,1e3,-0,123456789012345678901234567890,0.000001]}` | unchanged: numbers keep their literal |
+| `{"t":"\u00e9","u":"é"}` | `{"t":"é","u":"é"}` |
+| `{"s":"é\u0001\/\"\\\u007f\u2028"}` | `é`, `\u0001`, `/`, `\"`, `\\`, then DEL and U+2028 as is |
+| `{"s":"\b\f\n\r\t\u000b\u001f"}` | `\b\f\n\r\t\u000b\u001f` |
+| `{"a":1,"a":2}` | `{"a":2}` |
+| `{"\uff5e":3,"\ud83d\ude00":2,"s":1}` | members in the order `s`, U+1F600, U+FF5E (UTF-16 code units; code point order would swap the last two) |
+
+`sessions/presence-destructive.ndjson` in the corpus replays a whole enrollment, the guarded `auth.logout` and a
+rotation with fixed public keys and signatures.
 
 ## 5. Client behaviour
 
@@ -175,6 +307,7 @@ Interactive input uses the console's character reader and encoding for every fie
 | `auth_required` | any verb other than `hello`, `hello.proof`, `daemon.status` before authentication |
 | `auth_failed` | a refused handshake step (after a 250 ms wait; the third closes the connection) |
 | `forbidden` | a verb outside the connection's scope (with `"scope":"read"`) |
+| `presence_required`, `presence_invalid`, `presence_expired` | a guarded verb without a valid presence proof (section 4a) |
 | `handler_threw` | the verb's handler failed (with `"verb"`); only a `full` connection also gets `"message"`, the exception text with URL queries redacted. The daemon log has the detail. |
 
 ## 7. Test vectors
@@ -202,7 +335,8 @@ vectors and the refusal shapes over a live socket (one connection per file).
   rotation, refusal).
 - `IpcAuthServerTest` — the server over a socket (timeout, closing after three failures, replayed proof,
   rotation, read scope) and the engine client against a reference server written from this text.
-- `IpcContractCorpusTest` — class table versus corpus; the `auth/` transcripts.
+- `IpcContractCorpusTest` — class table versus corpus; the `auth/` transcripts; `sessions/presence-destructive.ndjson`.
+- `PresenceProofsTest` — the policy table, the bound single-use nonces, the anchor rules, the capability, the vectors.
 - `DaemonRuntimeTest`, `DaemonStopTest` — the daemon writes owner-only tokens before it listens, serves
   only authenticated connections, rotates its tokens, refuses to start without them (no socket, lock
   released, one `IPC startup refused:` line); `daemon stop` without the full token does not stop it.

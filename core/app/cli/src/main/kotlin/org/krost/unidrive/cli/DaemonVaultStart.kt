@@ -131,8 +131,17 @@ internal fun Main.daemonVault(start: DaemonVaultStart): DaemonVault? {
             is DaemonVaultStart.Ready -> VaultGate.unlocked()
             is DaemonVaultStart.Locked -> VaultGate.lockedStart(start.reason)
         }
-    return DaemonVault(gate, unlockAttempt = ::daemonUnlockVault, dropData = ::dropVaultData)
+    return DaemonVault(gate, unlockAttempt = ::daemonUnlockVault, dropData = ::dropVaultData, passphraseMatches = ::vaultPassphraseMatches)
 }
+
+/** gkrost/unidrive-cli#798: whether [passphrase] opens vault.enc; the data read is dropped at once. */
+internal fun Main.vaultPassphraseMatches(passphrase: CharArray): Boolean =
+    try {
+        Vault(baseConfigDir.resolve("vault.enc")).read(passphrase)
+        true
+    } catch (_: java.security.GeneralSecurityException) {
+        false
+    }
 
 /**
  * Whether [profile]'s provider type has required vault fields that neither config.toml nor the

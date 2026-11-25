@@ -368,6 +368,7 @@ private fun daemonRefusal(
                 token,
                 "the credential marker of profile '${target.name}' could not be removed from the OS secret store; unlock it and retry",
             )
+        "presence_required", "presence_invalid", "presence_expired" -> presenceRefusal(target.name, token, reply)
         "unknown_verb" ->
             LifecycleError(
                 "daemon_running",
@@ -470,6 +471,23 @@ internal fun sendDaemonRequest(
     } catch (_: Exception) {
         null
     }
+}
+
+/**
+ * A daemon's `presence_*` refusal (gkrost/unidrive-cli#798, `[general] require_presence`), worded for the command: the CLI
+ * cannot sign a presence proof, so the real alternatives are the app that can, or the stopped profile.
+ */
+internal fun presenceRefusal(
+    profile: String,
+    token: String,
+    reply: JsonObject,
+): LifecycleError {
+    val verb = (reply["verb"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: "this step"
+    return LifecycleError(
+        token,
+        "the daemon of profile '$profile' needs a presence proof for $verb ([general] require_presence), and this command cannot sign one; " +
+            "do it from the app that can, or stop the daemon (`unidrive -p $profile daemon stop`) and run the command on the stopped profile",
+    )
 }
 
 /** A JSON boolean member, or null when it is absent or not a boolean literal. */

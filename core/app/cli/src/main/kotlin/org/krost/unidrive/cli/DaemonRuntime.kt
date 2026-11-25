@@ -201,6 +201,9 @@ class DaemonRuntime(
      */
     internal var vault: DaemonVault? = null
 
+    /** gkrost/unidrive-cli#798: `[general] require_presence` and the presence-proof seams; `daemon run` sets it before [start]. */
+    internal var presence: PresenceSettings = PresenceSettings()
+
     /** gkrost/unidrive-cli#860: writes a new scope to the profile's `sync_path`; null = `scope.set` answers `wrong_mode`. */
     internal var scopeConfig: ((List<String>) -> Unit)? = null
 
@@ -308,7 +311,7 @@ class DaemonRuntime(
             // locked wait runs inside (see servePreProviderIpc). Token rotation stays behind the lock acquisition.
             val pre =
                 servePreProviderIpc(
-                    ipcTokenDir, profileName, socketPath, profileMode, vault,
+                    ipcTokenDir, profileName, socketPath, profileMode, vault, presence,
                     PreProviderHooks({ ipcServer = it }, { statusHandler }, { startedAtMs }, { startedAtMs = it }, { close() }, { closeSignal.await() }),
                 )
             if (pre.shutDownWhileLocked) {
@@ -878,7 +881,7 @@ class DaemonRuntime(
                         .put("engine_version", engineVersionJson)
                         .put("engine_build_time_ms", engineBuildTimeJson)
                         .put("mode", modeJson)
-                        .put("capabilities", capabilitiesJson)
+                        .put("capabilities", pre.presence.withCapability(capabilitiesJson)).put("presence", pre.presence.statusJson()) // #798
                         .put("uptime_ms", uptimeMs.toString())
                         .put("clients_connected", clientCount.toString())
                         .put("refresh_in_flight", refreshInFlight.toString())
@@ -1207,7 +1210,7 @@ class DaemonRuntime(
         // on a breaking change and engine_version does not order dev builds. IpcContractLevelTest pins the IPC surface
         // of each level and fails when the surface changes without a raise. 8 (gkrost/unidrive-cli#851) shipped on main;
         // the history verbs (gkrost/unidrive-cli#848, merged here at their own 8) are the raise to 9 on top of it.
-        const val IPC_CONTRACT_LEVEL: Int = 14
+        const val IPC_CONTRACT_LEVEL: Int = 15
 
         /**
          * Whether a successful `hydration.subscribe` is followed by the one guarded enumerate: only for a

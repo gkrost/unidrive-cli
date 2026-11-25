@@ -78,6 +78,12 @@ class IpcAuth(
     private val minimalStatus =
         """{"ok":true,"protocol_version":$PROTOCOL_VERSION,"engine_version":${JsonPrimitive(engineVersion)},"auth_required":true}"""
 
+    /**
+     * gkrost/unidrive-cli#798: the presence check of the guarded verbs, run after the scope check of an authenticated
+     * connection; null = no verb needs a proof. The daemon sets it before its socket listens.
+     */
+    @Volatile var presence: PresenceProofs? = null
+
     fun newSession(): Session = Session()
 
     /**
@@ -112,7 +118,7 @@ class IpcAuth(
             line: String,
         ): Reply? {
             val granted = scope
-            if (granted != null) return checkScope(granted, verb, line)
+            if (granted != null) return checkScope(granted, verb, line) ?: presence?.gate(verb, line)?.let { Reply(it) }
             return when (verb) {
                 HELLO -> hello(line)
                 HELLO_PROOF -> proof(line)
@@ -240,7 +246,19 @@ class IpcAuth(
                 listOf("vault.unlock", "vault.lock").forEach { put(it, VerbClass.ADMIN) }
                 // gkrost/unidrive-cli#860: scope.set rewrites the profile's sync_path and drops what leaves from this computer: owner-only.
                 put("scope.set", VerbClass.ADMIN)
+                // gkrost/unidrive-cli#798: presence.enroll carries the vault passphrase of a first enrollment and replaces the
+                // anchor; presence.challenge issues the nonces of the guarded verbs, which are all admin. Owner-only both.
+                listOf(PresenceProofs.ENROLL, PresenceProofs.CHALLENGE).forEach { put(it, VerbClass.ADMIN) }
             }
+
+        /**
+         * `[general] require_presence = "destructive"` (gkrost/unidrive-cli#798): the IPC verbs that
+         * need a presence proof ([PresencePolicy]). Of the design's destructive list only `auth.logout` is an IPC verb; the
+         * others are CLI commands that run without the daemon (`profile remove`, `trash purge --remote`, `relocate
+         * --delete-source`, `xtra export-key`, `vault change-passphrase`) or a client's drain of its delete hold (marked
+         * `hydration.unlink` / `hydration.rmdir`, one request per item), and are not guarded here.
+         */
+        val PRESENCE_DESTRUCTIVE_VERBS: Set<String> = setOf("auth.logout")
 
         fun classOf(verb: String): VerbClass = VERB_CLASSES[verb] ?: VerbClass.ADMIN
 
