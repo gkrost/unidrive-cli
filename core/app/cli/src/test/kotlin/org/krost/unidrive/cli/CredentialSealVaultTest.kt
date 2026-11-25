@@ -180,4 +180,24 @@ class CredentialSealVaultTest {
         assertTrue(vault.exists())
         assertTrue(line.contains("still sealed"), line)
     }
+
+    @Test
+    fun `vault decrypt and forget treat the X-tra entry and the seal key both as reserved`() {
+        Files.writeString(dir.resolve("config.toml"), "[general]\n\n[providers.p1]\ntype = \"localfs\"\nmode = \"mirror\"\n")
+        val seal = mapOf("key" to Base64.getEncoder().encodeToString(ByteArray(32) { 7 }), "enabled" to "true")
+        val xtra = mapOf("passphrase" to "xtra-secret")
+        vault.write(pass.toCharArray(), mapOf("p1" to mapOf("password" to "p1-secret"), CREDENTIAL_SEAL_SECTION to seal, XTRA_VAULT_ENTRY to xtra))
+        assertTrue(isReservedVaultSection(CREDENTIAL_SEAL_SECTION) && isReservedVaultSection(XTRA_VAULT_ENTRY))
+        assertFalse(isReservedVaultSection("p1"))
+
+        assertEquals(1, run("vault", "forget", XTRA_VAULT_ENTRY, "--passphrase-stdin", stdin = "$pass\n"))
+        assertEquals(1, run("vault", "forget", CREDENTIAL_SEAL_SECTION, "--passphrase-stdin", stdin = "$pass\n"))
+        assertEquals(setOf("p1", CREDENTIAL_SEAL_SECTION, XTRA_VAULT_ENTRY), vault.read(pass.toCharArray()).keys, "forget dropped nothing")
+
+        val warnings = mutableListOf<String>()
+        val line = decryptVault(dir, pass.toCharArray()) { warnings += it }
+        assertEquals(emptyList(), warnings, "neither reserved entry is an orphan profile")
+        assertEquals(mapOf(CREDENTIAL_SEAL_SECTION to seal, XTRA_VAULT_ENTRY to xtra), vault.read(pass.toCharArray()))
+        assertTrue(line.contains("credential seal key") && line.contains("X-tra passphrase"), line)
+    }
 }

@@ -87,4 +87,38 @@ class VaultStdinTest {
             // expected: the vault was re-keyed
         }
     }
+
+    @Test
+    fun `vault xtra-set reads both passphrases from standard input and xtra-clear drops the entry`() {
+        assertEquals(0, run("vault", "init", "--passphrase-stdin", stdin = "vault-pass-123\n"))
+        assertEquals(
+            0,
+            run("vault", "xtra-set", "--passphrase-stdin", "--xtra-passphrase-stdin", stdin = "vault-pass-123\nxtra-pass-456\n"),
+        )
+        assertEquals(
+            "xtra-pass-456",
+            vault.read("vault-pass-123".toCharArray()).getValue(XTRA_VAULT_ENTRY).getValue(XTRA_VAULT_FIELD),
+        )
+        assertEquals(0, run("vault", "xtra-clear", "--passphrase-stdin", stdin = "vault-pass-123\n"))
+        assertEquals(emptyMap<String, Map<String, String>>(), vault.read("vault-pass-123".toCharArray()))
+    }
+
+    @Test
+    fun `vault xtra-set refuses a passphrase that opens none of the X-tra key files and stores nothing`() {
+        org.krost.unidrive.xtra.XtraKeyManager(dir.resolve("xtra.key")).generate("right-xtra-pass".toCharArray())
+        assertEquals(0, run("vault", "init", "--passphrase-stdin", stdin = "vault-pass-123\n"))
+        assertEquals(
+            1,
+            run("vault", "xtra-set", "--passphrase-stdin", "--xtra-passphrase-stdin", stdin = "vault-pass-123\nwrong-xtra-pass\n"),
+        )
+        assertEquals(emptyMap<String, Map<String, String>>(), vault.read("vault-pass-123".toCharArray()))
+        assertEquals(
+            0,
+            run("vault", "xtra-set", "--passphrase-stdin", "--xtra-passphrase-stdin", stdin = "vault-pass-123\nright-xtra-pass\n"),
+        )
+        assertEquals(
+            "right-xtra-pass",
+            vault.read("vault-pass-123".toCharArray()).getValue(XTRA_VAULT_ENTRY).getValue(XTRA_VAULT_FIELD),
+        )
+    }
 }
