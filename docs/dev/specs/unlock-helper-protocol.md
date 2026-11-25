@@ -80,6 +80,22 @@ A reply that is not valid JSON, or that is neither shape above, is the hard erro
 `invalid_reply`. A helper that does not answer within 60 seconds is destroyed and the
 run reports the hard error `timeout`.
 
+## The X-tra passphrase in the vault
+
+The X-tra passphrase is a vault secret (Windows Hello design, section 2). `unidrive vault xtra-set`
+stores it in `vault.enc` as the reserved entry `.xtra` (field `passphrase`; `.` is not valid in a
+profile name, so no profile collides with it) and `vault xtra-clear` drops it. The X-tra passphrase
+chain is: environment variable `UNIDRIVE_XTRA_PASS`, systemd credential `unidrive-xtra-pass`, the
+**unlocked vault's `.xtra` entry**, the unlock helper (`secret` = `xtra`), the console. So a daemon
+that was started locked and received `vault.unlock` needs no second unlock for an `xtra_encryption`
+profile, and the helper needs no `xtra` entry. The entry is read from the in-memory vault data only:
+the X-tra step never prompts for the vault passphrase, and `vault.lock` takes the passphrase out of
+reach again. A daemon whose profile sets `xtra_encryption` with no environment or credential source
+for the X-tra passphrase starts locked while the vault is locked (the same wait as a vaulted provider
+field). A daemon with `vault.enc` advertises the capability `vault-xtra:v1` (contract level 14) next to
+`vault-unlock:v1`: the vault carries the X-tra passphrase and `vault.unlock` releases it. `vault decrypt`
+keeps the entry in the vault (it has no config section to go back into).
+
 ## Out of scope here
 
 - What the helper does with the keyring (enrollment, wrapping, witness) is the client

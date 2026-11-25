@@ -448,7 +448,7 @@ internal fun daemonCapabilitiesJson(
             (if (viewNamespaces.isEmpty()) emptyList() else listOf("views", "view_page")) +
             (if (shareCapable) listOf(SHARE_CREATE_CAPABILITY) else emptyList()) +
             listOf(ScopeRpcHandler.GET) + (if (scopeSettable) listOf(ScopeRpcHandler.SET) else emptyList()) +
-            (if (vaultUnlockable) listOf(VAULT_UNLOCK_CAPABILITY) else emptyList())
+            (if (vaultUnlockable) listOf(VAULT_UNLOCK_CAPABILITY, VAULT_XTRA_CAPABILITY) else emptyList())
     ).joinToString(",", "[", "]") { ndjsonString(it) }
 
 /** The `daemon.status` capability that says `history.list` takes an `order` member (gkrost/unidrive-cli#848). */
@@ -465,4 +465,11 @@ internal const val HISTORY_REPORT_CAPABILITY = "history.report.v1"
  * (issue#796) — present exactly where `vault.enc` exists, locked or not.
  */
 internal const val VAULT_UNLOCK_CAPABILITY = "vault-unlock:v1"
+
+/**
+ * The `daemon.status` capability that says the vault carries the X-tra passphrase (the reserved `.xtra` entry,
+ * set with `vault xtra-set`) and `vault.unlock` releases it to the daemon's X-tra wiring (issue#796) — present
+ * with [VAULT_UNLOCK_CAPABILITY], so a client may deliver one secret and not ask for the X-tra passphrase apart.
+ */
+internal const val VAULT_XTRA_CAPABILITY = "vault-xtra:v1"
 

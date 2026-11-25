@@ -57,7 +57,8 @@ internal fun Main.wrapWithXtra(
 
 /**
  * The X-tra passphrase, resolved through the same chain as the vault's: env, a systemd
- * credential, the unlock helper (secret kind `xtra`), then a console prompt.
+ * credential, the unlocked vault's `.xtra` entry (released by `vault.unlock`, issue#796), the unlock
+ * helper (secret kind `xtra`), then a console prompt.
  */
 internal fun Main.xtraPassphrase(): CharArray =
     when (val resolution = resolvePassphrase(
@@ -67,6 +68,7 @@ internal fun Main.xtraPassphrase(): CharArray =
         configDir = baseConfigDir,
         helperConfig = rawGeneral().unlock_helper,
         prompt = "X-tra passphrase: ",
+        sources = PassphraseSources(vaultSecret = { vaultXtraPassphrase() }),
     )) {
         is PassphraseResolution.Secret -> resolution.chars
         is PassphraseResolution.Refused ->
@@ -84,3 +86,13 @@ internal fun Main.xtraPassphrase(): CharArray =
                 error("no X-tra passphrase available")
             }
     }
+
+/** The reserved vault entry that holds the X-tra passphrase; not a valid profile name, so no profile can collide with it. */
+internal const val XTRA_VAULT_ENTRY = ".xtra"
+
+/** The field of [XTRA_VAULT_ENTRY] that holds the passphrase. */
+internal const val XTRA_VAULT_FIELD = "passphrase"
+
+/** A fresh copy of the X-tra passphrase in the in-memory vault data, or null while the vault is locked, not loaded, or holds none. */
+internal fun Main.vaultXtraPassphrase(): CharArray? =
+    vaultDataCache?.get(XTRA_VAULT_ENTRY)?.get(XTRA_VAULT_FIELD)?.takeIf { it.isNotEmpty() }?.toCharArray()
