@@ -29,15 +29,26 @@ internal enum class XtraAlgorithm(
         /**
          * Every key file wraps under the one X-tra passphrase (one env var, one credential, one unlock-helper
          * secret), so changing it on [changed]'s file leaves the others under the old one: the daemon then fails to
-         * load them. One reminder per other key file present in [configDir].
+         * load them. One reminder per other key file present in [configDir], and one for the vault's `.xtra` entry when
+         * `vault.enc` exists there (issue#796).
          */
         fun sharedPassphraseReminders(
             configDir: Path,
             changed: XtraAlgorithm,
-        ): List<String> =
-            entries.filter { it != changed && Files.exists(configDir.resolve(it.keyFileName)) }.map {
-                "Note: ${it.keyFileName} is still under the old passphrase (all X-tra key files share one); " +
-                    "change it too: ${it.changePassphraseCommand}"
-            }
+        ): List<String> {
+            val keyFiles =
+                entries.filter { it != changed && Files.exists(configDir.resolve(it.keyFileName)) }.map {
+                    "Note: ${it.keyFileName} is still under the old passphrase (all X-tra key files share one); " +
+                        "change it too: ${it.changePassphraseCommand}"
+                }
+            // The vault's `.xtra` entry wraps under the same passphrase; whether it holds the old one cannot be read here.
+            val vaultEntry =
+                if (Files.exists(configDir.resolve("vault.enc"))) {
+                    listOf("Note: the vault's X-tra passphrase may still be the old one; update it: unidrive vault xtra-set")
+                } else {
+                    emptyList()
+                }
+            return keyFiles + vaultEntry
+        }
     }
 }

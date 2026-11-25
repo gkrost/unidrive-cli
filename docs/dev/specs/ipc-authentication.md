@@ -117,7 +117,7 @@ so a read connection cannot make the daemon ask the provider more than a few tim
 `IpcContractCorpusTest` keeps the table equal to the contract corpus: every corpus verb has a class and
 the table holds no verb the daemon does not register.
 
-## 4a. Presence proofs (contract level 14)
+## 4a. Presence proofs (contract level 15)
 
 gkrost/unidrive-cli#798. A daemon can ask
 for a **presence proof** before it runs a dangerous verb: a signature, made by the user's platform credential (the

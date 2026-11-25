@@ -36,6 +36,9 @@ class XtraAgeKeyStore(
         writeKeyFile(passphrase, identity.encodeToString())
     }
 
+    /** Whether [passphrase] opens the key file (the unwrap succeeds). */
+    fun opens(passphrase: CharArray): Boolean = runCatching { load(passphrase) }.isSuccess
+
     fun load(passphrase: CharArray): X25519Identity {
         val blob = Files.readAllBytes(keyPath)
         if (blob.size < SALT_LENGTH + IV_LENGTH + GCM_TAG_BITS / 8) {
