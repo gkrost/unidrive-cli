@@ -12,6 +12,8 @@ import org.junit.Assume.assumeFalse
 import org.junit.Assume.assumeTrue
 import org.krost.unidrive.io.Os
 import org.krost.unidrive.io.XTRA_PASSPHRASE_ENV
+import org.krost.unidrive.sync.ConfigSecrets
+import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.Vault
 import org.krost.unidrive.testing.TestScratch
 
@@ -91,7 +93,9 @@ class XtraPassphraseVaultTest {
         decryptVault(dir, vaultPass) { warnings += it }
         assertTrue(warnings.isEmpty(), "the X-tra entry is not an orphan profile: $warnings")
         assertEquals(setOf(XTRA_VAULT_ENTRY), vault.read(vaultPass).keys)
-        assertTrue(Files.readString(dir.resolve("config.toml")).contains("password = \"p\""))
+        val config = dir.resolve("config.toml")
+        val work = SyncConfig.parseRaw(Files.readString(config)).providers.getValue("work")
+        assertEquals("p", ConfigSecrets.decode(work, "work", config)?.password)
     }
 
     @Test

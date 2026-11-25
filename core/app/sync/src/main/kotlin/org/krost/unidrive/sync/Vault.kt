@@ -6,10 +6,15 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.krost.unidrive.io.OwnerOnly
 import org.krost.unidrive.io.OwnerOnlyAtomicWrite
 import java.io.IOException
+import java.nio.channels.FileChannel
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
+import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.PosixFilePermissions
 import java.security.GeneralSecurityException
 import java.security.SecureRandom
 import javax.crypto.Cipher
@@ -45,6 +50,7 @@ class Vault(
 
         /** The suffix of the marker file beside the vault that says the vault carries [XTRA_ENTRY]. */
         private const val XTRA_MARKER_SUFFIX = ".xtra"
+        private val processLock = Any()
 
         /** Known credential field names that should be vaulted. */
         val SENSITIVE_FIELDS =
@@ -84,7 +90,12 @@ class Vault(
         write(passphrase, emptyMap())
     }
 
-    fun read(passphrase: CharArray): Map<String, Map<String, String>> {
+    fun read(passphrase: CharArray): Map<String, Map<String, String>> = read(passphrase) {}
+
+    internal fun read(
+        passphrase: CharArray,
+        beforeMarkerRepair: () -> Unit,
+    ): Map<String, Map<String, String>> {
         val blob = Files.readAllBytes(vaultPath)
         if (blob.size < SALT_LENGTH + IV_LENGTH + GCM_TAG_BITS / 8) {
             throw IllegalStateException("Vault file is corrupted or too short.")
@@ -95,7 +106,15 @@ class Vault(
 
         val key = deriveKey(passphrase, salt)
         val plaintext = decrypt(key, iv, ciphertext)
-        return parseJson(String(plaintext, Charsets.UTF_8)).also { syncXtraMarker(it) }
+        val data = parseJson(String(plaintext, Charsets.UTF_8))
+        beforeMarkerRepair()
+        // Repair only the generation we decrypted. Vault replacement and deletion hold the same file lock.
+        runCatching {
+            withCommitLock {
+                if (Files.readAllBytes(vaultPath).contentEquals(blob)) syncXtraMarker(data)
+            }
+        }
+        return data
     }
 
     fun write(
@@ -113,17 +132,38 @@ class Vault(
         // archive#1053: the vault is the only copy of what `vault encrypt` takes out of config.toml and of what `change-passphrase`
         // re-encrypts, so it is never truncated in place: the new bytes replace the old vault only once they decrypt.
         val blob = salt + iv + ciphertext
-        OwnerOnlyAtomicWrite.replace(vaultPath, blob, beforeCommit = beforeCommit) { tmp ->
-            if (!isIntactVault(tmp, blob, key, json.toByteArray(Charsets.UTF_8))) {
-                throw IOException("The new vault is not what was written or does not decrypt; the old one was kept.")
+        withCommitLock {
+            OwnerOnlyAtomicWrite.replace(vaultPath, blob, beforeCommit = beforeCommit) { tmp ->
+                if (!isIntactVault(tmp, blob, key, json.toByteArray(Charsets.UTF_8))) {
+                    throw IOException("The new vault is not what was written or does not decrypt; the old one was kept.")
+                }
             }
+            syncXtraMarker(data)
         }
-        syncXtraMarker(data)
     }
 
     fun delete() {
-        Files.deleteIfExists(vaultPath)
-        runCatching { Files.deleteIfExists(xtraMarker) }
+        if (Files.notExists(vaultPath.toAbsolutePath().parent)) return
+        withCommitLock {
+            Files.deleteIfExists(vaultPath)
+            runCatching { Files.deleteIfExists(xtraMarker) }
+        }
+    }
+
+    // Keep the lock file across writes and deletes so processes always lock the same inode.
+    private fun withCommitLock(action: () -> Unit) = synchronized(processLock) {
+        val lockPath = vaultPath.resolveSibling("${vaultPath.fileName}.lock")
+        val options = setOf(StandardOpenOption.CREATE, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)
+        val channel = if ("posix" in lockPath.fileSystem.supportedFileAttributeViews()) {
+            val ownerOnly = PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------"))
+            FileChannel.open(lockPath, options, ownerOnly)
+        } else {
+            FileChannel.open(lockPath, options)
+        }
+        channel.use {
+            OwnerOnly.requireFile(lockPath)
+            it.lock().use { action() }
+        }
     }
 
     // True when [file] holds exactly [blob] (salt and iv included) and it decrypts, under [key], to [expected]: what a

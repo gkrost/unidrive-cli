@@ -62,12 +62,9 @@ internal fun Main.wrapWithXtra(
  * credential, the unlocked vault's `.xtra` entry (released by `vault.unlock`, issue#796), the unlock
  * helper (secret kind `xtra`), then a console prompt.
  */
-internal fun Main.xtraPassphrase(): CharArray {
-    loadVaultForXtra()
-    return resolveXtraPassphrase()
-}
+internal fun Main.xtraPassphrase(): CharArray = xtraPassphrase(PassphraseSources())
 
-private fun Main.resolveXtraPassphrase(): CharArray =
+internal fun Main.xtraPassphrase(sources: PassphraseSources): CharArray =
     when (val resolution = resolvePassphrase(
         secretKind = "xtra",
         envName = XTRA_PASSPHRASE_ENV,
@@ -75,7 +72,16 @@ private fun Main.resolveXtraPassphrase(): CharArray =
         configDir = baseConfigDir,
         helperConfig = rawGeneral().unlock_helper,
         prompt = "X-tra passphrase: ",
-        sources = PassphraseSources(vaultSecret = { vaultXtraPassphrase() }),
+        sources = PassphraseSources(
+            env = sources.env,
+            helper = sources.helper,
+            consolePresent = sources.consolePresent,
+            consoleRead = sources.consoleRead,
+            vaultSecret = {
+                loadVaultForXtra(sources)
+                vaultXtraPassphrase()
+            },
+        ),
     )) {
         is PassphraseResolution.Secret -> resolution.chars
         is PassphraseResolution.Refused ->
@@ -110,11 +116,11 @@ internal fun Main.vaultXtraPassphrase(): CharArray? =
  * prompt (environment, systemd credential, unlock helper), so the CLI and the daemon agree on what "this
  * installation's passphrase" is (issue#796). Any failure leaves the vault step out; the rest of the chain answers.
  */
-private fun Main.loadVaultForXtra() {
+private fun Main.loadVaultForXtra(sources: PassphraseSources) {
     if (vaultDataCache != null || daemonVaultLocked) return
     val vault = Vault(baseConfigDir.resolve("vault.enc"))
     if (!vault.exists()) return
-    val passphrase = vaultPassphraseNoPrompt(PassphraseSources(consolePresent = { false })) ?: return
+    val passphrase = vaultPassphraseNoPrompt(sources) ?: return
     runCatching { vault.read(passphrase) }.onSuccess { vaultDataCache = it }
     passphrase.fill('\u0000')
 }
@@ -128,41 +134,43 @@ private fun Main.vaultPassphraseNoPrompt(sources: PassphraseSources): CharArray?
             configDir = baseConfigDir,
             helperConfig = rawGeneral().unlock_helper,
             prompt = "Vault passphrase: ",
-            sources = sources,
+            sources = PassphraseSources(env = sources.env, helper = sources.helper, consolePresent = { false }),
         ) as? PassphraseResolution.Secret
     )?.chars
 
-/**
- * After `xtra change-passphrase*` re-wrapped a key file under [newPassphrase]: the vault's `.xtra` entry wraps under
- * the same passphrase, so it is brought along when the vault's passphrase is available without a prompt
- * (environment, systemd credential, unlock helper). Returns false, after printing the reminder, when the vault
- * exists but could not be updated (its passphrase is unavailable or wrong); the command then exits non-zero so the
- * mismatch cannot go unnoticed. No vault, or a vault without `.xtra`, is true and silent.
- */
+/** Returns the exit status after bringing the optional vaulted copy in step with the re-wrapped key. */
+@Suppress("TooGenericExceptionCaught") // any failure after the key was re-wrapped needs the same recovery command
 internal fun Main.updateVaultXtraAfterChange(
     newPassphrase: CharArray,
-    sources: PassphraseSources = PassphraseSources(consolePresent = { false }),
-): Boolean {
-    val vault = Vault(baseConfigDir.resolve("vault.enc"))
-    if (!vault.exists()) return true
-    val passphrase = vaultPassphraseNoPrompt(sources)
-    val data = passphrase?.let { runCatching { vault.read(it) }.getOrNull() }
-    if (passphrase == null || data == null) {
-        passphrase?.fill('\u0000')
-        System.err.println(
-            "Error: the vault's X-tra passphrase may still be the old one and could not be updated here " +
-                "(its passphrase is not available without a prompt); update it: unidrive vault xtra-set",
-        )
-        return false
-    }
+    sources: PassphraseSources = PassphraseSources(),
+    vault: Vault = Vault(baseConfigDir.resolve("vault.enc")),
+): Int {
     try {
-        if (XTRA_VAULT_ENTRY !in data) return true
-        ConfigFileTransaction.withLock(baseConfigDir.resolve("config.toml")) {
-            vault.write(passphrase, setVaultXtraPassphrase(vault.read(passphrase), String(newPassphrase)))
+        if (!vault.exists()) return 0
+        val passphrase = vaultPassphraseNoPrompt(sources)
+            ?: return vaultXtraUpdateFailed("the vault passphrase is unavailable without a prompt")
+        try {
+            ConfigFileTransaction.withLock(baseConfigDir.resolve("config.toml")) {
+                if (!vault.exists()) return@withLock
+                val data = vault.read(passphrase)
+                if (XTRA_VAULT_ENTRY in data) {
+                    vault.write(passphrase, setVaultXtraPassphrase(data, String(newPassphrase)))
+                    println("Updated the vault's X-tra passphrase.")
+                }
+            }
+        } finally {
+            passphrase.fill('\u0000')
         }
-        println("Updated the vault's X-tra passphrase.")
-        return true
-    } finally {
-        passphrase.fill('\u0000')
+        return 0
+    } catch (e: Exception) {
+        return vaultXtraUpdateFailed(e.javaClass.simpleName)
     }
+}
+
+private fun vaultXtraUpdateFailed(reason: String): Int {
+    System.err.println(
+        "Error: the X-tra key file already changed, but its vaulted passphrase could not be updated ($reason). " +
+            "Update it with: unidrive vault xtra-set",
+    )
+    return 1
 }

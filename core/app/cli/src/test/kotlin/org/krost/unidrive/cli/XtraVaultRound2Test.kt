@@ -1,9 +1,15 @@
 package org.krost.unidrive.cli
 
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.io.PrintStream
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermissions
+import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -16,6 +22,7 @@ import org.krost.unidrive.sync.ProfileInfo
 import org.krost.unidrive.sync.RawProvider
 import org.krost.unidrive.sync.Vault
 import org.krost.unidrive.testing.TestScratch
+import org.krost.unidrive.xtra.XtraKeyManager
 
 /**
  * The owner's decisions on #796 (review round 2): `xtra change-passphrase*` keeps the vaulted X-tra entry in step,
@@ -57,7 +64,7 @@ class XtraVaultRound2Test {
     @Test
     fun `change-passphrase rewrites the vault X-tra entry when the vault passphrase is available`() {
         vault.write(vaultPass, xtraEntry + ("work" to mapOf("password" to "p")))
-        assertTrue(main().updateVaultXtraAfterChange(newXtra.toCharArray(), envVault))
+        assertEquals(0, main().updateVaultXtraAfterChange(newXtra.toCharArray(), envVault))
         val data = vault.read(vaultPass)
         assertEquals(newXtra, data.getValue(XTRA_VAULT_ENTRY).getValue(XTRA_VAULT_FIELD))
         assertEquals(mapOf("password" to "p"), data["work"])
@@ -66,23 +73,89 @@ class XtraVaultRound2Test {
     @Test
     fun `change-passphrase reports failure and leaves the vault alone when its passphrase is unavailable`() {
         vault.write(vaultPass, xtraEntry)
-        assertFalse(main().updateVaultXtraAfterChange(newXtra.toCharArray(), noSource))
+        assertEquals(1, main().updateVaultXtraAfterChange(newXtra.toCharArray(), noSource))
         assertEquals(oldXtra, vault.read(vaultPass).getValue(XTRA_VAULT_ENTRY).getValue(XTRA_VAULT_FIELD))
     }
 
     @Test
     fun `change-passphrase leaves a vault without an X-tra entry alone and succeeds`() {
         vault.write(vaultPass, mapOf("work" to mapOf("password" to "p")))
-        assertTrue(main().updateVaultXtraAfterChange(newXtra.toCharArray(), envVault))
+        assertEquals(0, main().updateVaultXtraAfterChange(newXtra.toCharArray(), envVault))
         assertEquals(setOf("work"), vault.read(vaultPass).keys)
     }
 
     @Test
     fun `change-passphrase with no vault file succeeds`() {
-        assertTrue(main().updateVaultXtraAfterChange(newXtra.toCharArray(), noSource))
+        assertEquals(0, main().updateVaultXtraAfterChange(newXtra.toCharArray(), noSource))
+    }
+
+    @Test
+    fun `rotation leaves an X-tra entry cleared before it acquires the config lock`() {
+        vault.write(vaultPass, xtraEntry)
+        val cli = main()
+        val rotation = FutureTask { cli.updateVaultXtraAfterChange(newXtra.toCharArray(), envVault) }
+        ConfigFileTransaction.withLock(dir.resolve("config.toml")) {
+            val thread = Thread.ofPlatform().daemon().start(rotation)
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+            while (thread.state != Thread.State.BLOCKED && !rotation.isDone && System.nanoTime() < deadline) Thread.sleep(5)
+            assertEquals(Thread.State.BLOCKED, thread.state, "rotation reached the config lock")
+            assertTrue(forgetVaultEntry(vault, vaultPass, XTRA_VAULT_ENTRY))
+        }
+        assertEquals(0, rotation.get(10, TimeUnit.SECONDS))
+        assertFalse(XTRA_VAULT_ENTRY in vault.read(vaultPass))
+        assertFalse(vault.carriesXtra)
+    }
+
+    @Test
+    fun `a vault replacement failure after rotating the key returns a recovery message and exit status`() {
+        vault.write(vaultPass, xtraEntry)
+        val keyPath = dir.resolve("xtra.key")
+        val keys = XtraKeyManager(keyPath)
+        keys.generate(oldXtra.toCharArray())
+        keys.changePassphrase(newXtra.toCharArray())
+        val failingVault = Vault(dir.resolve("vault.enc")) { throw IOException("simulated replacement failure") }
+        val stderr = ByteArrayOutputStream()
+        val original = System.err
+        try {
+            System.setErr(PrintStream(stderr, true, Charsets.UTF_8))
+            assertEquals(1, main().updateVaultXtraAfterChange(newXtra.toCharArray(), envVault, failingVault))
+        } finally {
+            System.setErr(original)
+        }
+        val message = stderr.toString(Charsets.UTF_8)
+        assertContains(message, "key file already changed")
+        assertContains(message, "unidrive vault xtra-set")
+        XtraKeyManager(keyPath).load(newXtra.toCharArray())
+        assertEquals(xtraEntry, vault.read(vaultPass))
     }
 
     // ── 2. the CLI resolves the X-tra passphrase through the full chain ──
+
+    @Test
+    fun `X-tra environment and credential sources skip the configured vault helper`() {
+        vault.write(vaultPass, xtraEntry)
+        val helperPath = Files.createFile(dir.resolve("recording-helper"))
+        Files.writeString(dir.resolve("config.toml"), "[general]\nunlock_helper = '$helperPath'\n")
+        val credentials = Files.createDirectory(dir.resolve("credentials"))
+        Files.writeString(credentials.resolve("unidrive-xtra-pass"), "from-credential\n")
+        val calls = mutableListOf<String>()
+        val recordingHelper: (Path, String, Path) -> UnlockHelper.Result = { _, kind, _ ->
+            calls += kind
+            UnlockHelper.Result.Secret(vaultPass.copyOf())
+        }
+
+        val env = PassphraseSources(
+            env = { if (it == XTRA_PASSPHRASE_ENV) "from-environment" else null },
+            helper = recordingHelper,
+        )
+        val credential = PassphraseSources(
+            env = { if (it == "CREDENTIALS_DIRECTORY") credentials.toString() else null },
+            helper = recordingHelper,
+        )
+        assertEquals("from-environment", String(main().xtraPassphrase(env)))
+        assertEquals("from-credential", String(main().xtraPassphrase(credential)))
+        assertTrue(calls.isEmpty(), "higher-priority X-tra sources never invoke a helper")
+    }
 
     @Test
     fun `a one-shot CLI process resolves the vaulted X-tra passphrase when the vault passphrase is available`() {

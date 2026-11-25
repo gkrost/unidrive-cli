@@ -99,7 +99,8 @@ source for the X-tra passphrase) waits for `vault.unlock`. It waits only when th
 `.xtra`: an empty, non-secret marker file `vault.enc.xtra` beside `vault.enc`. Every vault write
 (`xtra-set`, `xtra-clear`, `encrypt`, `decrypt`, `change-passphrase`, `forget`, `profile remove`) and every
 vault read (so each unlock) brings the marker in line with what the vault holds; deleting the vault deletes
-the marker. A helper-only install (no marker) starts unlocked and asks the helper at the first content
+the marker. Marker repair checks that the encrypted bytes are still the ones just read, while holding
+the same file lock as vault replacement and deletion. A helper-only install (no marker) starts unlocked and asks the helper at the first content
 operation, as before; a vault written before the marker existed gets it on its first unlock. Under
 `require_vault = true` the exit-78 rule is unchanged and independent of the marker.
 
