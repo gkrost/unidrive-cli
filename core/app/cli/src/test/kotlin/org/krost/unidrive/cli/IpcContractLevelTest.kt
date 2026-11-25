@@ -156,8 +156,9 @@ class IpcContractLevelTest {
                 // (a journal replay, a placeholder or pin action) as one row of the history, its source named.
                 setOf("verb:history.report", "capability:history.report.v1"),
                 // 14 (gkrost/unidrive-cli#798): presence proofs — presence.challenge issues a bound single-use nonce,
-                // presence.enroll stores the anchor, and user-presence:v1 is listed once one exists.
-                setOf("verb:presence.challenge", "verb:presence.enroll", "capability:user-presence:v1"),
+                // presence.enroll stores the anchor, user-presence:v1 is listed once one exists, and daemon.status carries
+                // `presence` (the policy and whether an anchor is enrolled).
+                setOf("verb:presence.challenge", "verb:presence.enroll", "capability:user-presence:v1", "field:daemon.status.presence"),
             )
     }
 }

@@ -881,6 +881,19 @@ class AuthLifecycleTest {
     }
 
     @Test
+    fun `a presence_required refusal of a login names the proof and the alternatives`() {
+        FakeDaemon("ix", mapOf("auth.login" to { _ -> """{"ok":false,"error":"presence_required","verb":"auth.login","enrolled":false}""" })).use {
+            assertEquals(1, run("auth", "login", "--profile", "ix", "--email", "me@example.test", "--password-stdin", "--json", stdin = "pw-SECRET-3\n"))
+
+            assertEquals("presence_required", errorToken())
+            val message = json().getValue("message").jsonPrimitive.content
+            assertTrue("presence proof" in message && "auth.login" in message, message)
+            assertTrue("require_presence" in message && "daemon stop" in message, message)
+            assertFalse("pw-SECRET-3" in everything())
+        }
+    }
+
+    @Test
     fun `a daemon without the sign-in verbs is daemon_too_old, not profile_in_use`() {
         // A daemon that predates the verbs answers unknown_verb: here, one that registers nothing.
         FakeDaemon("ix", emptyMap()).use {

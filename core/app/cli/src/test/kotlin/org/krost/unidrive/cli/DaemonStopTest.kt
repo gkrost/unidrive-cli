@@ -31,6 +31,7 @@ class DaemonStopTest {
         val shutdownAccepted: Boolean,
         val exitsAfterShutdown: Boolean,
         val exitsAfterDestroy: Boolean = true,
+        val refusedByPresence: Boolean = false,
     ) {
         var shutdownRequests = 0
         var destroys = 0
@@ -50,6 +51,7 @@ class DaemonStopTest {
                 },
                 gracefulDeadlineMs = 1,
                 forcedDeadlineMs = 1,
+                refused = { refusedByPresence },
             )
     }
 
@@ -79,6 +81,48 @@ class DaemonStopTest {
     fun `a daemon that survives destroy is reported as failed`() {
         val script = Script(shutdownAccepted = false, exitsAfterShutdown = false, exitsAfterDestroy = false)
         assertEquals(DaemonStopOutcome.FAILED, script.stop())
+    }
+
+    @Test
+    fun `a presence refusal of daemon_shutdown is reported and the daemon is not destroyed`() {
+        val script = Script(shutdownAccepted = false, exitsAfterShutdown = false, refusedByPresence = true)
+        assertEquals(DaemonStopOutcome.REFUSED, script.stop())
+        assertEquals(1, script.shutdownRequests)
+        assertEquals(0, script.destroys, "a refusal is not a reason to terminate the process")
+    }
+
+    @Test
+    fun `under policy admin a live daemon refuses daemon_shutdown with presence_required and keeps running`() = runBlocking {
+        val dir = TestScratch.directory("daemon-stop-admin")
+        val socketPath: Path = dir.resolve("daemon.sock")
+        val runtime = DaemonRuntime(
+            profileMode = ProfileMode.MOUNT,
+            profileName = "stop_profile",
+            lockFile = dir.resolve(".lock"),
+            dbPath = dir.resolve("state.db"),
+            syncRoot = dir,
+            socketPath = socketPath,
+            providerFactory = { StubProvider() },
+        )
+        runtime.presence = PresenceSettings(org.krost.unidrive.sync.PresencePolicy.ADMIN)
+        val daemonJob = launch { runtime.start() }
+        try {
+            repeat(50) {
+                if (Files.exists(socketPath)) return@repeat
+                delay(50)
+            }
+            assertTrue(Files.exists(socketPath), "socket must be bound within 2.5s")
+
+            val reply = withContext(Dispatchers.IO) { requestDaemonShutdownReply(IpcEndpoint(socketPath, dir, "stop_profile")) }
+            assertEquals(ShutdownReply.Refused("presence_required"), reply)
+            assertFalse(requestDaemonShutdown(IpcEndpoint(socketPath, dir, "stop_profile")))
+            delay(300)
+            assertTrue(daemonJob.isActive, "the daemon still runs")
+        } finally {
+            runtime.close()
+            daemonJob.join()
+            runCatching { dir.toFile().deleteRecursively() }
+        }
     }
 
     @Test

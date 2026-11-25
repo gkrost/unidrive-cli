@@ -881,7 +881,7 @@ class DaemonRuntime(
                         .put("engine_version", engineVersionJson)
                         .put("engine_build_time_ms", engineBuildTimeJson)
                         .put("mode", modeJson)
-                        .put("capabilities", pre.presence.withCapability(capabilitiesJson)) // #798: user-presence:v1 once enrolled
+                        .put("capabilities", pre.presence.withCapability(capabilitiesJson)).put("presence", pre.presence.statusJson()) // #798
                         .put("uptime_ms", uptimeMs.toString())
                         .put("clients_connected", clientCount.toString())
                         .put("refresh_in_flight", refreshInFlight.toString())

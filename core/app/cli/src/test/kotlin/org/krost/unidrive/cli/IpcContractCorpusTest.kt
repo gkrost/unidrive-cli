@@ -355,8 +355,8 @@ class IpcContractCorpusTest {
         )
         runtime.vault = scriptedVault()
         runtime.scopeConfig = {}
-        var now = 1_700_000_000_000L
-        runtime.presence = PresenceSettings(PresencePolicy.DESTRUCTIVE, counterNonces(), { now })
+        var nowMs = 1_700_000_000_000L
+        runtime.presence = PresenceSettings(PresencePolicy.DESTRUCTIVE, counterNonces(), { nowMs * 1_000_000 })
         val daemonJob = launch { runtime.start() }
         try {
             awaitDaemonSocket(socketPath)
@@ -364,7 +364,7 @@ class IpcContractCorpusTest {
             try {
                 session.configureBlocking(false)
                 for ((request, expectedReply) in pairs) {
-                    if (expectedReply.contains("\"presence_expired\"")) now += org.krost.unidrive.sync.PresenceProofs.NONCE_TTL_MS + 1
+                    if (expectedReply.contains("\"presence_expired\"")) nowMs += org.krost.unidrive.sync.PresenceProofs.NONCE_TTL_MS + 1
                     session.write(ByteBuffer.wrap((request + "\n").toByteArray()))
                     assertJsonMatches(
                         expected = Json.parseToJsonElement(expectedReply),

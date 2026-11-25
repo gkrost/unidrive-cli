@@ -252,7 +252,7 @@ class IpcAuth(
             }
 
         /**
-         * `[general] require_presence = "destructive"` (gkrost/unidrive-cli#798, windows#1406 section 4): the IPC verbs that
+         * `[general] require_presence = "destructive"` (gkrost/unidrive-cli#798): the IPC verbs that
          * need a presence proof ([PresencePolicy]). Of the design's destructive list only `auth.logout` is an IPC verb; the
          * others are CLI commands that run without the daemon (`profile remove`, `trash purge --remote`, `relocate
          * --delete-source`, `xtra export-key`, `vault change-passphrase`) or a client's drain of its delete hold (marked

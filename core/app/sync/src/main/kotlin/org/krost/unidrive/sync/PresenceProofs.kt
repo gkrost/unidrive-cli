@@ -26,8 +26,8 @@ import java.security.interfaces.RSAPublicKey
 import java.security.spec.X509EncodedKeySpec
 
 /**
- * `[general] require_presence` (gkrost/unidrive-cli#798, gkrost/unidrive-windows#1406 section 4 and decision D4): which
- * IPC verbs need a presence proof before their handler runs. The default is [OFF].
+ * `[general] require_presence` (gkrost/unidrive-cli#798): which IPC verbs need a presence proof before their handler
+ * runs. The default is [OFF].
  */
 enum class PresencePolicy(
     val wire: String,
@@ -57,7 +57,7 @@ enum class PresencePolicy(
                 OFF
             } else {
                 entries.firstOrNull { it.wire == value }
-                    ?: throw IllegalArgumentException("[general] require_presence must be \"off\", \"destructive\" or \"admin\", got \"$value\"")
+                    ?: throw ConfigValueException("[general] require_presence must be \"off\", \"destructive\" or \"admin\", got \"$value\"")
             }
     }
 }
@@ -74,10 +74,11 @@ enum class PresencePolicy(
  * - `presence.enroll` stores the anchor ([ANCHOR_FILE], owner-only, beside the IPC tokens). The request proves possession
  *   of the new key; the first enrollment also needs the vault passphrase (a co-factor), and a rotation needs a proof under
  *   the current anchor — the passphrase alone never replaces one.
- * - `user-presence:v1` is advertised ([withCapability]) once an anchor exists.
+ * - `user-presence:v1` is advertised ([withCapability]) once an anchor is enrolled, and nothing more: whether a proof is
+ *   needed is the `presence` member of `daemon.status` ([statusJson]).
  *
  * Honest limit: this proves that a human approved a prompt, not which program asked; and a same-user process that can
- * write the profile folder can replace the anchor file or the config switch, so it is no sandbox (windows#1406 section 4).
+ * write the profile folder can replace the anchor file or the config switch, so it is no sandbox.
  */
 class PresenceProofs(
     private val anchorFile: Path,
@@ -86,7 +87,8 @@ class PresenceProofs(
     // The first enrollment's co-factor: true when the passphrase opens vault.enc. Null = no vault (it is refused).
     private val passphraseMatches: ((CharArray) -> Boolean)?,
     private val nonces: () -> ByteArray = { IpcAuth.randomBytes(NONCE_BYTES) },
-    private val nowMs: () -> Long = System::currentTimeMillis,
+    // A monotonic clock: a step of the wall clock neither extends nor cuts the 60 s of a nonce.
+    private val nowNanos: () -> Long = System::nanoTime,
     // The wrong-passphrase delay of a first enrollment, as vault.unlock's.
     private val failureDelayMs: Long = FAILURE_DELAY_MS,
     private val grantProblem: (Path) -> String? = { OwnerOnly.grantProblem(it) },
@@ -94,7 +96,7 @@ class PresenceProofs(
     private class Issued(
         val target: String,
         val paramsHash: String,
-        val expiresAtMs: Long,
+        val expiresAtNanos: Long,
     )
 
     private val issued = LinkedHashMap<String, Issued>()
@@ -113,6 +115,9 @@ class PresenceProofs(
         return if (open.trim() == "[") "[\"$CAPABILITY\"]" else "$open,\"$CAPABILITY\"]"
     }
 
+    /** The `presence` member of `daemon.status`: the policy of this run and whether an anchor is enrolled. */
+    fun statusJson(): String = """{"policy":"${policy.wire}","enrolled":$enrolled}"""
+
     /** `presence.challenge`. */
     fun challenge(jsonRequest: String): String {
         val body = parseObject(jsonRequest)
@@ -120,10 +125,10 @@ class PresenceProofs(
         val paramsHash = body.string("params_hash")?.takeIf { IpcAuth.decode(it)?.size == HASH_BYTES } ?: return INVALID_PARAMS_HASH
         val nonce = IpcAuth.encode(nonces())
         synchronized(issued) {
-            val now = nowMs()
-            issued.values.removeIf { it.expiresAtMs <= now }
+            val now = nowNanos()
+            issued.values.removeIf { it.expiresAtNanos - now <= 0 }
             while (issued.size >= MAX_OUTSTANDING) issued.remove(issued.keys.first())
-            issued[nonce] = Issued(target, paramsHash, now + NONCE_TTL_MS)
+            issued[nonce] = Issued(target, paramsHash, now + NONCE_TTL_MS * NANOS_PER_MS)
         }
         return """{"ok":true,"nonce":"$nonce","expires_in_ms":$NONCE_TTL_MS}"""
     }
@@ -150,6 +155,8 @@ class PresenceProofs(
 
     /** `presence.enroll`. */
     suspend fun enroll(jsonRequest: String): String {
+        // Under policy off nothing asks for a proof: the verb answers before any co-factor work.
+        if (policy == PresencePolicy.OFF) return PRESENCE_DISABLED
         val body = parseObject(jsonRequest) ?: return INVALID_PUBLIC_KEY
         val encoded = body.string("public_key")?.let { IpcAuth.decode(it) } ?: return INVALID_PUBLIC_KEY
         val newKey = rsaKey(encoded) ?: return INVALID_PUBLIC_KEY
@@ -216,7 +223,7 @@ class PresenceProofs(
     ): String? =
         when {
             entry == null -> PRESENCE_INVALID
-            entry.expiresAtMs <= nowMs() -> PRESENCE_EXPIRED
+            entry.expiresAtNanos - nowNanos() <= 0 -> PRESENCE_EXPIRED
             entry.target != verb || entry.paramsHash != paramsHash -> PRESENCE_INVALID
             else -> null
         }
@@ -271,6 +278,7 @@ class PresenceProofs(
         const val FAILURE_DELAY_MS: Long = 250
         const val MIN_RSA_BITS: Int = 2048
         private const val HASH_BYTES = 32
+        private const val NANOS_PER_MS = 1_000_000L
         private const val ALGORITHM = "SHA256withRSA"
         private val TARGET = Regex("^[a-z][a-z0-9_.]{0,63}$")
 
@@ -281,6 +289,7 @@ class PresenceProofs(
         private const val PRESENCE_REQUIRED = "presence_required"
         private const val PRESENCE_INVALID = "presence_invalid"
         private const val PRESENCE_EXPIRED = "presence_expired"
+        private const val PRESENCE_DISABLED = """{"ok":false,"error":"presence_disabled"}"""
         private const val INVALID_TARGET = """{"ok":false,"error":"invalid_target"}"""
         private const val INVALID_PARAMS_HASH = """{"ok":false,"error":"invalid_params_hash"}"""
         private const val INVALID_PUBLIC_KEY = """{"ok":false,"error":"invalid_public_key"}"""

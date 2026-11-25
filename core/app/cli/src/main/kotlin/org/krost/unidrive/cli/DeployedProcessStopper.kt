@@ -57,6 +57,7 @@ internal class DeployedProcessStopper(
                 DaemonStopOutcome.GRACEFUL -> "stopped the daemon of '$name' (pid $pid) over IPC"
                 DaemonStopOutcome.FORCED -> "terminated the daemon of '$name' (pid $pid): it did not stop gracefully"
                 DaemonStopOutcome.FAILED -> "could NOT stop the daemon of '$name' (pid $pid); run `unidrive -p $name daemon stop` and re-deploy"
+                DaemonStopOutcome.REFUSED -> "the daemon of '$name' (pid $pid) needs a presence proof to stop; run `unidrive -p $name daemon stop` and re-deploy"
             }
         }
         val what = holder.modeToken ?: "process"

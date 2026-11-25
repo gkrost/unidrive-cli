@@ -56,7 +56,7 @@ class PresenceProofsTest {
         policy = policy,
         passphraseMatches = if (vault) ({ it.concatToString() == passphrase }) else null,
         nonces = { ByteArray(PresenceProofs.NONCE_BYTES).also { java.nio.ByteBuffer.wrap(it).putInt(++counter) } },
-        nowMs = { now },
+        nowNanos = { now * 1_000_000 },
         failureDelayMs = 0,
     )
 
@@ -280,6 +280,77 @@ class PresenceProofsTest {
     }
 
     @Test
+    fun canonical_text_pins_numbers_escapes_repeats_and_member_order() {
+        // docs/dev/specs/ipc-authentication.md section 4a, "Test vectors": what a client in another language must reproduce.
+        // Numbers keep their literal.
+        assertEquals(
+            """{"n":[1.0,1e3,-0,123456789012345678901234567890,0.000001]}""",
+            PresenceProofs.canonical(obj("""{"n":[1.0,1e3,-0,123456789012345678901234567890,0.000001]}""")),
+        )
+        // An escape is decoded, and non-ASCII is written as is.
+        assertEquals("{\"t\":\"\u00e9\",\"u\":\"\u00e9\"}", PresenceProofs.canonical(obj("""{"t":"\u00e9","u":"\u00e9"}""")))
+        // The five short escapes and \u00xx below U+0020; "/", DEL and U+2028 as is.
+        assertEquals(
+            "{\"s\":\"\u00e9\\u0001/\\\"\\\\\u007f\u2028\"}",
+            PresenceProofs.canonical(obj("""{"s":"\u00e9\u0001\/\"\\\u007f\u2028"}""")),
+        )
+        assertEquals("{\"s\":\"\\b\\f\\n\\r\\t\\u000b\\u001f\"}", PresenceProofs.canonical(obj("""{"s":"\b\f\n\r\t\u000b\u001f"}""")))
+        // A repeated member keeps the last.
+        assertEquals("""{"a":2}""", PresenceProofs.canonical(obj("""{"a":1,"a":2}""")))
+        // Members sort by UTF-16 code unit: a surrogate pair (U+D83D) before U+FF5E, which code point order would reverse.
+        assertEquals(
+            "{\"s\":1,\"\ud83d\ude00\":2,\"\uff5e\":3}",
+            PresenceProofs.canonical(obj("""{"\uff5e":3,"\ud83d\ude00":2,"s":1}""")),
+        )
+    }
+
+    @Test
+    fun a_nonce_expires_by_the_monotonic_clock_alone() =
+        runTest {
+            var nanos = 5L
+            val p =
+                PresenceProofs(
+                    dir.resolve(PresenceProofs.ANCHOR_FILE), "p1", PresencePolicy.DESTRUCTIVE, { true },
+                    nowNanos = { nanos }, failureDelayMs = 0,
+                )
+            val key = keyPair()
+            assertEquals("true", obj(p.enroll(enrollRequest(p, key, passphrase = passphrase)))["ok"]?.jsonPrimitive?.content)
+            val line = """{"verb":"auth.logout","presence":${proof(p, key)}}"""
+            nanos += (PresenceProofs.NONCE_TTL_MS + 1) * 1_000_000
+            assertEquals("presence_expired", error(p.gate("auth.logout", line)))
+            val fresh = """{"verb":"auth.logout","presence":${proof(p, key)}}"""
+            nanos += (PresenceProofs.NONCE_TTL_MS - 1) * 1_000_000
+            assertNull(p.gate("auth.logout", fresh), "just inside the 60 s the nonce still holds")
+        }
+
+    @Test
+    fun status_json_says_the_policy_and_whether_an_anchor_is_enrolled() =
+        runTest {
+            val p = proofs(PresencePolicy.ADMIN)
+            assertEquals("""{"policy":"admin","enrolled":false}""", p.statusJson())
+            enrolled(p, keyPair())
+            assertEquals("""{"policy":"admin","enrolled":true}""", p.statusJson())
+            Files.deleteIfExists(dir.resolve(PresenceProofs.ANCHOR_FILE))
+            assertEquals("""{"policy":"off","enrolled":false}""", proofs(PresencePolicy.OFF).statusJson())
+        }
+
+    @Test
+    fun a_daemon_without_a_presence_policy_takes_no_enrollment_and_asks_no_passphrase() =
+        runTest {
+            var checks = 0
+            val p =
+                PresenceProofs(
+                    dir.resolve(PresenceProofs.ANCHOR_FILE), "p1", PresencePolicy.OFF, { checks++ >= 0 },
+                    nowNanos = { now * 1_000_000 }, failureDelayMs = 0,
+                )
+            val reply = p.enroll(enrollRequest(p, keyPair(), passphrase = passphrase))
+            assertEquals("presence_disabled", error(reply))
+            assertEquals(0, checks, "no co-factor work under policy off")
+            assertFalse(p.enrolled)
+            assertFalse(Files.exists(dir.resolve(PresenceProofs.ANCHOR_FILE)))
+        }
+
+    @Test
     fun a_challenge_with_a_bad_target_or_hash_is_refused() {
         val p = proofs()
         assertEquals("invalid_target", error(p.challenge("""{"verb":"presence.challenge"}""")))
@@ -399,7 +470,7 @@ class PresenceProofsTest {
     @Test
     fun the_capability_is_advertised_only_once_an_anchor_exists() =
         runTest {
-            val p = proofs(PresencePolicy.OFF)
+            val p = proofs(PresencePolicy.DESTRUCTIVE)
             assertEquals("""["mount"]""", p.withCapability("""["mount"]"""))
             assertEquals("[]", p.withCapability("[]"))
             enrolled(p, keyPair())

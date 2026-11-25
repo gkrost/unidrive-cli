@@ -6,11 +6,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import org.krost.unidrive.io.ndjsonString
+import org.krost.unidrive.sync.ConfigValueException
 import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.PresencePolicy
 import org.krost.unidrive.sync.PresenceProofs
 import org.krost.unidrive.sync.ProfileMode
+import org.krost.unidrive.sync.RawGeneral
 import org.krost.unidrive.telemetry.TransferHistory
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
@@ -44,26 +46,31 @@ internal class PreProviderIpc(
 }
 
 /**
- * gkrost/unidrive-cli#798: `[general] require_presence` of this run, and the nonce source and clock of its presence
- * proofs (seams, so the corpus can pin nonces and let one expire).
- */
-/**
  * gkrost/unidrive-cli#798: `[general] require_presence` of a `daemon run`. A value outside the three is a config error
  * (exit 78 with the value named), never read as off.
  */
 internal fun presenceSettings(main: Main): PresenceSettings =
-    PresenceSettings(
-        runCatching { PresencePolicy.parse(main.rawGeneral().require_presence) }.getOrElse { e ->
-            System.err.println("Error: ${e.message}")
-            kotlin.system.exitProcess(main.MODE_REFUSAL_EXIT)
-        },
-    )
+    try {
+        PresenceSettings.of(main.rawGeneral())
+    } catch (e: ConfigValueException) {
+        System.err.println("Error: ${e.message}")
+        kotlin.system.exitProcess(main.MODE_REFUSAL_EXIT)
+    }
 
+/**
+ * gkrost/unidrive-cli#798: `[general] require_presence` of this run, and the nonce source and monotonic clock of its
+ * presence proofs (seams, so the corpus can pin nonces and let one expire).
+ */
 internal class PresenceSettings(
     val policy: PresencePolicy = PresencePolicy.OFF,
     val nonces: () -> ByteArray = { IpcAuth.randomBytes(PresenceProofs.NONCE_BYTES) },
-    val nowMs: () -> Long = System::currentTimeMillis,
-)
+    val nowNanos: () -> Long = System::nanoTime,
+) {
+    companion object {
+        /** The settings of [general]; a `require_presence` outside the three throws [ConfigValueException]. */
+        fun of(general: RawGeneral): PresenceSettings = PresenceSettings(PresencePolicy.parse(general.require_presence))
+    }
+}
 
 private val preProviderLog = LoggerFactory.getLogger(DaemonRuntime::class.java)
 
@@ -105,7 +112,7 @@ internal suspend fun servePreProviderIpc(
     val presence =
         PresenceProofs(
             ipcTokenDir.resolve(PresenceProofs.ANCHOR_FILE), profileName, presenceSettings.policy,
-            vault?.passphraseMatches, presenceSettings.nonces, presenceSettings.nowMs,
+            vault?.passphraseMatches, presenceSettings.nonces, presenceSettings.nowNanos,
         )
     ipcAuth.presence = presence
 
@@ -143,6 +150,7 @@ internal suspend fun servePreProviderIpc(
             ?: lockedDaemonStatusJson(
                 modeJson = ndjsonString(profileMode.wireName),
                 capabilitiesJson = presence.withCapability(lockedCapabilitiesJson(profileMode)),
+                presenceJson = presence.statusJson(),
                 uptimeMs = System.currentTimeMillis() - hooks.startedAtMs(),
                 clientsConnected = server.clientCount,
                 ipcJson = ipcStatusJson(server.requestCounts()).toString(),
