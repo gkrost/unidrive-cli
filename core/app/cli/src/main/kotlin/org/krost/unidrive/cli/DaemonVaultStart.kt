@@ -173,8 +173,11 @@ internal fun Main.rawGeneral(): org.krost.unidrive.sync.RawGeneral {
 
 /**
  * Whether [profile] sets `xtra_encryption` and neither the environment nor a systemd credential supplies its
- * passphrase: then the vault's `.xtra` entry (or the helper) is the way in, so a vault that waits for its unlock
- * keeps the profile's daemon waiting too (issue#796).
+ * passphrase: then the vault's `.xtra` entry is the way in, so a vault that waits for its unlock keeps the
+ * profile's daemon waiting too (issue#796). This holds whether or not the vault has a `.xtra` entry: that is
+ * known only after the unlock. The helper (secret kind `xtra`) answers at the first content operation, after the
+ * start, so an install whose helper holds `xtra` but cannot open `vault.enc` also waits (or exits 78 under
+ * `require_vault`).
  */
 private fun profileNeedsVaultedXtraPassphrase(profile: ProfileInfo): Boolean {
     if (profile.rawProvider?.xtra_encryption != true) return false

@@ -4,6 +4,9 @@ import org.krost.unidrive.sync.ConfigSecrets
 import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.Vault
 import org.krost.unidrive.sync.escapeTomlValue
+import org.krost.unidrive.xtra.XtraAgeKeyStore
+import org.krost.unidrive.xtra.XtraKeyManager
+import org.krost.unidrive.xtra.XtraTinkKeyStore
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
 import picocli.CommandLine.Parameters
@@ -319,7 +322,7 @@ internal fun decryptVault(
             "Credentials restored to config.toml; the vault keeps the X-tra passphrase (drop it with `unidrive vault xtra-clear`)."
         } else {
             vault.write(passphrase, kept)
-            "Credentials of ${restorable.size} profile(s) restored to config.toml; the vault keeps ${orphans.size} orphan entry(ies)."
+            "Credentials of ${restorable.size} profile(s) restored to config.toml; the vault keeps ${orphans.size} orphan entry(ies)${if (xtraEntry != null) " and the X-tra passphrase" else ""}."
         }
     }
 }
@@ -511,7 +514,7 @@ internal fun forgetVaultEntry(
     description = ["Store the X-tra passphrase in the vault, so vault.unlock releases it to a daemon with no other source"],
     mixinStandardHelpOptions = true,
 )
-class VaultXtraSetCommand : Runnable {
+class VaultXtraSetCommand : java.util.concurrent.Callable<Int> {
     @ParentCommand
     lateinit var vaultCmd: VaultCommand
 
@@ -533,11 +536,12 @@ class VaultXtraSetCommand : Runnable {
     )
     var xtraPassphraseStdin: Boolean = false
 
-    override fun run() {
-        val vault = Vault(vaultCmd.parent.configBaseDir().resolve("vault.enc"))
+    override fun call(): Int {
+        val configDir = vaultCmd.parent.configBaseDir()
+        val vault = Vault(configDir.resolve("vault.enc"))
         if (!vault.exists()) {
             System.err.println("No vault found. Run 'unidrive vault init' first.")
-            System.exit(1)
+            return 1
         }
         val vaultPass =
             if (passphraseStdin) readPassphraseStdin("--passphrase-stdin") else readPassphrase("Vault passphrase: ")
@@ -564,12 +568,26 @@ class VaultXtraSetCommand : Runnable {
                 }
                 pass
             }
-        val configPath = vaultCmd.parent.configBaseDir().resolve("config.toml")
+        // The vault answers ahead of the helper and the console, so a wrong value would shadow a correct one:
+        // prove it against the key files the daemon will load with it before it is stored.
+        val present = XtraAlgorithm.entries.filter { Files.exists(configDir.resolve(it.keyFileName)) }
+        val opening = present.filter { xtraKeyFileOpens(it, configDir, xtraPass) }
+        if (present.isNotEmpty() && opening.isEmpty()) {
+            System.err.println("Error: the passphrase opens none of ${present.joinToString { it.keyFileName }}; nothing was stored.")
+            xtraPass.fill('\u0000')
+            return 1
+        }
+        val configPath = configDir.resolve("config.toml")
         ConfigFileTransaction.withLock(configPath) {
             vault.write(vaultPass, setVaultXtraPassphrase(vault.read(vaultPass), String(xtraPass)))
         }
         xtraPass.fill('\u0000')
         println("Stored the X-tra passphrase in the vault.")
+        (present - opening.toSet()).forEach {
+            println("Note: ${it.keyFileName} is not under this passphrase (all X-tra key files share one); change it: ${it.changePassphraseCommand}")
+        }
+        println("A running daemon keeps its in-memory vault data until its next vault.unlock or a restart.")
+        return 0
     }
 }
 
@@ -605,7 +623,23 @@ class VaultXtraClearCommand : java.util.concurrent.Callable<Int> {
                 forgetVaultEntry(vault, passphrase, XTRA_VAULT_ENTRY)
             }
         println(if (dropped) "Dropped the X-tra passphrase from the vault." else "The vault holds no X-tra passphrase.")
+        println("A running daemon keeps its in-memory vault data until its next vault.unlock or a restart.")
         return 0
+    }
+}
+
+/** Whether [passphrase] opens [algorithm]'s key file in [configDir]; true when the file does not exist. */
+internal fun xtraKeyFileOpens(
+    algorithm: XtraAlgorithm,
+    configDir: java.nio.file.Path,
+    passphrase: CharArray,
+): Boolean {
+    val keyPath = configDir.resolve(algorithm.keyFileName)
+    if (!Files.exists(keyPath)) return true
+    return when (algorithm) {
+        XtraAlgorithm.AES_GCM -> runCatching { XtraKeyManager(keyPath).load(passphrase) }.isSuccess
+        XtraAlgorithm.AGE_V1 -> XtraAgeKeyStore(keyPath).opens(passphrase)
+        XtraAlgorithm.TINK_AES_GCM -> XtraTinkKeyStore(keyPath).opens(passphrase)
     }
 }
 

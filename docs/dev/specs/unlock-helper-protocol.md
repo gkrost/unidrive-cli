@@ -93,7 +93,12 @@ the X-tra step never prompts for the vault passphrase, and `vault.lock` takes th
 reach again. A daemon whose profile sets `xtra_encryption` with no environment or credential source
 for the X-tra passphrase starts locked while the vault is locked (the same wait as a vaulted provider
 field). A daemon with `vault.enc` advertises the capability `vault-xtra:v1` (contract level 14) next to
-`vault-unlock:v1`: the vault carries the X-tra passphrase and `vault.unlock` releases it. `vault decrypt`
+`vault-unlock:v1`: this engine releases a vaulted X-tra passphrase on `vault.unlock`; whether the vault holds
+one is known only after the unlock. This start-locked rule applies whether or not the vault holds a `.xtra`
+entry, so an install whose helper answers `xtra` but cannot open `vault.enc` waits for `vault.unlock` (under
+`require_vault = true` it exits 78 at start). `vault xtra-set` proves the passphrase against the X-tra key
+files beside `config.toml` before storing it and refuses when none opens. The `xtra change-passphrase*`
+commands cannot read the vault; they remind to run `vault xtra-set` again. `vault decrypt`
 keeps the entry in the vault (it has no config section to go back into).
 
 ## Out of scope here

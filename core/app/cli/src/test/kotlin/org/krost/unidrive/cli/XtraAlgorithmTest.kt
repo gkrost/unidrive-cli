@@ -38,4 +38,15 @@ class XtraAlgorithmTest {
 
         assertEquals(2, XtraAlgorithm.sharedPassphraseReminders(dir, XtraAlgorithm.AGE_V1).size)
     }
+
+    // The vault's `.xtra` entry wraps under the same passphrase and cannot be read by the changing command.
+    @Test
+    fun `a passphrase change reminds of the vault X-tra entry when a vault exists`() {
+        val dir = TestScratch.directory("xtra-algorithm-vault-reminder")
+        assertEquals(emptyList(), XtraAlgorithm.sharedPassphraseReminders(dir, XtraAlgorithm.AES_GCM))
+        Files.writeString(dir.resolve("vault.enc"), "v")
+        val reminders = XtraAlgorithm.sharedPassphraseReminders(dir, XtraAlgorithm.AES_GCM)
+        assertEquals(1, reminders.size)
+        assertTrue(reminders.single().contains("unidrive vault xtra-set"), reminders.single())
+    }
 }

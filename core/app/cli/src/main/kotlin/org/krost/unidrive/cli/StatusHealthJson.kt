@@ -467,9 +467,10 @@ internal const val HISTORY_REPORT_CAPABILITY = "history.report.v1"
 internal const val VAULT_UNLOCK_CAPABILITY = "vault-unlock:v1"
 
 /**
- * The `daemon.status` capability that says the vault carries the X-tra passphrase (the reserved `.xtra` entry,
- * set with `vault xtra-set`) and `vault.unlock` releases it to the daemon's X-tra wiring (issue#796) — present
- * with [VAULT_UNLOCK_CAPABILITY], so a client may deliver one secret and not ask for the X-tra passphrase apart.
+ * The `daemon.status` capability that says this engine releases a vaulted X-tra passphrase (the reserved `.xtra`
+ * entry, set with `vault xtra-set`) to the daemon's X-tra wiring on `vault.unlock` (issue#796) — present with
+ * [VAULT_UNLOCK_CAPABILITY]. Whether the vault holds one is known only after the unlock: with no `.xtra` entry
+ * the chain falls through to the unlock helper or the console.
  */
 internal const val VAULT_XTRA_CAPABILITY = "vault-xtra:v1"
 

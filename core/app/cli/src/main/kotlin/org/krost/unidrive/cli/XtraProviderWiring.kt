@@ -81,7 +81,7 @@ internal fun Main.xtraPassphrase(): CharArray =
                 System.err.println("Error: xtra_encryption is on but no passphrase is available (${resolution.detail}).")
                 System.err.println(
                     "Configure UNIDRIVE_XTRA_PASS, a systemd credential named unidrive-xtra-pass, " +
-                        "or [general] unlock_helper (docs/dev/specs/unlock-helper-protocol.md).",
+                        "`unidrive vault xtra-set`, or [general] unlock_helper (docs/dev/specs/unlock-helper-protocol.md).",
                 )
                 error("no X-tra passphrase available")
             }

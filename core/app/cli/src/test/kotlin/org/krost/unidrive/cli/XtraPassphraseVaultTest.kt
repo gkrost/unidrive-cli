@@ -16,7 +16,7 @@ import org.krost.unidrive.sync.Vault
 import org.krost.unidrive.testing.TestScratch
 
 /**
- * The X-tra passphrase is a vault secret (gkrost/unidrive-windows#1406 section 2, issue#796): a daemon with no
+ * The X-tra passphrase is a vault secret (issue#796): a daemon with no
  * environment variable, no systemd credential, no console and an unlock helper that holds no X-tra entry (the
  * Windows tray's case) opens an `xtra_encryption` profile once `vault.unlock` has delivered the vault passphrase.
  * The vault stores it as the reserved entry `.xtra` (not a valid profile name), field `passphrase`.
@@ -139,5 +139,39 @@ class XtraPassphraseVaultTest {
         val off = daemonCapabilitiesJson(org.krost.unidrive.sync.ProfileMode.MOUNT, false, false, org.krost.unidrive.engine.ViewNamespaces.NONE, false)
         assertTrue("\"$VAULT_XTRA_CAPABILITY\"" in on && "\"$VAULT_UNLOCK_CAPABILITY\"" in on)
         assertTrue(VAULT_XTRA_CAPABILITY !in off)
+    }
+
+    @Test
+    fun `a locked start for an xtra profile is flagged and vault unlock then releases the X-tra passphrase`() {
+        val (main, _) = lockedMain(mapOf(XTRA_VAULT_ENTRY to mapOf(XTRA_VAULT_FIELD to xtraPass)))
+        main.daemonVaultLocked = false
+        val profile = org.krost.unidrive.sync.ProfileInfo("p", "localfs", dir, org.krost.unidrive.sync.RawProvider(type = "localfs", xtra_encryption = true))
+        try {
+            LifecycleHooks.env = { null }
+            val start = main.resolveDaemonVaultStart(profile, main.rawGeneral())
+            assertTrue(start is DaemonVaultStart.Locked, "the helper declines the vault, no env source: $start")
+            assertTrue(main.daemonVaultLocked)
+            val handler = VaultRpcHandler(main.daemonVault(start), failureDelayMs = 0)
+            assertFailsWith<IllegalStateException> { main.xtraPassphrase() }
+            assertEquals("""{"ok":true}""", unlock(handler))
+            assertEquals(xtraPass, String(main.xtraPassphrase()))
+        } finally {
+            LifecycleHooks.env = { System.getenv(it) }
+        }
+    }
+
+    // Intended (spec "starts locked"): vault.enc present + xtra profile + no env source waits for vault.unlock even
+    // when the vault holds no `.xtra` entry, because the daemon cannot know before the unlock.
+    @Test
+    fun `an xtra profile with a vault that holds no X-tra entry and a helper that declines the vault starts locked`() {
+        val (main, _) = lockedMain(emptyMap())
+        main.daemonVaultLocked = false
+        val profile = org.krost.unidrive.sync.ProfileInfo("p", "localfs", dir, org.krost.unidrive.sync.RawProvider(type = "localfs", xtra_encryption = true))
+        try {
+            LifecycleHooks.env = { null }
+            assertTrue(main.resolveDaemonVaultStart(profile, main.rawGeneral()) is DaemonVaultStart.Locked)
+        } finally {
+            LifecycleHooks.env = { System.getenv(it) }
+        }
     }
 }
