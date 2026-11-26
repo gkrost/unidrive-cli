@@ -122,6 +122,7 @@ Stdout is line-buffered by the script itself. Tests with a fake daemon view: `py
 
 The committed `expected/` files are for `golden-unicode-v1`; the layout is `golden-unicode-v2`, so a run against it has no matching
 file until one is committed. Without `--expected`, `run` prints the findings but does not classify them.
+**No `expected/` file yet for v2: run with `--expected` only for v1.** A v2 file needs a classified live run first.
 
 Cleaning up a live run: a recursive delete through the mount (`rm -rf`) is slow on Internxt (about 1.3 entries/s) and can end with
 `Directory not empty` on folders that no longer hold anything (gkrost/unidrive-cli#634, #635). Remove the run's folder with
