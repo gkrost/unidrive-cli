@@ -45,10 +45,12 @@ code. Request/reply byte shapes are pinned by the golden corpus under
   `{"event":"lost","since_last":N}` sentinel precedes the next deliverable
   event. Outcomes (`completed`, and `failed` without `retry_scheduled:true`)
   are never dropped: the queue holds them beyond 64, so a `lost` never hides
-  how a transfer ended. A subscriber whose queue holds nothing but more than
-  512 outcomes reads nothing at all: the daemon **closes its connection**
-  (gkrost/unidrive-cli#845; no final line, the stream just ends) instead of
-  dropping an outcome. The client reconnects and subscribes again with
+  how a transfer ended. A subscriber that stops reading while the replay ring
+  (the last 1024 events) fills up, or whose queue holds more than 1024
+  outcomes, is **disconnected**: the daemon closes its connection
+  (gkrost/unidrive-cli#845; no final line, the stream just ends) while the ring
+  still holds everything it was not given, instead of dropping an outcome. The
+  client reconnects and subscribes again with
   `since_seq` and `run_id` (section 4): the replay ring, not the closed queue,
   supplies what it missed, and `replay:"gap"` says when the ring has moved
   past it. Progress, state
