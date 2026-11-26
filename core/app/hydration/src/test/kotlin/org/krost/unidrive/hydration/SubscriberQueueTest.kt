@@ -57,11 +57,12 @@ class SubscriberQueueTest {
     }
 
     @Test
-    fun `with only outcomes queued the oldest beyond the hard cap goes`() {
+    fun `with only outcomes queued an offer beyond the hard cap reports it and drops nothing`() {
         val q = queue(capacity = 2, hardCap = 4)
-        for (i in 1L..6L) q.offer(E(i, terminal = true))
+        val reported = (1L..6L).map { q.offer(E(it, terminal = true)) }
 
-        assertEquals(listOf(3L, 4L, 5L, 6L), q.drain().map { it.seq })
-        assertEquals(2, q.dropped.get())
+        assertEquals(listOf(false, false, false, false, true, true), reported, "from the fifth outcome the subscriber is to be disconnected")
+        assertEquals((1L..6L).toList(), q.drain().map { it.seq })
+        assertEquals(0, q.dropped.get())
     }
 }

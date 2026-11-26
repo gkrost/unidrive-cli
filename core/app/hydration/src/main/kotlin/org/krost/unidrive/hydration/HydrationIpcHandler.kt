@@ -234,8 +234,11 @@ import java.util.concurrent.atomic.AtomicLong
  * NDJSON lines via the writer function. When a subscriber's queue is full the
  * dispatcher drops the OLDEST queued event that is not an outcome (never a
  * `completed`, nor a `failed` that is not retried) and bumps a per-subscriber
- * lost counter; outcomes are kept beyond 64, up to a hard cap of 4096; the writer emits one `{"event":"lost","since_last":N}` sentinel
- * line ahead of the next deliverable event and resets the counter. The whole
+ * lost counter; outcomes are kept beyond 64, up to a hard cap of 512 (half the replay ring, so what a disconnected subscriber missed is still in the ring); the writer emits one `{"event":"lost","since_last":N}` sentinel
+ * line ahead of the next deliverable event and resets the counter. A subscriber whose queue holds nothing but outcomes beyond the
+ * hard cap is DISCONNECTED (gkrost/unidrive-cli#845, owner decision 2026-11-26): its writer stops, its queue is dropped and its
+ * connection is closed with no final line; it subscribes again with since_seq and run_id, and the ring (not its queue) supplies
+ * what it missed, or `replay:"gap"` when the ring has moved past it. The whole
  * registry plus writer-coroutine teardown is owned by this handler;
  * onSubscriberDisconnect(connectionId) is the production hook called from
  * IpcServer's connection-close listener.
@@ -327,6 +330,7 @@ class HydrationIpcHandler(
     private val subscribers = ConcurrentHashMap<String, Subscriber>()
     private var subscriberScope: CoroutineScope? = null
     private var subscriberWriter: (suspend (String, String) -> Boolean)? = null
+    private var closeConnection: (String) -> Unit = {}
 
     // Connections that have issued any hydration verb and are still connected — i.e. the
     // FUSE co-daemon serving this profile's view. `handle()` is only ever called for
@@ -365,6 +369,14 @@ class HydrationIpcHandler(
     }
 
     /**
+     * gkrost/unidrive-cli#845: how the daemon closes a connection from its side; called for a subscriber at the hard queue cap
+     * (after its writer and queue are gone). Unset (tests, a client with no such hook): the subscriber is dropped, nothing closes.
+     */
+    fun onSubscriberDisconnected(closeConnection: (connectionId: String) -> Unit) {
+        this.closeConnection = closeConnection
+    }
+
+    /**
      * Fan an event out to every registered subscriber. Non-suspending: each
      * subscriber's queue is fed by offer; on overflow the oldest unsent event that is not
      * terminal (see [isTerminalForSubscriber]) is dropped and the subscriber's dropped counter
@@ -372,6 +384,7 @@ class HydrationIpcHandler(
      * The single collector at the caller site drains hydration.events into here.
      */
     fun dispatchEvent(event: HydrationEvent) {
+        val overflowed = ArrayList<Pair<String, Subscriber>>()
         synchronized(fanOutLock) {
             val seq = ++lastSeq
             val sequenced = Sequenced(seq, event, withSeq(serialiseHydrationEvent(event), seq))
@@ -382,10 +395,24 @@ class HydrationIpcHandler(
                 replayRing.addLast(sequenced)
                 if (replayRing.size > REPLAY_CAPACITY) replayFloor = replayRing.removeFirst().seq
             }
-            for (sub in subscribers.values) {
-                sub.queue.offer(sequenced)
+            for ((id, sub) in subscribers) {
+                if (sub.queue.offer(sequenced)) overflowed.add(id to sub)
             }
         }
+        // gkrost/unidrive-cli#845: outside the lock, and never a wait on the subscriber's socket.
+        for ((id, sub) in overflowed) disconnectAtHardCap(id, sub)
+    }
+
+    /**
+     * gkrost/unidrive-cli#845 (item #746-9): a subscriber whose queue holds only outcomes beyond the hard cap reads nothing.
+     * It is dropped and its connection closed; the replay ring holds what it missed, so it subscribes again with `since_seq`
+     * and the `run_id` and converges (or is told `replay:"gap"` when the ring has moved past it).
+     */
+    private fun disconnectAtHardCap(connectionId: String, sub: Subscriber) {
+        if (!subscribers.remove(connectionId, sub)) return // already gone or replaced by a repeat subscribe
+        sub.job.cancel()
+        sub.queue.close()
+        closeConnection(connectionId)
     }
 
     /**
@@ -486,8 +513,9 @@ class HydrationIpcHandler(
         const val OUTCOME_TTL_MS = 10 * 60_000L
         const val OUTCOME_CAP = 4096
 
-        // The most outcomes (completed, failed for good) one subscriber's queue keeps when nothing else is left to drop.
-        const val SUBSCRIBER_TERMINAL_HARD_CAP = 4096
+        // The most outcomes (completed, failed for good) one subscriber's queue keeps when nothing else is left to drop; one more and it is
+        // disconnected (gkrost/unidrive-cli#845). Kept below REPLAY_CAPACITY so its reconnect with since_seq finds what it missed in the ring.
+        const val SUBSCRIBER_TERMINAL_HARD_CAP = 512
 
         // gkrost/unidrive-cli#437: how many events (progress not counted, it is never replayed) a `since_seq` subscribe can catch up on.
         const val REPLAY_CAPACITY = 1024
@@ -929,8 +957,7 @@ class HydrationIpcHandler(
     }
 
     // The name_clash answer for a verb that names a name by another spelling than the one a client used for it first.
-    private fun nameClash(vararg raws: String): String? =
-        raws.firstOrNull { spellings.clashes(it) }?.let { nfcWins.clashReply(it) }
+    private fun nameClash(vararg raws: String): String? = raws.firstOrNull { spellings.clashes(it) }?.let { nfcWins.clashReply(it) }
 
     // gkrost/unidrive-cli#452: the name_clash guard around a verb that records a spelling. The claim — a putIfAbsent
     // per name that could have a twin ([NameSpellings.claim]) — is the check and the reservation in one step, so a
