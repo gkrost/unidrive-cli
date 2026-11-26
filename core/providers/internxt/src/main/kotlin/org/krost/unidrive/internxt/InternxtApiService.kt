@@ -1419,6 +1419,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
      * [resume] (#845), when given, keeps the plaintext of a broken transfer next to [destination] and asks for the rest with
      * `Range: bytes=N-` the next time; see [receiveShardBody]. [cipher] is always the cipher at the start of the object.
      */
+    @Suppress("ThrowsCount", "LongParameterList") // the https refusal, the API failure, the budget failure; the resume identity joined the parameters
     internal suspend fun downloadFileStreaming(
         downloadUrl: String,
         cipher: javax.crypto.Cipher,

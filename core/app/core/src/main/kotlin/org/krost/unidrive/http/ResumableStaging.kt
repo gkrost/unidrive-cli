@@ -221,6 +221,7 @@ class ResumableStaging private constructor(
     }
 
     /** [finish] and move the file over [destination] in one atomic step (retried while another process holds the destination). */
+    @Suppress("TooGenericExceptionCaught") // whatever fails (an Error too), the staged file goes and the failure is rethrown unchanged
     suspend fun commit(destination: Path) {
         val staged = finish()
         try {
@@ -297,6 +298,7 @@ class ResumableStaging private constructor(
          * between the request and now) is dropped and the answer is [RangeAnswer.REFETCH]-worthy, so it returns null.
          * Null: the destination's name leaves no room for the names, or another download holds the partial.
          */
+        @Suppress("TooGenericExceptionCaught") // whatever fails (an Error too), the lock and the channel are released and the failure is rethrown
         fun open(
             destination: Path,
             identity: ResumeIdentity,
@@ -362,15 +364,18 @@ class ResumableStaging private constructor(
          * fix (a [PermanentDownloadFailureException]), and any failure of a destination that no later call will ask for again
          * ([isPersistent]), deletes the partial; any other keeps it for the next call. Success leaves nothing (the commit took it).
          */
-        @Suppress("TooGenericExceptionCaught") // whatever fails is rethrown unchanged after the cleanup decision
+        @Suppress("TooGenericExceptionCaught") // whatever fails (an Error too) is rethrown unchanged after the cleanup decision
         suspend fun <T> cleanupOnFailure(
             destination: Path,
             block: suspend () -> T,
         ): T =
             try {
                 block()
+            } catch (e: PermanentDownloadFailureException) {
+                discardFor(destination)
+                throw e
             } catch (e: Throwable) {
-                if (e is PermanentDownloadFailureException || !isPersistent(destination)) discardFor(destination)
+                if (!isPersistent(destination)) discardFor(destination)
                 throw e
             }
 

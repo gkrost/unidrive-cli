@@ -92,90 +92,105 @@ private class ShardRun(val cipher: Cipher) {
  * The size, hash and completeness checks run over the whole object (the kept prefix is re-hashed first), so a prefix
  * that is not the bytes of this version fails the shard hash like any corrupt body, and is then dropped.
  */
-@Suppress("ThrowsCount", "CyclomaticComplexMethod", "LongMethod") // one body, one set of refusals; as before, in order
 internal suspend fun receiveShardBody(
     response: HttpResponse,
     plan: ShardBodyPlan,
 ): InternxtDownloadedContent? {
-    val destination = plan.destination
-    val partial = plan.resume?.let { ResumableStaging.open(destination, it, expectedOffset = plan.requestedFrom) }
+    val partial = plan.resume?.let { ResumableStaging.open(plan.destination, it, expectedOffset = plan.requestedFrom) }
     if (partial == null && plan.requestedFrom > 0L) return null
     try {
         if (partial != null && partial.answerFor(response.status.value, response.headers[HttpHeaders.ContentRange]) == RangeAnswer.REFETCH) return null
-        val start = partial?.offset ?: 0L
-        // archive#536: the shard's Content-Length already says when the stored object is shorter
-        // than the size the drive reports (a multipart upload another client truncated) —
-        // refuse before reading a single byte instead of pulling 285 MiB that cannot
-        // succeed. archive#940: the same for a longer one; the stream cipher keeps the length, so
-        // the post-download guard would refuse it after the whole transfer too. An absent
-        // header (chunked) or an unknown declared size (0) stays with that post-download
-        // completeness guard, as before. A ranged answer announces the rest only: the prefix is added.
         val announcedLength = response.headers[HttpHeaders.ContentLength]?.toLongOrNull()
-        val expectedSize = plan.expectedSize
-        announcedLength?.let { contentLength ->
-            val total = contentLength + start
-            if (expectedSize != null && expectedSize > 0 && total != expectedSize) {
-                val comparison = if (total < expectedSize) "shorter" else "longer"
-                throw RemoteIncompleteDownloadException(
-                    "Stored object for ${destination.fileName} is $comparison than the size the drive reports: " +
-                        "$total of $expectedSize bytes",
-                    storedBytes = total,
-                    declaredBytes = expectedSize,
-                )
-            }
-        }
+        refuseWrongAnnouncedLength(plan, announcedLength, partial?.offset ?: 0L)
         val channel: ByteReadChannel = response.body()
-        val run = ShardRun(plan.cipher)
-        return withContext(Dispatchers.IO) {
-            Files.createDirectories(destination.parent)
-            // archive#529: a name near the 255-byte component limit cannot take the suffix — stage short.
-            val tmpPath =
-                partial?.partialPath
-                    ?: destination.parent.resolve(org.krost.unidrive.io.stagingSiblingName(destination.fileName.toString(), ".unidrive-tmp"))
-            var finished = false
-            try {
-                val out: OutputStream = partial?.asOutputStream() ?: Files.newOutputStream(tmpPath, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING)
-                out.use { sink ->
-                    partial?.let { run.replay(it) }
-                    copyShardBody(channel, plan, run, sink)
-                    requireBodyEnded(channel, announcedLength, response.headers[HttpHeaders.ContentEncoding], run.ciphertextBytes - start, destination)
-                    checkWholeShard(plan, run, destination)
-                    val finalBlock = plan.cipher.doFinal()
-                    if (finalBlock != null && finalBlock.isNotEmpty()) {
-                        sink.write(finalBlock)
-                        run.plaintextDigest.update(finalBlock)
-                        run.written += finalBlock.size
-                    }
-                }
-                partial?.finish()
-                finished = true
-                plan.targetMtimeMillis?.let {
-                    Files.setLastModifiedTime(tmpPath, java.nio.file.attribute.FileTime.fromMillis(it))
-                }
-                val stagedSize = Files.size(tmpPath)
-                val stagedMtimeMillis = Files.getLastModifiedTime(tmpPath).toMillis()
-                val plaintextSha256 = HexFormat.of().formatHex(run.plaintextDigest.digest())
-                Files.move(tmpPath, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-                InternxtDownloadedContent(
-                    run.written,
-                    plaintextSha256,
-                    stagedSize,
-                    stagedMtimeMillis,
-                    mtimeAppliedBeforePlacement = plan.targetMtimeMillis != null,
-                )
-            } catch (e: Exception) {
-                // A broken transfer keeps its partial for the retry; a refusal (wrong size, wrong hash) or a body that
-                // was complete drops it.
-                if (partial == null || finished || e is PermanentDownloadFailureException) {
-                    partial?.discard()
-                    Files.deleteIfExists(tmpPath)
-                }
-                throw e
-            }
-        }
+        return withContext(Dispatchers.IO) { stageShard(channel, response, announcedLength, plan, partial) }
     } finally {
         partial?.release()
     }
+}
+
+// archive#536: the shard's Content-Length already says when the stored object is shorter
+// than the size the drive reports (a multipart upload another client truncated) —
+// refuse before reading a single byte instead of pulling 285 MiB that cannot
+// succeed. archive#940: the same for a longer one; the stream cipher keeps the length, so
+// the post-download guard would refuse it after the whole transfer too. An absent
+// header (chunked) or an unknown declared size (0) stays with that post-download
+// completeness guard, as before. A ranged answer announces the rest only: the prefix is added.
+private fun refuseWrongAnnouncedLength(
+    plan: ShardBodyPlan,
+    announcedLength: Long?,
+    start: Long,
+) {
+    val expectedSize = plan.expectedSize
+    val total = (announcedLength ?: return) + start
+    if (expectedSize == null || expectedSize <= 0 || total == expectedSize) return
+    val comparison = if (total < expectedSize) "shorter" else "longer"
+    throw RemoteIncompleteDownloadException(
+        "Stored object for ${plan.destination.fileName} is $comparison than the size the drive reports: " +
+            "$total of $expectedSize bytes",
+        storedBytes = total,
+        declaredBytes = expectedSize,
+    )
+}
+
+// The staged file: the partial when there is one, else a sibling of the destination that a failure deletes. A broken
+// transfer keeps its partial for the retry; a refusal (wrong size, wrong hash) or a body that was complete drops it.
+@Suppress("TooGenericExceptionCaught") // whatever fails (an Error too) the plain staging file goes, and the failure is rethrown unchanged
+private suspend fun stageShard(
+    channel: ByteReadChannel,
+    response: HttpResponse,
+    announcedLength: Long?,
+    plan: ShardBodyPlan,
+    partial: ResumableStaging?,
+): InternxtDownloadedContent {
+    val destination = plan.destination
+    Files.createDirectories(destination.parent)
+    // archive#529: a name near the 255-byte component limit cannot take the suffix — stage short.
+    val tmpPath =
+        partial?.partialPath
+            ?: destination.parent.resolve(org.krost.unidrive.io.stagingSiblingName(destination.fileName.toString(), ".unidrive-tmp"))
+    var finished = false
+    try {
+        val start = partial?.offset ?: 0L
+        val run = ShardRun(plan.cipher)
+        val out: OutputStream = partial?.asOutputStream() ?: Files.newOutputStream(tmpPath, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING)
+        out.use { sink ->
+            partial?.let { run.replay(it) }
+            copyShardBody(channel, plan, run, sink)
+            requireBodyEnded(channel, announcedLength, response.headers[HttpHeaders.ContentEncoding], run.ciphertextBytes - start, destination)
+            checkWholeShard(plan, run, destination)
+            val finalBlock = plan.cipher.doFinal()
+            if (finalBlock != null && finalBlock.isNotEmpty()) {
+                sink.write(finalBlock)
+                run.plaintextDigest.update(finalBlock)
+                run.written += finalBlock.size
+            }
+        }
+        partial?.finish()
+        finished = true
+        plan.targetMtimeMillis?.let {
+            Files.setLastModifiedTime(tmpPath, java.nio.file.attribute.FileTime.fromMillis(it))
+        }
+        val stagedSize = Files.size(tmpPath)
+        val stagedMtimeMillis = Files.getLastModifiedTime(tmpPath).toMillis()
+        val plaintextSha256 = HexFormat.of().formatHex(run.plaintextDigest.digest())
+        Files.move(tmpPath, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        return InternxtDownloadedContent(run.written, plaintextSha256, stagedSize, stagedMtimeMillis, mtimeAppliedBeforePlacement = plan.targetMtimeMillis != null)
+    } catch (e: PermanentDownloadFailureException) {
+        dropStaged(partial, tmpPath)
+        throw e
+    } catch (e: Exception) {
+        if (partial == null || finished) dropStaged(partial, tmpPath)
+        throw e
+    }
+}
+
+private fun dropStaged(
+    partial: ResumableStaging?,
+    tmpPath: Path,
+) {
+    partial?.discard()
+    Files.deleteIfExists(tmpPath)
 }
 
 private suspend fun copyShardBody(

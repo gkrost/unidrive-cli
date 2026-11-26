@@ -513,10 +513,11 @@ class GraphApiService(
         if (!alreadyReresolved) return
         // Only a 401 is an authentication failure. A 403 that persists on a fresh URL is an access refusal (before
         // archive#329 it surfaced as the generic download failure): keep that, so it cannot latch the stale-auth UX (archive#157).
-        if (outcome.statusCode == HttpStatusCode.Forbidden.value) {
-            throw GraphApiException("Download failed: ${HttpStatusCode.Forbidden} - ${outcome.body}", outcome.statusCode)
+        throw if (outcome.statusCode == HttpStatusCode.Forbidden.value) {
+            GraphApiException("Download failed: ${HttpStatusCode.Forbidden} - ${outcome.body}", outcome.statusCode)
+        } else {
+            AuthenticationException("Authentication failed (${outcome.statusCode}) on a re-resolved download URL for item $itemId")
         }
-        throw AuthenticationException("Authentication failed (${outcome.statusCode}) on a re-resolved download URL for item $itemId")
     }
 
     /** What a download brought: the bytes written, and the item metadata those bytes were read by. */
