@@ -91,6 +91,18 @@ internal class TreeResume(
     val listedFolders: Set<String>,
 )
 
+/** Whether [treeResumeOf] would resume the walk, decided without building it (no maps are kept). */
+internal fun hasResumableTreeWalk(
+    marker: String?,
+    staged: Iterable<CloudItem>,
+    scopeRoots: List<String>,
+): Boolean {
+    val decoded = decodeTreeMarker(marker) ?: return false
+    if (decoded.roots != scopeRoots) return false
+    // [treeResumeOf] without building the resume: it is null only when a finished start folder has no tree row to show for it.
+    return decoded.startsDone.isEmpty() || staged.any(::isTreeStaged)
+}
+
 /**
  * The resume point of the stored scan, or null when the walk must start from the beginning: the marker is not
  * a tree marker, it was written for other scope roots, or it claims a finished start folder while no row this

@@ -74,4 +74,15 @@ class StagedRowsTest {
         assertEquals(rows.toList(), rows.toList())
         assertEquals(listOf(10, 10, 5, 10, 10, 5), staging.reads)
     }
+
+    @Test
+    fun `a chunk of zero or less is refused`() {
+        for (chunk in listOf(0, -1)) assertFailsWith<IllegalArgumentException> { stagedRowsOf(chunk) { _, _ -> emptyList() } }
+    }
+
+    @Test
+    fun `a load that does not advance past the last row fails instead of looping forever`() {
+        val stuck = stagedRowsOf(2) { _, _ -> listOf(row(0), row(1)) }
+        assertFailsWith<IllegalStateException> { stuck.forEach { } }
+    }
 }

@@ -4388,14 +4388,17 @@ class InternxtProvider(
 
     // The rows of a resumed cursor listing back into the gather: the folders and the ancestor-only records into their maps, the
     // files into [files], or, for a gather that hands its files over from the staging, only as far as [stream] needs them.
+    // Returns how many of the files name no stored object ([namesNoStoredObject]), counted in the same pass.
     private fun resumeFrom(
         resume: CursorResume,
         stream: GatherStream?,
         folders: MutableMap<String, InternxtFolder>,
         files: MutableMap<String, InternxtFile>,
         ancestors: MutableMap<String, InternxtFolder>,
-    ) {
+    ): Int {
+        var withoutObject = 0
         for (row in resume.rows) {
+            if (namesNoStoredObject(row)) withoutObject++
             when {
                 row.isFolder -> folders[row.id] = row.toResumedFolder()
                 stream != null -> stream.resumed(row)
@@ -4403,6 +4406,7 @@ class InternxtProvider(
             }
         }
         for (row in resume.ancestors) ancestors[row.id] = row.toResumedAncestor()
+        return withoutObject
     }
 
     // A page of the files stream into the gather: into [files], or, when the files are handed over from the staging, only as far as [stream] needs.
@@ -4567,8 +4571,7 @@ class InternxtProvider(
         if (resume == null) {
             logFreshCursorStart(scanContext?.resumeMarker, staged.count())
         } else {
-            resumeFrom(resume, stream, folders, files, ancestors)
-            logRowsWithoutStoredObject(resume.rows.count(::namesNoStoredObject), "cursor listing")
+            logRowsWithoutStoredObject(resumeFrom(resume, stream, folders, files, ancestors), "cursor listing")
             log.info(
                 "Resuming the cursor listing begun {}: folders {}, files {}, {} staged rows, {} ancestor-only rows",
                 startedAt,
@@ -4737,7 +4740,7 @@ class InternxtProvider(
     ): ScanContext? {
         if (cursor != null || scanContext == null || scanContext.scopeRoots.isNotEmpty()) return null
         val walk = decodeTreeMarker(scanContext.resumeMarker) ?: return null
-        if (treeResumeOf(scanContext.resumeMarker, scanContext.resumedItems, listOf("/")) != null) return null
+        if (hasResumableTreeWalk(scanContext.resumeMarker, scanContext.resumedItems, listOf("/"))) return null
         log.info(
             "The stored walk of the folder tree cannot be resumed; {}",
             if (walk.takenOverFrom == null) "starting over" else "the listing it took over from goes on",

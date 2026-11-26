@@ -16,15 +16,19 @@ const val STAGED_ROWS_CHUNK: Int = 1000
 fun stagedRowsOf(
     chunk: Int = STAGED_ROWS_CHUNK,
     load: (afterId: String?, limit: Int) -> List<CloudItem>,
-): Iterable<CloudItem> =
-    Iterable {
+): Iterable<CloudItem> {
+    require(chunk > 0) { "chunk must be > 0, got $chunk" }
+    return Iterable {
         iterator {
             var after: String? = null
             while (true) {
                 val rows = load(after, chunk)
                 yieldAll(rows)
                 if (rows.size < chunk) break
-                after = rows.last().id
+                val next = rows.last().id
+                check(next != after) { "load must advance past '$after', got '$next' again" }
+                after = next
             }
         }
     }
+}
