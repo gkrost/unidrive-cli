@@ -76,8 +76,18 @@ class IpcContractLevelTest {
         val capabilities = replied + ProfileMode.entries.flatMap { it.capabilities }
         // Every top-level member of the `daemon.status` reply: a reply field added without a capability fails this pin too.
         val fields = statusCorpusFieldNames().map { "field:daemon.status.$it" }
-        return (verbs + capabilities.map { "capability:$it" } + fields).toSet()
+        return (verbs + capabilities.map { "capability:$it" } + fields + nameClashFields(dir)).toSet()
     }
+
+    // Every member a corpus name_clash reply carries besides ok and error (gkrost/unidrive-cli#948).
+    private fun nameClashFields(dir: java.nio.file.Path): Set<String> =
+        Files.list(dir).use { stream -> stream.filter { it.fileName.toString().startsWith("hydration.") }.toList() }
+            .flatMap { Files.readAllLines(it) }
+            .mapNotNull { runCatching { Json.parseToJsonElement(it).jsonObject }.getOrNull() }
+            .filter { it["error"]?.jsonPrimitive?.content == "name_clash" }
+            .flatMap { it.keys - setOf("ok", "error") }
+            .map { "field:hydration.name_clash.$it" }
+            .toSet()
 
     private fun statusCorpusFieldNames(): Set<String> = Json.parseToJsonElement(statusCorpusReply()).jsonObject.keys
 
@@ -169,6 +179,9 @@ class IpcContractLevelTest {
                 // .clear, admin) and the engine signs an expired session in again with it; daemon.status `auth.reason` may say
                 // totp_required. The capability names it on an Internxt daemon whose vault.enc exists.
                 setOf("verb:vault.internxt_password.set", "verb:vault.internxt_password.clear", "capability:vault-internxt-password:v1"),
+                // 18 (gkrost/unidrive-cli#948): a name_clash refusal names the other spelling (`sibling`) and, when the NFC spelling is
+                // refused because the decomposed twin holds unsynced bytes, the reason. Members of an existing reply, so no capability.
+                setOf("field:hydration.name_clash.sibling", "field:hydration.name_clash.reason"),
             )
     }
 }

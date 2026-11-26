@@ -170,6 +170,9 @@ interface Hydration {
         permanent: Boolean = false,
     ): UnlinkResult
 
+    /** gkrost/unidrive-cli#948: the file at [path] holds bytes the cloud has not seen (never uploaded, an edit or an upload not done). */
+    fun holdsUnsyncedBytesAt(path: String): Boolean = false
+
     /** [permanent] (archive#1178): delete the tree for good, bypassing the provider's trash (`rm --permanent -r`). */
     suspend fun rmdir(
         path: String,

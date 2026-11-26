@@ -143,7 +143,7 @@ import java.util.concurrent.atomic.AtomicLong
  *                         {"ok":false,"error":"<msg>"}              EIO
  *
  *   name_clash  (gkrost/unidrive-cli#24) create, mkdir, open_write, open_write_begin, rename, unlink and rmdir answer
- *               {"ok":false,"error":"name_clash"} when the path names a name, or a folder above it, by another Unicode
+ *               {"ok":false,"error":"name_clash","sibling":"..."[,"reason":"unsynced_bytes"]} when the path names a name, or a folder above it, by another Unicode
  *               spelling (composed / decomposed) than the one a client used for it first — recorded in state.db, so a
  *               daemon restart keeps it: both are one row and one cloud path, so the second would overwrite or delete
  *               the first. Rename one of them.
@@ -571,7 +571,7 @@ class HydrationIpcHandler(
         // what a status UI's list asks for, not a mount.
         if (verb != VIEW_PAGE) mountConnections.add(connectionId)
         return try {
-            dispatch(connectionId, verb, request)
+            nfcWins.refusal(verb, request.string("path")) ?: dispatch(connectionId, verb, request)
         } catch (_: InvalidLogicalPath) {
             reply(ok = false, error = HydrationError.INVALID_PATH_TOKEN)
         }
@@ -625,7 +625,7 @@ class HydrationIpcHandler(
                 try {
                     val r = claimed(rawPath(request, "path"), { it is OpenResult.Failed }) {
                         hydration.openForWrite(connectionId, handleId, path, cachePath, baseEtag)
-                    } ?: return reply(ok = false, error = HydrationError.NAME_CLASH_TOKEN)
+                    } ?: return nfcWins.clashReply(rawPath(request, "path"))
                     when (r) {
                         is OpenResult.Ok -> openOkReply(r, issuedHandleId = handleId.takeIf { clientHandleId == null })
                         is OpenResult.Failed -> reply(ok = false, error = r.error.message)
@@ -642,7 +642,7 @@ class HydrationIpcHandler(
                 if (reservedHandleId(handleId)) return reply(ok = false, error = INVALID_HANDLE_ID)
                 val r = claimed(rawPath(request, "path"), { it is OpenResult.Failed }) {
                     hydration.openWriteBegin(connectionId, path, handleId)
-                } ?: return reply(ok = false, error = HydrationError.NAME_CLASH_TOKEN)
+                } ?: return nfcWins.clashReply(rawPath(request, "path"))
                 when (r) {
                     is OpenResult.Ok -> openOkReply(r)
                     is OpenResult.Failed -> reply(ok = false, error = r.error.message)
@@ -718,7 +718,7 @@ class HydrationIpcHandler(
                 val parents = request.bool("parents") == true
                 val r = claimed(rawPath(request, "path"), { it is MkdirResult.ParentNotFound || it is MkdirResult.Failed }) {
                     if (parents) hydration.mkdirParents(path) else hydration.mkdir(path)
-                } ?: return reply(ok = false, error = HydrationError.NAME_CLASH_TOKEN)
+                } ?: return nfcWins.clashReply(rawPath(request, "path"))
                 when (r) {
                     MkdirResult.Ok -> reply(ok = true)
                     MkdirResult.Existed -> """{"ok":true,"existed":true}"""
@@ -767,7 +767,7 @@ class HydrationIpcHandler(
                     { it is CreateResult.ParentNotFound || it is CreateResult.PathExists || it is CreateResult.Failed },
                 ) {
                     hydration.create(connectionId, handleId, path)
-                } ?: return reply(ok = false, error = HydrationError.NAME_CLASH_TOKEN)
+                } ?: return nfcWins.clashReply(rawPath(request, "path"))
                 when (r) {
                     is CreateResult.Ok -> {
                         if (r.excluded) {
@@ -809,7 +809,7 @@ class HydrationIpcHandler(
                 // members, and a rename that refused them must not leave the destination spelling claimed.
                 val r = claimed(rawPath(request, "new_path"), { it !is RenameResult.Ok }) {
                     hydration.rename(oldPath, newPath, replace)
-                } ?: return reply(ok = false, error = HydrationError.NAME_CLASH_TOKEN)
+                } ?: return nfcWins.clashReply(rawPath(request, "new_path"))
                 when (r) {
                     is RenameResult.Ok -> {
                         spellings.forget(rawPath(request, "old_path"))
@@ -907,6 +907,7 @@ class HydrationIpcHandler(
 
     // gkrost/unidrive-cli#24: the path field as the client spelled it, before the NFC canonicalisation; see [NameSpellings].
     private val spellings = NameSpellings(spellingsStore)
+    private val nfcWins = NfcSpellingWins(spellings, hydration)
 
     private fun rawPath(request: HydrationRequest, key: String): String = request.string(key).orEmpty()
 
@@ -929,7 +930,7 @@ class HydrationIpcHandler(
 
     // The name_clash answer for a verb that names a name by another spelling than the one a client used for it first.
     private fun nameClash(vararg raws: String): String? =
-        if (raws.any { spellings.clashes(it) }) reply(ok = false, error = HydrationError.NAME_CLASH_TOKEN) else null
+        raws.firstOrNull { spellings.clashes(it) }?.let { nfcWins.clashReply(it) }
 
     // gkrost/unidrive-cli#452: the name_clash guard around a verb that records a spelling. The claim — a putIfAbsent
     // per name that could have a twin ([NameSpellings.claim]) — is the check and the reservation in one step, so a
