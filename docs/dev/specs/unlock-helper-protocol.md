@@ -114,6 +114,53 @@ run when `vault.enc` exists and its passphrase is available without a prompt; ot
 reminder to run `vault xtra-set` and exit non-zero. `vault decrypt` keeps the entry in the vault (it has no
 config section to go back into).
 
+## The Internxt password in the vault
+
+Internxt's password is a crypto input (it decrypts the mnemonic), so no passkey replaces it, and an expired
+Internxt session needs it again. Opt-in and off by default (Windows Hello design, decision D5; gkrost/unidrive-cli#861),
+the vault keeps it so the engine signs the session in again by itself. No verb or command reads the password back
+(owner decision 2026-11-21): the client never holds a second copy, and the password never crosses the IPC again after
+it was stored.
+
+**Entry.** The reserved section `.internxt-password:<profile>` with the fields `email` and `password` (`.` starts no
+profile name). `vault decrypt` keeps it in the vault, `vault forget <profile>` and `profile remove` drop it with the
+profile's other entry, and clearing it removes the section whole.
+
+**Commands.** `vault internxt-password-set [--profile P] [--passphrase-stdin] [--email E | --email-stdin]
+[--password-stdin] [--json]` stores it; the lines on standard input are, in this order, the vault passphrase, the
+e-mail, the password. Without an e-mail option the one the last `auth login` stored is used (`missing_email` when there
+is none). `vault internxt-password-clear [--profile P] [--passphrase-stdin] [--json]` removes it (`removed` says whether
+there was one). Both refuse a profile that is no Internxt profile (`login_not_supported`), a missing vault
+(`vault_absent`) and a wrong passphrase (`vault_bad_passphrase`). When a daemon holds the profile, the command hands the
+change to it over IPC (below) instead of refusing, so the running daemon uses the new entry at once.
+
+**Verbs** (admin class, full scope only). `vault.internxt_password.set {"passphrase","email","password"}` answers
+`{"ok":true}`; `vault.internxt_password.clear {"passphrase"}` answers `{"ok":true,"removed":<bool>}`. The daemon opens
+vault.enc with the passphrase, rewrites it under the config lock every vault writer takes, and keeps the result as its
+in-memory vault data; the passphrase is not kept. Refusals: `missing_passphrase`, `invalid_passphrase`, `missing_email`,
+`missing_password`, `invalid_password` (empty or not a string), `vault_absent`, `login_not_supported` (the daemon's
+profile is no Internxt profile), `vault_locked` (unlock first; nothing is written), `vault_bad_passphrase` (after the
+failure delay), `vault_write_failed`. These are verbs because a running daemon cannot re-read vault.enc on its own
+(it does not keep the passphrase) and answers a second `vault.unlock` with `already_unlocked`: without them a password
+stored while the daemon runs would reach it only at its next start.
+
+**Sign-in again.** The engine signs in with the stored entry only when the session *expired* (the `expired` reading of
+`credential_health`), never when the profile has no credentials (a sign-out stays signed out), and only while the vault
+is unlocked:
+- at `daemon run`, instead of the `auth_required` start refusal, when the vault is unlocked at start;
+- after a locked start's `vault.unlock`, when the provider's authentication finds the session expired;
+- while the daemon runs, checked once per credential-check interval (60 s).
+
+The sign-in is the `auth.login` step itself (the library sign-in, then the reload into the running provider), so a
+success looks like a client's `auth.login`. An account with two-factor sign-in is not signed in: the login challenge says
+so before the password is sent, and `daemon.status` reports `auth: {"state":"needs_sign_in","reason":"totp_required"}`
+(the start refusal line carries `totp_required` too); the client asks for the code and runs `auth login` with it. A stored
+password the account rejects (`bad_credentials`, `account_changed`, `account_unverified`) is not tried again until another
+one is stored; a failure that says nothing about the password (no network) is tried again at the next check. The password
+is never logged; the log line names the outcome only.
+
+A daemon of an Internxt profile with `vault.enc` advertises `vault-internxt-password:v1` (contract level 16).
+
 ## Out of scope here
 
 - What the helper does with the keyring (enrollment, wrapping, witness) is the client

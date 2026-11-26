@@ -458,7 +458,7 @@ The value is the provider factory's offline check (`ProviderFactory.checkCredent
 | field | meaning |
 |---|---|
 | `state` | `ok`: the credential is present and usable (a near expiry stays `ok`). `needs_sign_in`: the credential is missing or no longer works — a client shows "sign in again". `unknown`: no check has finished yet, or it found something it cannot classify |
-| `reason` | with `needs_sign_in`: `no_credentials` or `expired`; `null` otherwise |
+| `reason` | with `needs_sign_in`: `no_credentials`, `expired`, or `totp_required` (the session expired and the engine did not sign in again with the vaulted Internxt password because the account needs a two-factor code; gkrost/unidrive-cli#861, contract level 16); `null` otherwise |
 | `profile_dir` | the profile folder the check looked in |
 
 `profile list --json` carries the same answer for a client that cannot reach the daemon (`auth_reason`, `profile_dir`).
