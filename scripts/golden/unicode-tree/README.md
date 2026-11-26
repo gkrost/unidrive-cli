@@ -113,11 +113,16 @@ python3 scripts/golden/unicode-tree/golden.py run --profile <p> --mount ~/Drive 
 python3 scripts/golden/unicode-tree/golden.py verify <dir> --strict-mtime --max-lines 100000
 ```
 
+`run` waits until no row is pending; a row that failed (`error`) is final and does not hold the wait. The summary says `upload : settled`,
+`FAILED n`, or `NOT SETTLED (n pending)`; exit 2 only for rows still pending, exit 1 for failed rows when no `--expected` classifies them.
+Stdout is line-buffered by the script itself. Tests with a fake daemon view: `python3 -I -m unittest discover -s scripts/golden/unicode-tree -p 'test_*.py' -v`.
+
 `run` refuses to overwrite an existing target folder, so a live run needs a fresh `--prefix`. A name the mount refuses
 (`File exists`, the NFC/NFD twins) is reported and the copy goes on.
 
 The committed `expected/` files are for `golden-unicode-v1`; the layout is `golden-unicode-v2`, so a run against it has no matching
 file until one is committed. Without `--expected`, `run` prints the findings but does not classify them.
+**No `expected/` file yet for v2: run with `--expected` only for v1.** A v2 file needs a classified live run first.
 
 Cleaning up a live run: a recursive delete through the mount (`rm -rf`) is slow on Internxt (about 1.3 entries/s) and can end with
 `Directory not empty` on folders that no longer hold anything (gkrost/unidrive-cli#634, #635). Remove the run's folder with
@@ -128,7 +133,7 @@ Cleaning up a live run: a recursive delete through the mount (`rm -rf`) is slow 
 The quick way, no cloud account needed (stop any other unidrive mount first; about 5 minutes):
 
 ```powershell
-pwsh scripts/golden/unicode-tree/run-localfs.ps1 -Expected "scripts/golden/unicode-tree/expected/golden-unicode-v2@localfs@<engine>+<client>.tsv"
+pwsh scripts/golden/unicode-tree/run-localfs.ps1   # (add -Expected once a v2 file exists)
 # private builds instead of the installed ones:
 pwsh scripts/golden/unicode-tree/run-localfs.ps1 -EngineJar <unidrive.jar> -ClientDir <folder with unidrive-win.exe> -Expected <file>
 ```

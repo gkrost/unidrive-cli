@@ -18,6 +18,8 @@ jobs:
           persist-credentials: false
       - name: Test site builder
         run: python3 -m unittest discover -s scripts/site -p 'test_*.py' -v
+      - name: Test golden harness
+        run: python3 -I -m unittest discover -s scripts/golden/unicode-tree -p 'test_*.py' -v
       - name: Build and check site
         run: |
           python3 scripts/site/build.py site-build
