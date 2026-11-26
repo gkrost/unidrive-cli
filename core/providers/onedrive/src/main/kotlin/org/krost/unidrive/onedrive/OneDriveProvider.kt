@@ -271,14 +271,14 @@ class OneDriveProvider(
         if (remoteId.isBlank() || remoteId.startsWith("local:")) return downloadReading(remotePath, destination)
         return permanentIfGone(remotePath) {
             try {
-                graphApi.downloadFileReading(remoteId, destination)
+                graphApi.downloadFileResumable(remoteId, destination)
             } catch (e: GraphApiException) {
                 if (e.statusCode != 404) throw e
                 log.info(
                     "OneDrive download of '{}' by id got 404 (drifted id or stale download URL); re-resolving the item by path once",
                     remotePath,
                 )
-                graphApi.downloadFileReading(itemAt(remotePath).id, destination)
+                graphApi.downloadFileResumable(itemAt(remotePath).id, destination)
             }
         }
     }
@@ -289,7 +289,7 @@ class OneDriveProvider(
         destination: Path,
     ): GraphApiService.DownloadedFile =
         try {
-            graphApi.downloadFileReading(remoteId, destination)
+            graphApi.downloadFileResumable(remoteId, destination)
         } catch (e: GraphApiException) {
             if (e.isItemNotFound()) {
                 throw PermanentDownloadFailureException(
@@ -306,7 +306,7 @@ class OneDriveProvider(
     ): GraphApiService.DownloadedFile {
         val item = itemAt(remotePath)
         return try {
-            graphApi.downloadFileReading(item.id, destination)
+            graphApi.downloadFileResumable(item.id, destination)
         } catch (e: GraphApiException) {
             // A 404 on the content GET means the pre-resolved download URL went
             // stale (the CDN URL expired) and/or the cached remoteId drifted off
@@ -321,7 +321,7 @@ class OneDriveProvider(
                 remotePath,
             )
             val fresh = itemAt(remotePath)
-            graphApi.downloadFileReading(fresh.id, destination)
+            graphApi.downloadFileResumable(fresh.id, destination)
         }
     }
 
@@ -336,17 +336,6 @@ class OneDriveProvider(
     // the sibling the lookup resolved to — only a missing item may fall through to one (#453).
     private fun GraphApiException.isItemGone(): Boolean =
         statusCode == 404 && message?.contains("resolved to a different name") != true
-
-    private fun GraphApiException.isInvalidRequest(): Boolean =
-        statusCode == 400 && message?.contains("\"code\":\"invalidRequest\"") == true
-
-    private fun GraphApiException.isNameAlreadyExists(): Boolean =
-        statusCode == 409 && message?.contains("nameAlreadyExists") == true
-
-    // A name the drive compares as equal to a sibling's although it differs: the file shapes of the refusal say
-    // so ("The specified item name is incompatible with a similar name on an existing item.").
-    private fun GraphApiException.isSimilarName(): Boolean =
-        isNameAlreadyExists() && message?.contains("similar name", ignoreCase = true) == true
 
     // The item at [path], and only that item. The drive resolves a path with the same name comparison it
     // applies to siblings, so a lookup of one name can answer its similar sibling: a delete or a move built on it
@@ -513,7 +502,7 @@ class OneDriveProvider(
             if (e.isSimilarName()) {
                 landUnderServerName(e)
             } else if (e.isNameAlreadyExists()) {
-                identicalRemoteAt(remotePath, localPath, fileSize)?.let { return it }
+                graphApi.refuseFoldedName(remotePath, e) ?: identicalRemoteAt(remotePath, localPath, fileSize)?.let { return it }
                 completeIntoEmptyItem(remotePath, fileSize) { behavior, etag -> put(behavior, etag) }?.let { return it }
                 log.warn(
                     "UD-366: create-collision on '{}' — a different remote already exists at this path; " +
@@ -681,7 +670,7 @@ class OneDriveProvider(
         refused: GraphApiException,
     ): CloudItem {
         val siblings = listSiblings(parent)
-        if (siblings == null || siblings.any { it.name != null && OneDriveServerNames.sameName(it.name, name) }) throw refused
+        if (siblings == null || OneDriveNameFolds.hasExact(name, siblings.mapNotNull { it.name })) throw refused
         val serverName = OneDriveServerNames.disambiguate(name)
         val serverPath = (if (parent == "/") "" else parent) + "/" + serverName
         log.warn(
@@ -763,7 +752,7 @@ class OneDriveProvider(
     ): CloudItem {
         rejectUnsupportedName(toPath)
         val item = itemAt(fromPath)
-        return graphApi.moveItem(item.id, toPath, fromPath, ifMatchETag = item.eTag).toCloudItem()
+        return refusingNames(toPath) { graphApi.moveItem(item.id, toPath, fromPath, ifMatchETag = item.eTag).toCloudItem() }
     }
 
     override suspend fun moveById(
@@ -777,25 +766,28 @@ class OneDriveProvider(
         // the real one. A 404 here fails the move, as the path based move fails for an item it cannot find.
         val current = graphApi.getItemById(remoteId)
         if (SharedItemId.isShared(remoteId)) {
-            return graphApi.moveItem(remoteId, toPath, fromPath, ifMatchETag = current.eTag).toCloudItem().copy(id = remoteId, path = toPath)
+            return refusingNames(toPath) {
+                graphApi.moveItem(remoteId, toPath, fromPath, ifMatchETag = current.eTag).toCloudItem().copy(id = remoteId, path = toPath)
+            }
         }
-        return graphApi.moveItem(remoteId, toPath, current.pathInDrive() ?: fromPath, ifMatchETag = current.eTag).toCloudItem()
+        return refusingNames(toPath) { graphApi.moveItem(remoteId, toPath, current.pathInDrive() ?: fromPath, ifMatchETag = current.eTag).toCloudItem() }
     }
+
+    // A rename onto a name the drive judges as a sibling's (cli#950): refused as similar_name naming the sibling, as a create is.
+    // An exact-name sibling is a true duplicate and keeps the 409.
+    private suspend fun <T> refusingNames(toPath: String, block: suspend () -> T): T =
+        try {
+            block()
+        } catch (e: GraphApiException) {
+            e.throwIfPermanentNameRefusal(toPath)
+            if (e.isSimilarName()) throw nameRefused(toPath, e, e)
+            if (e.isNameAlreadyExists()) graphApi.refuseFoldedName(toPath, e)
+            throw e
+        }
 
     private fun rejectUnsupportedName(path: String) {
         OneDriveNameRules.issue(path)?.let { rule ->
             throw PermanentUploadFailureException("OneDrive cannot use '$path': $rule")
-        }
-    }
-
-    private fun GraphApiException.throwIfPermanentNameRefusal(path: String) {
-        val issue = OneDriveNameRules.issue(path)
-        if (isInvalidRequest() || statusCode == 403 && path.contains("_vti_", ignoreCase = true)) {
-            val reason = issue ?: if (statusCode == 403) "name contains the reserved _vti_ token" else "Graph rejected this name or path as invalidRequest"
-            throw PermanentUploadFailureException(
-                "OneDrive rejected '$path': $reason${if (isInvalidRequest()) " (invalidRequest)" else " (403 accessDenied)"}; Graph said: $message",
-                cause = this,
-            )
         }
     }
 

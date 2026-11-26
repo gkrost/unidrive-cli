@@ -3,6 +3,7 @@ package org.krost.unidrive.internxt
 import kotlinx.serialization.Serializable
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.internxt.model.InternxtFile
+import org.krost.unidrive.internxt.model.InternxtFolder
 import org.krost.unidrive.internxt.model.InternxtJson
 
 // The version token of a file ("<uuid>|<modificationTime>|<size>", see InternxtProvider.internxtVersionToken) is built from the
@@ -108,3 +109,27 @@ internal fun namesNoStoredObject(row: CloudItem): Boolean = !row.isFolder && row
 // The cursor a full gather names between the chunks of its hand-over (see InternxtProvider.GatherHandover). It is no poll cursor,
 // which is a timestamp; the provider tells them apart by this prefix.
 internal const val GATHER_CURSOR_PREFIX: String = "internxt-gather|"
+
+/**
+ * The staged [rows] the offset listing resumes from, into [folders] and [files] as the model objects the gather holds. One
+ * pass over the rows, which are not kept: the rows of the cursor listing and of the tree walk are theirs and stay out (their
+ * markers do not parse as offsets, so this listing starts over, and stale rows of another listing would rejoin it as if they
+ * were current). Returns how many of the files name no stored object ([namesNoStoredObject]).
+ */
+internal fun resumeOffsetRows(
+    rows: Iterable<CloudItem>,
+    folders: MutableList<InternxtFolder>,
+    files: MutableList<InternxtFile>,
+): Int {
+    var withoutObject = 0
+    for (row in rows) {
+        if (isCursorStaged(row) || row.hash == CURSOR_ANCESTOR_TAG || isTreeStaged(row)) continue
+        if (row.isFolder) {
+            folders += with(InternxtProvider) { row.toResumedFolder() }
+        } else {
+            files += with(InternxtProvider) { row.toResumedFile() }
+            if (namesNoStoredObject(row)) withoutObject++
+        }
+    }
+    return withoutObject
+}

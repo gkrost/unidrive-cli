@@ -2066,6 +2066,7 @@ class HydrationImpl(
         val job = coroutineContext[Job]
         val dir = mount.hydrationCacheDir()
         if (Files.isDirectory(dir)) {
+            org.krost.unidrive.engine.StalePartialSweep.sweep(dir) { stateDb.getEntryByRemoteId(it) != null }
             val cutoff = System.currentTimeMillis() - STALE_TEMP_AGE_MS
             try {
                 Files.walk(dir).use { stream ->
@@ -3348,6 +3349,9 @@ class HydrationImpl(
         val stamp = runCatching { refusalStamp(mount.resolveCachePath(entry.path)) }.getOrNull() ?: return false
         return stamp != "$baselineMtime|$baselineSize"
     }
+
+    override fun holdsUnsyncedBytesAt(path: String): Boolean =
+        stateDb.getEntry(path)?.let { !it.isFolder && (it.remoteId == null || holdsUnsyncedBytes(it) || hasUploadSlot(it.path)) } == true
 
     // archive#1040 M4: the renames whose cache copy still has to follow them (see [RenameRollForward]).
     private val renames = RenameRollForward(stateDb, mount) { oldNorm, newNorm -> moveCacheFile(oldNorm, newNorm) }

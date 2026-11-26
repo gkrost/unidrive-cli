@@ -62,6 +62,9 @@ class FakeCloudProvider : CloudProvider {
     // mid-gather (a mount write-back completing while a long enumeration walks).
     var duringDelta: (() -> Unit)? = null
 
+    // The suspending twin of duringDelta: a test waits for something here without blocking a thread the engine needs.
+    var suspendDuringDelta: (suspend () -> Unit)? = null
+
     // Multi-page delta driver: when non-empty, successive delta() calls
     // return successive entries (last page has hasMore=false). Lets a test
     // drive the streaming gather across ≥2 pages (the single-page deltaItems
@@ -169,11 +172,15 @@ class FakeCloudProvider : CloudProvider {
     // for a process that dies mid-pass: none of the engine's catch clauses (they take Exception) runs for it.
     var beforeDownload: ((remotePath: String) -> Unit)? = null
 
+    // A download of a path in here waits for its gate before it writes anything (cancellable, unlike beforeDownload).
+    val downloadGates: MutableMap<String, kotlinx.coroutines.CompletableDeferred<Unit>> = java.util.concurrent.ConcurrentHashMap()
+
     override suspend fun download(
         remotePath: String,
         destination: Path,
     ): Long {
         beforeDownload?.invoke(remotePath)
+        downloadGates[remotePath]?.await()
         if (authFailOnDownload) throw AuthenticationException("Token expired")
         if (remotePath in permanentDownloadFailurePaths) {
             throw org.krost.unidrive.PermanentDownloadFailureException(
@@ -241,6 +248,7 @@ class FakeCloudProvider : CloudProvider {
         targetMtimeMillis: Long?,
     ): DownloadReceipt {
         beforeDownload?.invoke(remotePath)
+        downloadGates[remotePath]?.await()
         if (authFailOnDownload) throw AuthenticationException("Token expired")
         if (remotePath in permanentDownloadFailurePaths) {
             throw org.krost.unidrive.PermanentDownloadFailureException(
@@ -633,6 +641,9 @@ class FakeCloudProvider : CloudProvider {
     // the next API call failed.
     var persistThenFail: Boolean = false
 
+    /** The rows [org.krost.unidrive.ScanContext.resumedItems] held when the last delta() began. */
+    var lastResumedItems: List<CloudItem> = emptyList()
+
     override suspend fun delta(
         cursor: String?,
         onPageProgress: ((itemsSoFar: Int) -> Unit)?,
@@ -641,7 +652,10 @@ class FakeCloudProvider : CloudProvider {
         deltaCalls++
         deltaCursorArguments.add(cursor)
         lastScanContext = scanContext
+        // The resumed rows are a lazy view of the staging, which the engine clears when the pass completes: read them now.
+        lastResumedItems = scanContext?.resumedItems?.toList().orEmpty()
         duringDelta?.invoke()
+        suspendDuringDelta?.invoke()
         if (deltaThrowExpiredOnResumedCursor && cursor != null) {
             deltaThrowExpiredOnResumedCursor = false // self-clearing; recovery pass uses cursor=null
             throw org.krost.unidrive.DeltaCursorExpiredException("410 Gone — delta token is too old (test)")

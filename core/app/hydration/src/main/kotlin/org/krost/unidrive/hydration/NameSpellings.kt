@@ -1,5 +1,6 @@
 package org.krost.unidrive.hydration
 
+import org.krost.unidrive.engine.DuplicateNames
 import org.krost.unidrive.sync.PathNormalizer
 import org.krost.unidrive.sync.StateDatabase
 import java.util.concurrent.ConcurrentHashMap
@@ -41,7 +42,28 @@ internal class NameSpellings(private val store: NameSpellingStore? = null) {
     }
 
     /** True when [rawPath] names a name or a folder above it by another spelling than the one recorded for it. */
-    fun clashes(rawPath: String): Boolean = walk(rawPath) { nfc, raw -> seen[nfc]?.let { it.raw != raw } == true }
+    fun clashes(rawPath: String): Boolean = walk(rawPath) { nfc, raw -> seen[nfc]?.let { it.raw != raw } ?: pairSpellingDiffers(nfc, raw) }
+
+    // gkrost/unidrive-cli#948: a name no verb has recorded yet, whose cloud listing brought in a twin pair: the survivor's
+    // spelling is the pair's, so the other spelling is a clash without a first verb having named the survivor.
+    private fun pairSpellingDiffers(
+        nfc: String,
+        raw: String,
+    ): Boolean = store?.known(nfc)?.let { it != raw } == true
+
+    /** The spelling recorded for the name [rawPath] ends in (not for a folder above it), or null. */
+    fun leafRecord(rawPath: String): String? = seen[PathNormalizer.nfc(rawPath.trimEnd('/'))]?.raw
+
+    /** The spelling [rawPath] clashed with (a recorded one, or the one of a listed twin pair), or null when it clashes with none. */
+    fun siblingOf(rawPath: String): String? {
+        var found: String? = null
+        walk(rawPath) { nfc, raw ->
+            val recorded = seen[nfc]?.raw ?: store?.known(nfc)
+            if (recorded != null && recorded != raw) found = recorded
+            found != null
+        }
+        return found
+    }
 
     /**
      * Atomically claims the spelling [rawPath] uses for every name in it that could have a twin, before the verb
@@ -63,15 +85,18 @@ internal class NameSpellings(private val store: NameSpellingStore? = null) {
             while (raced) {
                 raced = false
                 when (val known = seen[nfc]) {
-                    null -> {
-                        val fresh = Spelling(raw)
-                        if (seen.putIfAbsent(nfc, fresh) != null) {
-                            raced = true // another thread claimed this name first: judge against its record
+                    null ->
+                        if (pairSpellingDiffers(nfc, raw)) {
+                            isClash = true
                         } else {
-                            fresh.claims.incrementAndGet()
-                            claimed += nfc to raw
+                            val fresh = Spelling(raw)
+                            if (seen.putIfAbsent(nfc, fresh) != null) {
+                                raced = true // another thread claimed this name first: judge against its record
+                            } else {
+                                fresh.claims.incrementAndGet()
+                                claimed += nfc to raw
+                            }
                         }
-                    }
                     else ->
                         if (known.raw != raw) {
                             isClash = true
@@ -156,6 +181,14 @@ interface NameSpellingStore {
      */
     fun load(): Map<String, String>
 
+    /**
+     * gkrost/unidrive-cli#948: the spelling of the name at [nfcPath] that the state already holds although no verb recorded
+     * it: the item spelled in NFC that holds the name of a twin pair the cloud listing brought in (its decomposed twin sits
+     * under a decorated name). Null for every other name: a cloud name that is decomposed and has no twin takes either
+     * spelling, as decided on #24 (2026-11-02).
+     */
+    fun known(nfcPath: String): String? = null
+
     /** The first spelling [rawPath] of the name whose NFC form is [nfcPath]; the first one wins. */
     fun record(
         nfcPath: String,
@@ -171,6 +204,17 @@ class StateDbNameSpellingStore(private val db: StateDatabase) : NameSpellingStor
     override fun load(): Map<String, String> {
         db.pruneNameSpellings()
         return db.loadNameSpellings()
+    }
+
+    override fun known(nfcPath: String): String? {
+        val row = db.getEntry(nfcPath) ?: return null
+        if (row.remotePath != null && row.remotePath != nfcPath) return null
+        val name = nfcPath.substringAfterLast('/')
+        val twinned =
+            db.rowsWithRemotePath().any { (path, remotePath, _) ->
+                path != nfcPath && PathNormalizer.nfc(remotePath) == nfcPath && DuplicateNames.isDecorationOf(path.substringAfterLast('/'), name)
+            }
+        return nfcPath.takeIf { twinned }
     }
 
     override fun record(

@@ -4170,7 +4170,7 @@ class SyncEngineTest {
             val ctx = provider.lastScanContext
             assertNotNull(ctx, "engine must thread a ScanContext through delta()")
             assertNull(ctx.resumeMarker, "fresh scan has no resume marker")
-            assertTrue(ctx.resumedItems.isEmpty(), "fresh scan has no resumed items")
+            assertTrue(provider.lastResumedItems.isEmpty(), "fresh scan has no resumed items")
             // Successful gather clears the staging slice + checkpoint.
             assertNull(db.getSyncState(StateDatabase.SCAN_IN_PROGRESS_ID))
         }
@@ -4205,8 +4205,8 @@ class SyncEngineTest {
             val ctx = provider.lastScanContext
             assertNotNull(ctx, "engine must thread a ScanContext on resume too")
             assertEquals("200|100", ctx.resumeMarker, "resume marker must be the persisted boundary")
-            assertEquals(1, ctx.resumedItems.size, "previously-staged rows must rehydrate")
-            assertEquals("prev-uuid", ctx.resumedItems.single().id)
+            assertEquals(1, provider.lastResumedItems.size, "previously-staged rows must rehydrate")
+            assertEquals("prev-uuid", provider.lastResumedItems.single().id)
             // Successful gather clears the staging slice + checkpoint.
             assertNull(db.getSyncState(StateDatabase.SCAN_IN_PROGRESS_ID))
         }
@@ -4237,7 +4237,7 @@ class SyncEngineTest {
             val ctx = provider.lastScanContext
             assertNotNull(ctx)
             assertNull(ctx.resumeMarker, "stale checkpoint must be ignored")
-            assertTrue(ctx.resumedItems.isEmpty(), "stale staged rows must not resurface")
+            assertTrue(provider.lastResumedItems.isEmpty(), "stale staged rows must not resurface")
             // Fresh scan id was minted; staging cleared after successful gather.
             assertNull(db.getSyncState(StateDatabase.SCAN_IN_PROGRESS_ID))
         }
@@ -4369,7 +4369,7 @@ class SyncEngineTest {
             val ctx = provider.lastScanContext
             assertNotNull(ctx)
             assertEquals("150|50", ctx.resumeMarker, "engine must surface the prior marker as a resume hint")
-            assertEquals(1, ctx.resumedItems.size, "previously-staged rows feed back as resumedItems")
+            assertEquals(1, provider.lastResumedItems.size, "previously-staged rows feed back as resumedItems")
             assertNull(
                 db.getSyncState(StateDatabase.SCAN_IN_PROGRESS_ID),
                 "successful complete=true gather clears the cross-session checkpoint",
