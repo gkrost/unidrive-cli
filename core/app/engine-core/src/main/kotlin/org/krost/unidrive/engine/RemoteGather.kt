@@ -12,6 +12,7 @@ import org.krost.unidrive.sync.EnumerationTracker
 import org.krost.unidrive.sync.PathNormalizer
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.sync.stagedRowsSnapshot
 import org.slf4j.Logger
 import java.time.Instant
 import java.util.HexFormat
@@ -793,7 +794,7 @@ class RemoteGather(
             activeScan?.scanId
                 ?: db.beginScan(initialMarker = null)
         val resumedItems: Iterable<CloudItem> =
-            if (activeScan != null) org.krost.unidrive.stagedRowsOf { after, limit -> db.loadStagedPage(scanId, after, limit) } else emptyList()
+            if (activeScan != null) db.stagedRowsSnapshot(scanId) else emptyList()
         if (activeScan != null) {
             log.info("Resuming Internxt-style scan id={} marker={}", scanId, activeScan.marker)
         }

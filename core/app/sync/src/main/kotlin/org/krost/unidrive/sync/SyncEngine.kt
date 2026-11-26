@@ -2471,7 +2471,7 @@ open class SyncEngine(
             activeScan?.scanId
                 ?: db.beginScan(initialMarker = null)
         val resumedItems: Iterable<CloudItem> =
-            if (activeScan != null) org.krost.unidrive.stagedRowsOf { after, limit -> db.loadStagedPage(scanId, after, limit) } else emptyList()
+            if (activeScan != null) db.stagedRowsSnapshot(scanId) else emptyList()
         if (activeScan != null) {
             log.info("Resuming streaming-reconciliation scan id={} marker={}", scanId, activeScan.marker)
         }

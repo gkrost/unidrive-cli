@@ -521,6 +521,29 @@ class StateDatabaseScanStagingTest {
     }
 
     @Test
+    fun `rows persisted mid-pass are not yielded on re-iteration of the resumed rows`() {
+        val db = opened()
+        try {
+            val scanId = db.beginScan(initialMarker = null)
+
+            fun item(id: String) =
+                CloudItem(id, id, "/$id", 1, false, null, null, "tag|$id", null, parentId = "p", version = "v-$id")
+            db.persistScanPage(scanId, listOf("b", "d", "f").map(::item), "m1")
+            val resumed = db.stagedRowsSnapshot(scanId)
+            assertEquals(listOf("b", "d", "f"), resumed.map { it.id })
+
+            // The pass goes on: a new page, whose ids sort before, between and after the resumed ones, and one resumed row staged again.
+            db.persistScanPage(scanId, listOf("a", "c", "g", "d").map(::item), "m2")
+
+            assertEquals(listOf("b", "d", "f"), resumed.map { it.id }, "the pass's own rows are not resumed rows")
+            assertEquals("tag|d", resumed.first { it.id == "d" }.hash)
+            assertEquals(listOf("a", "b", "c", "d", "f", "g"), db.loadStagedItems(scanId).map { it.id }, "they are staged, though")
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
     fun `resumed rows read through stagedRowsOf are exactly the rows loadStagedItems returns, a chunk at a time`() {
         val db = opened()
         try {

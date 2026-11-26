@@ -10,8 +10,8 @@ const val STAGED_ROWS_CHUNK: Int = 1000
  * so it can be iterated more than once and never holds more than a chunk. Each chunk is one finished query: a
  * consumer that stops early, throws or is cancelled leaves nothing open.
  *
- * It is a view of the staging, not a snapshot: consume it before [ScanContext.persistPage] stores the next page, or the
- * rows of that page (whose ids sort anywhere) can join it.
+ * Whether it is a snapshot is [load]'s doing: the engine's [load] reads only the rows the staging held when the pass began,
+ * so a row the pass stages afterwards never joins it. A [load] that reads the live staging gives a live view.
  */
 fun stagedRowsOf(
     chunk: Int = STAGED_ROWS_CHUNK,
