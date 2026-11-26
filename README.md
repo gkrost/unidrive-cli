@@ -152,6 +152,12 @@ for that file. The transfer-history retry keeps the refusal in force until it ex
     `unidrive auth login` never reads the vault and asks for no vault passphrase, so every sign-in (a first one or a
     re-login) writes the file with the platform protection only; it is sealed the next time a process that has unlocked
     the vault reads it (with sealing on, after `vault init` and `vault seal-credentials on`).
+  - The provider secret fields kept in `config.toml` (S3 `access_key_id` / `secret_access_key`, `password`,
+    `client_id`, `client_secret`) are sealed the same way, field by field, at the daemon's next start or
+    `vault.unlock` (on Linux over the plain field, which has no platform store). While the vault is locked such a
+    profile stays locked and its fields are refused as sealed. If the vault is lost, put those fields into
+    `config.toml` again as plaintext (they are protected again on the next start). `vault encrypt` moves them out of
+    `config.toml` into `vault.enc` altogether.
 - `sweep` — detect and rehydrate zero-byte stub files (`--null-bytes` scan; `--dry-run` and `--rehydrate` modify it)
 
 ### Tracking-set engine (experimental, frozen)

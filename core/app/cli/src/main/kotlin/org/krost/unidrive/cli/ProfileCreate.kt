@@ -347,6 +347,6 @@ internal object ProfileCreator {
         // One atomic replace: a kill between an append and a default-profile rewrite must not leave a
         // truncated config.toml (every profile gone) or a profile without the default that was asked for.
         Files.createDirectories(configPath.parent)
-        ConfigFileTransaction.writeAtomically(configPath, text, secretProtector ?: org.krost.unidrive.auth.CredentialProtectors.atRestDefaultOrNull())
+        ConfigFileTransaction.writeAtomically(configPath, text, secretProtector ?: org.krost.unidrive.sync.ConfigSecrets.defaultProtector())
     }
 }

@@ -1,7 +1,6 @@
 package org.krost.unidrive.cli
 
 import org.krost.unidrive.auth.CredentialProtector
-import org.krost.unidrive.auth.CredentialProtectors
 import org.krost.unidrive.io.OwnerOnly
 import org.krost.unidrive.io.OwnerOnlyAtomicWrite
 import org.krost.unidrive.sync.ConfigSecrets
@@ -46,7 +45,7 @@ internal object ConfigFileTransaction {
     fun writeAtomically(
         target: Path,
         text: String,
-        secretProtector: CredentialProtector? = CredentialProtectors.atRestDefaultOrNull(),
+        secretProtector: CredentialProtector? = ConfigSecrets.defaultProtector(),
     ) {
         target.parent?.let(Files::createDirectories)
         val written = ConfigSecrets.protectText(text, target, secretProtector)

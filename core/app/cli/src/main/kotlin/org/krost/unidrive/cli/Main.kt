@@ -578,11 +578,16 @@ open class Main : Runnable {
         // useVault = false is the non-interactive callers' (`profile list --json`): reading the vault
         // may prompt for a passphrase on a terminal, which a front-end cannot answer.
         val rp =
-            ConfigSecrets.decode(
-                if (useVault) mergeVaultCreds(profile) else profile.rawProvider,
-                profile.name,
-                baseConfigDir.resolve("config.toml"),
-            )
+            try {
+                ConfigSecrets.decode(
+                    if (useVault) mergeVaultCreds(profile) else profile.rawProvider,
+                    profile.name,
+                    baseConfigDir.resolve("config.toml"),
+                )
+            } catch (e: org.krost.unidrive.auth.CredentialLockedException) {
+                // #859: a secret field sealed under the vault key, read locked: neither missing nor corrupt.
+                return CredentialHealth.Warning(e.message ?: "a config.toml secret field is sealed; unlock the vault")
+            }
         val properties = rawProviderToProperties(rp)
         return factory.checkCredentialHealth(properties, configDir)
     }
