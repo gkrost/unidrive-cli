@@ -39,9 +39,12 @@ class GatherIdIndex internal constructor(
                 sameKeyLive = heldAt(gatherKey(earlier))?.takeIf { it.id == item.id && !it.deleted }
             }
         }
+        val incumbent = heldAt(gatherKey(item.path))?.takeIf { it.id != item.id && !it.deleted }
         val winner = admit(item)
         // A tombstone that took the key of the live occurrence ends it as a retraction does.
         sameKeyLive?.let { if (heldAt(gatherKey(item.path))?.deleted == true) onWithdrawn(it) }
+        // Another id displaced the live occupant of the key into the collision losers: its page's plan is stale too.
+        incumbent?.let { if (heldAt(gatherKey(item.path))?.id != it.id) onWithdrawn(it) }
         return winner
     }
 

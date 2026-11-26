@@ -520,6 +520,12 @@ class Reconciler(
      * [finalizeStreaming] ([resolveLocalOnly]): a page that does not mention
      * a path says nothing about its remote state.
      */
+    /** archive#115: the real-local path of the remote [path] under the XDG alias context of [stableRemoteTopLevelNames]. */
+    fun remoteToLocal(
+        path: String,
+        stableRemoteTopLevelNames: Set<String>,
+    ): String = buildAliasContext(emptyMap(), stableRemoteTopLevelNames).remoteToLocal(path)
+
     fun resolveSlice(
         pageRemote: Map<String, CloudItem>,
         localChanges: Map<String, ChangeState>,

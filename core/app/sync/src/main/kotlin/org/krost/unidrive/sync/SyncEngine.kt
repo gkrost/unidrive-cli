@@ -2625,7 +2625,7 @@ open class SyncEngine(
                 val consumerJob =
                     launch {
                         for (pageSlice in pageChannel) {
-                            withdrawals.apply(pageSlice.withdrawn, pageSlice.slice, safeAccumulator, accumulatedOnce, sentToExecutor, buffer)
+                            withdrawals.apply(pageSlice.withdrawn, pageSlice.slice, safeAccumulator, accumulatedOnce, sentToExecutor, buffer) { reconciler.remoteToLocal(it, pageSlice.stableRemoteTopLevelNames) }
                             if (pageSlice.slice.isEmpty()) continue
                             val pageLocal = resolvedLocal.get()
                             val pageActions =
@@ -2839,6 +2839,8 @@ open class SyncEngine(
             if (authFailure.get() == null) throw e
         }
         authFailure.get()?.let { throw it }
+
+        withdrawals.removeFinished(buffer, executedPaths, { db.getEntry(it) != null }) { Files.deleteIfExists(placeholder.resolveLocal(it)) }
 
         if (allComplete) {
             db.completeScan(scanId)
