@@ -206,6 +206,83 @@ class StateDatabaseOpenCommitTest {
         }
     }
 
+    private fun semanticValues(
+        file: Path,
+        column: String,
+    ): Map<String, Any?> {
+        val db = StateDatabase(file, readOnly = true)
+        db.initialize()
+        try {
+            return db.conn.createStatement().use { st ->
+                st.executeQuery("SELECT path, $column FROM alive_entries WHERE path IN ('/pending.txt', '/f1.txt')").use { rs ->
+                    buildMap { while (rs.next()) put(rs.getString(1), rs.getObject(2)) }
+                }
+            }
+        } finally {
+            db.close()
+        }
+    }
+
+    private fun seededWithPendingRow(): Path {
+        val file = seeded()
+        StateDatabase(file).also { db ->
+            db.initialize()
+            db.upsertEntry(
+                SyncEntry(
+                    path = "/pending.txt",
+                    remoteId = null,
+                    remoteHash = null,
+                    remoteSize = 3,
+                    remoteModified = null,
+                    localMtime = 1,
+                    localSize = 3,
+                    isFolder = false,
+                    isPinned = false,
+                    isHydrated = true,
+                    lastSynced = Instant.parse("2026-03-28T12:00:00Z"),
+                ),
+            )
+            db.close()
+        }
+        return file
+    }
+
+    @Test
+    fun `a read-only open of a file without a semantic column derives it through its registered fallback and does not read NULL`() {
+        val file = seededWithPendingRow()
+        val column = "pending_standin" // a stand-in with the shape of pending_upload
+        StateDbSchemaCheck.fallbacks[column] = "remote_id GLOB 'local:*'"
+        StateDbSchemaCheck.expectedExtra["sync_entries"] = setOf(column)
+        try {
+            val rows = semanticValues(file, column)
+            assertEquals(1, (rows["/pending.txt"] as Number).toInt(), "the local: row is pending")
+            assertEquals(0, (rows["/f1.txt"] as Number).toInt(), "a cloud row is not")
+        } finally {
+            StateDbSchemaCheck.expectedExtra.remove("sync_entries")
+            StateDbSchemaCheck.fallbacks.remove(column)
+        }
+    }
+
+    @Test
+    fun `a v4 file with a pending local row read by a build with the pending_upload column shows it as pending`() {
+        val file = seededWithPendingRow()
+        assertEquals("remote_id GLOB 'local:*'", StateDbSchemaCheck.fallbacks["pending_upload"], "#982 keeps this registration")
+        StateDbSchemaCheck.expectedExtra["sync_entries"] = setOf("pending_upload")
+        try {
+            withObserver(file) { obs ->
+                val before = footprint(file)
+                val version = obs.dataVersion()
+                val rows = semanticValues(file, "pending_upload")
+                assertEquals(1, (rows["/pending.txt"] as Number).toInt())
+                assertEquals(0, (rows["/f1.txt"] as Number).toInt())
+                assertEquals(version, obs.dataVersion(), "no commit ran")
+                assertEquals(before, footprint(file), "nothing written")
+            }
+        } finally {
+            StateDbSchemaCheck.expectedExtra.remove("sync_entries")
+        }
+    }
+
     @Test
     fun `a writing command still migrates and writes`() {
         val file = seededWithoutAdditiveColumn()
@@ -224,5 +301,19 @@ class StateDatabaseOpenCommitTest {
             assertEquals("4", it.getSyncState("schema_version"))
             it.close()
         }
+    }
+
+    @Test
+    fun `a writable close after a DDL-only migration checkpoints although no row changed`() {
+        val file = seededWithoutAdditiveColumn() // the stamp stays 4: the migration is an ALTER TABLE and writes no row
+        withObserver(file) { obs ->
+            obs.dataVersion() // the observer is a live connection of the file, so this close is not the last one
+            StateDatabase(file).also {
+                it.initialize()
+                it.close()
+            }
+            assertEquals(0L, footprint(file).walSize, "the migration left the WAL, so close skipped the checkpoint")
+        }
+        assertTrue("changed_by" in columns(file), "the missing column was added")
     }
 }

@@ -313,7 +313,6 @@ class StatusCommand : Callable<Int> {
         var lastFullScan: String? = null
         var pendingCursor: String? = null
         var duplicateNames: List<Pair<String, String>> = emptyList()
-
         val stateDbPath = configDir.resolve("state.db")
         if (Files.exists(stateDbPath)) {
             val db = StateDatabase(stateDbPath, readOnly = true)
@@ -328,11 +327,12 @@ class StatusCommand : Callable<Int> {
                 pendingCursor = cursor.pendingCursor
                 // archive#403: the items kept under a decorated name (unresolved duplicates).
                 duplicateNames = duplicateNamesOf(db)
+            } catch (e: IllegalStateException) {
+                System.err.println(e.message) // an older schema is refused with the way out; the audit goes on without the totals
             } finally {
                 db.close()
             }
         }
-
         // Remote quota — only fetched when the provider declares QuotaExact so
         // non-quota providers (S3, SFTP, WebDAV) do not trigger a misleading
         // "0 B used" line or a pointless round-trip.
@@ -451,7 +451,7 @@ class StatusCommand : Callable<Int> {
                 println("Sync scope: invalid: ${e.message}")
                 return
             }
-        scopeStatusLine(configured, persistedScope(configDir))?.let { println(it) }
+        scopeStatusLine(configured, runCatching { persistedScope(configDir) }.getOrDefault(emptyList()))?.let { println(it) } // an older schema has no scope to show
         if (configured.isNotEmpty()) {
             val excludes = scopeExcludes(profile, raw)
             val outside =

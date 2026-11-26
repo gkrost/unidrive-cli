@@ -87,4 +87,15 @@ class StatusReadsWhatItCanTest {
         assertTrue(text.contains("Download: 1 file(s)"), text)
         assertEquals(before, sha(), "state.db untouched")
     }
+
+    @Test
+    fun `status of one profile against a state db of an older schema does not crash`() {
+        DriverManager.getConnection("jdbc:sqlite:$stateDb").use { c ->
+            c.createStatement().use { it.executeUpdate("UPDATE sync_state SET value='3' WHERE key='schema_version'") }
+        }
+        val before = sha()
+        val exit = CommandLine(Main()).execute("-c", configDir.toString(), "-p", "localtest", "status")
+        assertEquals(0, exit, out.toString(Charsets.UTF_8))
+        assertEquals(before, sha(), "state.db untouched")
+    }
 }
