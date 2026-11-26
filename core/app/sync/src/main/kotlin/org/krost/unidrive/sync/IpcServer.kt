@@ -265,6 +265,14 @@ class IpcServer(
     }
 
     /**
+     * Close one connection from the daemon's side (gkrost/unidrive-cli#845: a hydration subscriber at its queue's hard cap).
+     * Its reader ends with the closed channel, removes the client and fires the close listeners. Unknown id: nothing.
+     */
+    fun closeConnection(connectionId: String) {
+        clients.firstOrNull { it.id == connectionId }?.let { closeChannel(it.channel) }
+    }
+
+    /**
      * Mark a connection as a sync-progress subscriber. After this call, the
      * connection receives sync-progress events from `emit(...)` until it
      * disconnects (cleanup via `unregisterSyncSubscriber`, called from a
@@ -928,30 +936,10 @@ class IpcServer(
         runCatching { sc.close() }
     }
 
-    // Writes all of [buf]. The write timeout is a deadline on progress: it starts again whenever bytes go out, so a large
-    // reply that a client reads slowly is never cut while it moves, and a peer that takes nothing for the whole timeout
-    // fails the write (its connection is then dropped). A full send buffer is waited out with delay, not by sleeping:
-    // the hydration subscriber writers run on the daemon's event loop, which a sleeping write would stall. Not
-    // cancellable half way, so a cancelled writer cannot leave a torn line on the connection.
     private suspend fun writeNonBlocking(
         client: SocketChannel,
         buf: ByteBuffer,
-    ) = withContext(NonCancellable) {
-        var deadline = System.nanoTime() + writeTimeoutNs
-        var pauseMs = 1L
-        while (buf.hasRemaining()) {
-            if (client.write(buf) > 0) {
-                deadline = System.nanoTime() + writeTimeoutNs
-                pauseMs = 1L
-                continue
-            }
-            if (System.nanoTime() > deadline) {
-                throw IOException("Write timeout exceeded for IPC client: no progress for ${writeTimeoutNs / 1_000_000L} ms")
-            }
-            delay(pauseMs)
-            pauseMs = minOf(pauseMs * 2, WRITE_POLL_MAX_MS)
-        }
-    }
+    ) = writeAllNonBlocking(client, buf, writeTimeoutNs)
 
     companion object {
         // Connection cap (UNIDRIVE_IPC_MAX_CLIENTS, docs/env-vars.md): 32 by default; unset,
@@ -972,9 +960,6 @@ class IpcServer(
         // ipc-contract/connection/too_many_clients.ndjson).
         private const val TOO_MANY_CLIENTS_LINE = "{\"ok\":false,\"error\":\"too_many_clients\"}\n"
         private const val REFUSAL_WRITE_TIMEOUT_NS = 200_000_000L
-
-        // The longest pause between two tries of a write whose send buffer is full.
-        private const val WRITE_POLL_MAX_MS = 10L
 
         // How long a refused connection is kept open, reading and dropping its input, for the peer's end of
         // stream (see refuse), and how many may wait at once.
