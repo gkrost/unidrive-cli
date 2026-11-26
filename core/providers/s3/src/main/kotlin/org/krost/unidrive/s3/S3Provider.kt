@@ -131,12 +131,31 @@ class S3Provider(
         do {
             val page = api.list(prefix, delimiter = "/", token = token)
             page.objects.filter { it.key != prefix && skipped.admits(it.key) }.forEach { out += fileItem(it) }
-            page.prefixes.filter(skipped::admits).forEach { out += folderItem(pathOf(it)) }
+            page.prefixes.filter(skipped::admits).filter { holdsListableKey(it, skipped) }.forEach { out += folderItem(pathOf(it)) }
             pages.follow(page.nextToken)
             token = page.nextToken
         } while (token != null)
         skipped.summarise(log)
         return out
+    }
+
+    /**
+     * Whether [prefix] has a key a listing shows: a valid key or its own folder marker, below it at any depth. A folder whose
+     * whole subtree is dot-segment keys is not listed (owner decision 2026-11-26). Usually the first page settles it.
+     */
+    private suspend fun holdsListableKey(
+        prefix: String,
+        skipped: DotSegmentSkips,
+    ): Boolean {
+        val pages = pageGuard("The S3 listing under '$prefix'")
+        var token: String? = null
+        do {
+            val page = api.list(prefix, token = token, maxKeys = FOLDER_PROBE_KEYS)
+            if (page.objects.any { skipped.admits(it.key) }) return true
+            pages.follow(page.nextToken)
+            token = page.nextToken
+        } while (token != null)
+        return false
     }
 
     override suspend fun getMetadata(path: String): CloudItem {
@@ -873,6 +892,7 @@ class S3Provider(
 
     companion object {
         private const val FULL_LISTING = "full-listing"
+        private const val FOLDER_PROBE_KEYS = 100
         private const val STALE_UPLOAD_DAYS = 14L
 
         // Parts of one upload in flight at once unless the daemon says otherwise; each streams from disk, none is buffered.

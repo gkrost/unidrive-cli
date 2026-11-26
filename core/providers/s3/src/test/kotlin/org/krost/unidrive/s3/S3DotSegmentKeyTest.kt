@@ -78,8 +78,8 @@ class S3DotSegmentKeyTest {
                 }
 
             assertEquals(setOf("/good.txt", "/a.b", "/dir", "/dir/ok.txt"), delta)
-            // "/a" is the common prefix "a/", a plain folder name; only the keys below it with a dot segment are left out.
-            assertEquals(setOf("/good.txt", "/a.b", "/a", "/dir"), root)
+            // "a/" holds only dot-segment keys, so it is not listed either (owner decision 2026-11-26).
+            assertEquals(setOf("/good.txt", "/a.b", "/dir"), root)
             assertEquals(setOf("/dir/ok.txt"), inDir)
             for (key in listOf("a/./b.txt", "a/../c.txt", "dir/./hidden.txt")) {
                 assertNotNull(warned.firstOrNull { "'$key'" in it }, "a WARN names '$key': $warned")
@@ -211,5 +211,58 @@ class S3DotSegmentKeyTest {
             val paths = provider(fake).delta(null, scanContext = context).items.map { it.path }.toSet()
 
             assertEquals(setOf("/a.txt", "/b.txt"), paths)
+        }
+
+    @Test
+    fun `a folder holding only dot-segment keys is not listed`() =
+        runTest {
+            val fake = FakeS3()
+            fake.put("ok/f.txt", "o")
+            fake.put("only/./x.txt", "x")
+            fake.put("deep/b/../y.txt", "y")
+            fake.put("deep/c/./z.txt", "z")
+            val provider = provider(fake)
+
+            val paths = provider.listChildren("/").map { it.path }.toSet()
+
+            assertEquals(setOf("/ok"), paths, "neither the folder nor a folder whose whole subtree is dot-segment keys is listed")
+            assertEquals(emptyList(), provider.listChildren("/deep").map { it.path }, "and its subfolders are not listed either")
+        }
+
+    @Test
+    fun `a folder with a dot-segment key and a valid key lists only the valid key`() =
+        runTest {
+            val fake = FakeS3()
+            fake.put("e/ok.txt", "o")
+            fake.put("e/./bad.txt", "x")
+            fake.put("e/../bad2.txt", "x")
+            fake.put("marked/", "")
+            fake.put("marked/./bad.txt", "x")
+            val provider = provider(fake)
+
+            assertEquals(setOf("/e", "/marked"), provider.listChildren("/").map { it.path }.toSet(), "a valid key or a folder marker keeps the folder listed")
+            assertEquals(listOf("/e/ok.txt"), provider.listChildren("/e").map { it.path })
+        }
+
+    @Test
+    fun `a delta and a resumed listing list a dot-segment-only folder no more than a plain listing does`() =
+        runTest {
+            val fake = FakeS3()
+            fake.put("e/ok.txt", "o")
+            fake.put("e/./bad.txt", "x")
+            fake.put("only/./x.txt", "x")
+            fake.put("zz.txt", "z")
+            val provider = provider(fake)
+            val staged =
+                listOf(
+                    org.krost.unidrive.CloudItem("e/ok.txt", "", "placeholder", 1, false, null, null, null, null),
+                    org.krost.unidrive.CloudItem("res/./y.txt", "", "placeholder", 1, false, null, null, null, null),
+                )
+
+            val full = provider.delta(null).items.map { it.path }.toSet()
+            val resumed = provider.delta(null, scanContext = org.krost.unidrive.ScanContext("e/ok.txt", staged, { _, _ -> })).items.map { it.path }.toSet()
+
+            assertEquals(setOf("/e", "/e/ok.txt", "/zz.txt"), full)
+            assertEquals(setOf("/e", "/e/ok.txt", "/zz.txt"), resumed)
         }
 }
