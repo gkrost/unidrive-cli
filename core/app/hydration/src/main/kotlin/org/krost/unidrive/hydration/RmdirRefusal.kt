@@ -31,6 +31,9 @@ internal fun refusedNotEmpty(
 // gkrost/unidrive-cli#635: the two comparisons of the folder delete's snapshot guard, moved here beside the refusal
 // they end in. True when a live child is not the row the mount observed: no row, a file turned folder (or the
 // reverse), or a file whose size, time or recorded identity moved. Folder metadata alone never counts.
+// gkrost/unidrive-cli#952: a listing that carries no content hash (S3's cannot tell the encryption kind, so its ETag is no proven
+// MD5) says nothing about the hash the row took from the upload's own answer; it is no change. The write token, size and time
+// still compare, so an object that really changed refuses.
 internal fun differsFromObserved(
     child: CloudItem,
     row: SyncEntry?,
@@ -38,7 +41,7 @@ internal fun differsFromObserved(
     if (row == null || row.isFolder != child.isFolder) return true
     if (child.isFolder) return false
     val identityMoved =
-        (row.remoteHash != null && child.hash != row.remoteHash) ||
+        (row.remoteHash != null && child.hash != null && child.hash != row.remoteHash) ||
             (row.remoteVersion != null && child.version != row.remoteVersion) ||
             (row.remoteContentId != null && child.contentId != row.remoteContentId)
     val timeMoved = row.remoteModified != null && child.modified != row.remoteModified

@@ -3249,7 +3249,7 @@ class HydrationImpl(
             val rows = stateDb.getEntriesByPrefix(below)
             val unsynced = rows.filter { holdsUnsyncedBytes(it) }
             if (!discardLocal) {
-                unsynced.firstOrNull()?.let { return refusedNotEmpty(log, normalised, recursive, "unsynced_bytes", it.path) }
+                unsynced.firstOrNull { !refusedForGood(it) }?.let { return refusedNotEmpty(log, normalised, recursive, "unsynced_bytes", it.path) }
             } else if (unsynced.isNotEmpty()) {
                 log.info("rmdir of {}: discard_local, {} file(s) below with bytes only this computer had", normalised, unsynced.size)
             }
@@ -3301,7 +3301,7 @@ class HydrationImpl(
         val rows = stateDb.getEntriesByPrefix(if (folder == "/") "/" else "$folder/")
         if (rows.isEmpty()) return RmdirResult.Failed(HydrationError.UnknownPath)
         if (!recursive) return staleRows.rowless(folder)
-        if (!discardLocal) rows.firstOrNull { holdsUnsyncedBytes(it) }?.let { return refusedNotEmpty(log, folder, recursive, "unsynced_bytes", it.path) }
+        if (!discardLocal) rows.firstOrNull { holdsUnsyncedBytes(it) && !refusedForGood(it) }?.let { return refusedNotEmpty(log, folder, recursive, "unsynced_bytes", it.path) }
         for (row in rows.filter { !it.isFolder }) {
             when (val unlinked = unlinkRow(row.path, permanent)) {
                 UnlinkResult.Ok -> Unit
@@ -3320,6 +3320,12 @@ class HydrationImpl(
     // The enumeration's reap and refresh.run's reset ask this same question before they drop a row or its cache copy;
     // an upload in flight is answered separately (rmdir's busy), so no slot is consulted here.
     private val unsyncedGuard = RemoteEnumeration.ReapGuards(cachePathOf = { mount.resolveCachePath(it) })
+
+    // gkrost/unidrive-cli#952: a never-uploaded file whose upload the provider refused for good (these very bytes, or the name) cannot
+    // finish, and waiting for it is no reason to keep a delete from the user: its row and copy go with the tree.
+    private fun refusedForGood(row: org.krost.unidrive.sync.model.SyncEntry): Boolean =
+        row.isPendingUpload && (stateDb.nameBlock(row.path) != null ||
+            runCatching { refusalStamp(mount.resolveCachePath(row.path)) }.getOrNull()?.let { stateDb.uploadRefusal(row.path)?.startsWith("$it|") } == true)
 
     /**
      * archive#1035: whether the file at [entry] may hold bytes the cloud has not seen, so that a recursive rmdir must not
