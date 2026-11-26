@@ -165,6 +165,10 @@ class IpcContractLevelTest {
                 // 16 (gkrost/unidrive-cli#954): history.report takes an optional `count` and `first_paths` (a row that stands for
                 // many items), stored as data and echoed by history.list; the capability names them.
                 setOf("capability:history.report.count:v1"),
+                // 17 (gkrost/unidrive-cli#861): the vault keeps an Internxt profile's sign-in (vault.internxt_password.set /
+                // .clear, admin) and the engine signs an expired session in again with it; daemon.status `auth.reason` may say
+                // totp_required. The capability names it on an Internxt daemon whose vault.enc exists.
+                setOf("verb:vault.internxt_password.set", "verb:vault.internxt_password.clear", "capability:vault-internxt-password:v1"),
             )
     }
 }

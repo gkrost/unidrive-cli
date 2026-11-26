@@ -129,14 +129,50 @@ internal fun Main.dropVaultData() {
  * are registered and the `vault-unlock:v1` capability advertised — with the gate starting
  * locked exactly on a [DaemonVaultStart.Locked] start.
  */
-internal fun Main.daemonVault(start: DaemonVaultStart): DaemonVault? {
+internal fun Main.daemonVault(
+    start: DaemonVaultStart,
+    internxtProfile: String? = null,
+): DaemonVault? {
     if (!Files.exists(baseConfigDir.resolve("vault.enc"))) return null
     val gate =
         when (start) {
             is DaemonVaultStart.Ready -> VaultGate.unlocked()
             is DaemonVaultStart.Locked -> VaultGate.lockedStart(start.reason)
         }
-    return DaemonVault(gate, unlockAttempt = ::daemonUnlockVault, dropData = ::dropVaultData, passphraseMatches = ::vaultPassphraseMatches)
+    return DaemonVault(
+        gate,
+        unlockAttempt = ::daemonUnlockVault,
+        dropData = ::dropVaultData,
+        passphraseMatches = ::vaultPassphraseMatches,
+        internxtProfile = internxtProfile,
+        rewrite = ::rewriteDaemonVault,
+    )
+}
+
+/**
+ * gkrost/unidrive-cli#861: one rewrite of vault.enc by the running daemon. [passphrase] opens it, [change] applies to
+ * what it holds, the result is written under the config lock every vault writer takes, and it becomes the in-memory
+ * vault data (the passphrase itself is not kept). A wrong passphrase writes nothing.
+ */
+internal fun Main.rewriteDaemonVault(
+    passphrase: CharArray,
+    change: (Map<String, Map<String, String>>) -> Map<String, Map<String, String>>,
+): VaultUnlockOutcome {
+    val vault = Vault(baseConfigDir.resolve("vault.enc"))
+    return try {
+        ConfigFileTransaction.withLock(baseConfigDir.resolve("config.toml")) {
+            val data = change(vault.read(passphrase))
+            vault.write(passphrase, data)
+            vaultDataCache = data
+            VaultUnlockOutcome.Ok(data)
+        }
+    } catch (_: javax.crypto.AEADBadTagException) {
+        VaultUnlockOutcome.BadPassphrase
+    } catch (e: java.security.GeneralSecurityException) {
+        VaultUnlockOutcome.Failed(e.javaClass.simpleName)
+    } catch (e: java.io.IOException) {
+        VaultUnlockOutcome.Failed(e.javaClass.simpleName)
+    }
 }
 
 /** gkrost/unidrive-cli#798: whether [passphrase] opens vault.enc; the data read is dropped at once. */

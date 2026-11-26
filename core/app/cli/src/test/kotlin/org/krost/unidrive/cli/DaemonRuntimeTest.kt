@@ -514,6 +514,9 @@ class DaemonRuntimeTest {
                     // vault.enc, so both answer vault_absent (still a reply).
                     """{"verb":"vault.unlock","passphrase":"x"}""",
                     """{"verb":"vault.lock"}""",
+                    // gkrost/unidrive-cli#861: registered with the other vault verbs; without vault.enc both answer vault_absent.
+                    """{"verb":"vault.internxt_password.set","passphrase":"x","email":"a@example.test","password":"x"}""",
+                    """{"verb":"vault.internxt_password.clear","passphrase":"x"}""",
                     // gkrost/unidrive-cli#860: this runtime persists no scope, so scope.set answers wrong_mode (still a reply).
                     """{"verb":"scope.get"}""",
                     """{"verb":"scope.set","included":["/A"],"version":"x"}""",

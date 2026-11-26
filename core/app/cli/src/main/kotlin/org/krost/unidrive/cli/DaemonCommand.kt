@@ -90,7 +90,14 @@ private fun credentialHealthGate(
     val health = parent.checkCredentialHealth(profile, parent.providerConfigDir(), useVault = !startLocked)
     if (!startLocked) {
         daemonStartCredentialRefusal(profile.name, health, parent.providerConfigDir())?.let { refusal ->
-            System.err.println(refusal)
+            // gkrost/unidrive-cli#861: an expired Internxt session (never a missing one) is signed in again with the vaulted
+            // password first; a two-factor account is not, and the refusal says why.
+            val expired = CredentialHealthMonitor.toReading(health, 0L).state == CredentialHealthMonitor.State.EXPIRED
+            val relogin = if (expired) parent.reloginBeforeStartRefusal(profile) else null
+            if (relogin == InternxtVaultRelogin.Outcome.SIGNED_IN) return
+            System.err.println(
+                if (relogin == InternxtVaultRelogin.Outcome.TOTP_REQUIRED) "$refusal (totp_required: the vaulted password needs a two-factor code)" else refusal,
+            )
             kotlin.system.exitProcess(parent.MODE_REFUSAL_EXIT)
         }
     }
@@ -227,7 +234,7 @@ class DaemonRunCommand : Runnable {
             // issue#796: the vault seam — the verbs and the `vault-unlock:v1` capability exist when
             // vault.enc exists; the gate starts locked exactly on a locked start.
         ).apply { scopeConfig = { scope -> ScopeConfig.writeScope(parent.configBaseDir().resolve("config.toml"), profile.name, scope) }; presence = presenceSettings(parent) } // #860: sync_path, as `scope set`; #798: [general] require_presence
-        runtime.vault = parent.daemonVault(vaultStart)
+        parent.wireDaemonVault(runtime, profile, vaultStart) // #861: an Internxt profile's sign-in in the vault
         // archive#813: the profile the sign-in verbs sign in (its non-secret config, as `auth begin/complete/login` resolve it).
         // A config that cannot be read for it leaves them answering sign_in_unavailable; the daemon runs either way.
         runtime.signInTarget =

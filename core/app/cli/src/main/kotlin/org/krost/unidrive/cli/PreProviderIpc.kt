@@ -158,6 +158,9 @@ internal suspend fun servePreProviderIpc(
     }
     server.registerHandler("vault.unlock") { _, json -> vaultRpc.unlockVerb(json) }
     server.registerHandler("vault.lock") { _, _ -> vaultRpc.lockVerb() }
+    // gkrost/unidrive-cli#861: the Internxt sign-in in the vault; a locked daemon answers vault_locked.
+    server.registerHandler(VaultRpcHandler.INTERNXT_PASSWORD_SET) { _, json -> vaultRpc.internxtPasswordSetVerb(json) }
+    server.registerHandler(VaultRpcHandler.INTERNXT_PASSWORD_CLEAR) { _, json -> vaultRpc.internxtPasswordClearVerb(json) }
     server.registerHandler(PresenceProofs.CHALLENGE) { _, json -> presence.challenge(json) }
     server.registerHandler(PresenceProofs.ENROLL) { _, json -> presence.enroll(json) }
     server.registerHandler("daemon.shutdown") { connId, _ ->

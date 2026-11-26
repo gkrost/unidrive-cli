@@ -115,7 +115,9 @@ class IpcContractCorpusTest {
             // the param shapes and already_unlocked, and vault.lock locks it and stays locked —
             // nothing between vault.lock and daemon.shutdown reads the paused state. The
             // lock → status → unlock cycle is sessions/vault-lock.ndjson against its own daemon.
-            "vault.unlock", "vault.lock",
+            // gkrost/unidrive-cli#861: the Internxt sign-in in the vault, between the unlock and the lock (a locked daemon answers
+            // vault_locked): the param shapes, a wrong passphrase, a set, then a clear that removes it and one that finds nothing.
+            "vault.unlock", "vault.internxt_password.set", "vault.internxt_password.clear", "vault.lock",
             // gkrost/unidrive-cli#798: policy off and no anchor, so only the param shapes and one issued nonce (the counter
             // seam's first) — the enroll corpus spends it for the wrong verb. sessions/presence-destructive.ndjson has the rest.
             "presence.challenge", "presence.enroll",
@@ -198,7 +200,8 @@ class IpcContractCorpusTest {
         }
         // issue#796: the corpus daemon has a vault (the verbs are registered, the capability
         // advertised), starting unlocked — the scripted attempt knows one passphrase.
-        runtime.vault = scriptedVault()
+        // gkrost/unidrive-cli#861: its profile is an Internxt one, so the vault keeps its sign-in.
+        runtime.vault = scriptedVault(internxtProfile = "contract_profile")
         // gkrost/unidrive-cli#860: scope.set persists the new set; the corpus daemon has no config.toml to write.
         runtime.scopeConfig = {}
         // gkrost/unidrive-cli#798: the nonces the corpus spells (policy off, the default).
@@ -1643,8 +1646,9 @@ class IpcContractCorpusTest {
     }
 
     /** The vault seam of the corpus daemons (issue#796): unlocked, one scripted passphrase. */
-    private fun scriptedVault() =
-        DaemonVault(
+    private fun scriptedVault(internxtProfile: String? = null): DaemonVault {
+        var data: Map<String, Map<String, String>> = emptyMap()
+        return DaemonVault(
             gate = VaultGate.unlocked(),
             unlockAttempt = { pass ->
                 if (pass.contentEquals(CORPUS_VAULT_PASSPHRASE.toCharArray())) {
@@ -1655,7 +1659,17 @@ class IpcContractCorpusTest {
             },
             dropData = {},
             passphraseMatches = { it.contentEquals(CORPUS_VAULT_PASSPHRASE.toCharArray()) },
+            internxtProfile = internxtProfile,
+            rewrite = { pass, change ->
+                if (pass.contentEquals(CORPUS_VAULT_PASSPHRASE.toCharArray())) {
+                    data = change(data)
+                    VaultUnlockOutcome.Ok(data)
+                } else {
+                    VaultUnlockOutcome.BadPassphrase
+                }
+            },
         )
+    }
 
     private fun loadSession(name: String): List<Pair<String, String>> {
         val stream = checkNotNull(javaClass.getResourceAsStream("/ipc-contract/sessions/$name.ndjson")) {

@@ -23,8 +23,11 @@ suspend fun authenticateInternxt(
     email: String,
     password: String,
     tfaCode: String? = null,
+    // Test seam (gkrost/unidrive-cli#861): the service this sign-in runs on, so a test drives this very function (the
+    // initialize-for-sign-in before the save included) over a fake HTTP layer. Production uses the default.
+    service: (InternxtConfig) -> AuthService = ::AuthService,
 ): InternxtCredentials =
-    AuthService(config).use { svc ->
+    service(config).use { svc ->
         svc.initializeForSignIn()
         svc.authenticate(email, password, tfaCode)
     }

@@ -439,6 +439,8 @@ internal fun daemonCapabilitiesJson(
     vaultUnlockable: Boolean = false,
     // gkrost/unidrive-cli#860: scope.set swaps the scope live (a mount daemon that can persist it).
     scopeSettable: Boolean = false,
+    // gkrost/unidrive-cli#861: an Internxt daemon keeps its sign-in in the vault and signs an expired session in again.
+    internxtPassword: Boolean = false,
 ): String =
     (
         profileMode.capabilities + NOTIFICATIONS_STATUS_CAPABILITY +
@@ -448,7 +450,8 @@ internal fun daemonCapabilitiesJson(
             (if (viewNamespaces.isEmpty()) emptyList() else listOf("views", "view_page")) +
             (if (shareCapable) listOf(SHARE_CREATE_CAPABILITY) else emptyList()) +
             listOf(ScopeRpcHandler.GET) + (if (scopeSettable) listOf(ScopeRpcHandler.SET) else emptyList()) +
-            (if (vaultUnlockable) listOf(VAULT_UNLOCK_CAPABILITY, VAULT_XTRA_CAPABILITY) else emptyList())
+            (if (vaultUnlockable) listOf(VAULT_UNLOCK_CAPABILITY, VAULT_XTRA_CAPABILITY) else emptyList()) +
+            (if (vaultUnlockable && internxtPassword) listOf(VAULT_INTERNXT_PASSWORD_CAPABILITY) else emptyList())
     ).joinToString(",", "[", "]") { ndjsonString(it) }
 
 /** The `daemon.status` capability that says `history.list` takes an `order` member (gkrost/unidrive-cli#848). */

@@ -11,7 +11,8 @@ import java.nio.file.Path
  * sign-in question, not a second check: `needs_sign_in` for a credential that is missing or no longer works, `ok` for one that is
  * present and usable, `unknown` while the engine does not know (no check has finished, or it found something it cannot classify).
  *
- * [reason] is `no_credentials` or `expired` when [state] is `needs_sign_in`, null otherwise. A client that cannot reach the daemon
+ * [reason] is `no_credentials`, `expired` or `totp_required` (an expired session the engine could not sign in again with the
+ * vaulted password because the account needs a two-factor code, gkrost/unidrive-cli#861) when [state] is `needs_sign_in`, null otherwise. A client that cannot reach the daemon
  * reads the same answer from `profile list --json` (`auth_reason`, `profile_dir`).
  */
 internal data class AuthStatus(
@@ -31,11 +32,13 @@ internal data class AuthStatus(
 internal fun authStatusOf(
     state: CredentialHealthMonitor.State,
     profileDir: Path,
+    totpRequired: Boolean = false,
 ): AuthStatus {
     val dir = profileDir.toString()
     return when (state) {
         CredentialHealthMonitor.State.OK, CredentialHealthMonitor.State.EXPIRING -> AuthStatus("ok", null, dir)
-        CredentialHealthMonitor.State.EXPIRED -> AuthStatus("needs_sign_in", "expired", dir)
+        // gkrost/unidrive-cli#861: the engine did not sign in with the vaulted password because the account needs a code.
+        CredentialHealthMonitor.State.EXPIRED -> AuthStatus("needs_sign_in", if (totpRequired) "totp_required" else "expired", dir)
         CredentialHealthMonitor.State.MISSING -> AuthStatus("needs_sign_in", "no_credentials", dir)
         CredentialHealthMonitor.State.UNKNOWN -> AuthStatus("unknown", null, dir)
     }
