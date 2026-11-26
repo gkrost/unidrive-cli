@@ -67,6 +67,11 @@ class OAuthService(
         credentialStore.save(token)
     }
 
+    /** [saveToken] for a sign-in: fresh credentials may replace a token.json sealed under a key this process lacks (#797). */
+    suspend fun saveSignInToken(token: Token) {
+        credentialStore.saveReplacingSealed(token)
+    }
+
     /** Removes the stored token, and its protected copy when [OneDriveConfig.credentialProtector] is set. */
     fun deleteToken() {
         credentialStore.delete()
