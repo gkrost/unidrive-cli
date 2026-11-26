@@ -54,7 +54,8 @@ internal class IpcSyncFanOut(
     }
 
     fun clear() {
-        subscribers.keys.toList().forEach(::remove)
+        // The map's own iterator is weakly consistent; a snapshot by size-then-iterator can throw when a subscriber leaves meanwhile.
+        for (connectionId in subscribers.keys) remove(connectionId)
     }
 
     /** True while [connectionId] has a subscriber that has not been stopped or ended. */
