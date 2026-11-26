@@ -126,14 +126,16 @@ class S3Provider(
         val prefix = prefixOf(path)
         val out = mutableListOf<CloudItem>()
         val pages = pageGuard("The S3 listing of '$path'")
+        val skipped = DotSegmentSkips()
         var token: String? = null
         do {
             val page = api.list(prefix, delimiter = "/", token = token)
-            page.objects.filter { it.key != prefix }.forEach { out += fileItem(it) }
-            page.prefixes.forEach { out += folderItem(pathOf(it)) }
+            page.objects.filter { it.key != prefix && skipped.admits(it.key) }.forEach { out += fileItem(it) }
+            page.prefixes.filter(skipped::admits).forEach { out += folderItem(pathOf(it)) }
             pages.follow(page.nextToken)
             token = page.nextToken
         } while (token != null)
+        skipped.summarise(log)
         return out
     }
 
@@ -207,11 +209,12 @@ class S3Provider(
         val resumeAfter = scanContext?.resumeMarker
         // A staged item's path is a placeholder; its id is the key, which is the path.
         scanContext?.resumedItems?.forEach { admit(if (it.isFolder) folderItem(pathOf(it.id)) else it.copy(path = pathOf(it.id), name = nameOf(it.id))) }
+        val skipped = DotSegmentSkips()
         var token: String? = null
         val pages = pageGuard("The S3 listing of the bucket")
         do {
             val page = api.list("", startAfter = resumeAfter, token = token)
-            val pageItems = page.objects.map { if (it.key.endsWith("/")) folderItem(pathOf(it.key)) else fileItem(it) }
+            val pageItems = page.objects.filter { skipped.admits(it.key) }.map { if (it.key.endsWith("/")) folderItem(pathOf(it.key)) else fileItem(it) }
             pageItems.forEach(::admit)
             val last = page.objects.lastOrNull()?.key
             if (scanContext != null && last != null && !scanContext.readOnly) scanContext.persistPage(pageItems, last)
@@ -221,6 +224,7 @@ class S3Provider(
             pages.follow(page.nextToken)
             token = page.nextToken
         } while (token != null)
+        skipped.summarise(log)
         val items = folders.map(::folderItem) + files.values
         return DeltaPage(items, cursor = FULL_LISTING, hasMore = false)
     }
@@ -898,3 +902,26 @@ private fun pageGuard(what: String) =
         "$what answered a page token it was already asked for; the listing stopped incomplete",
         "$what was still paging after 10000 pages; the listing stopped incomplete",
     )
+
+/**
+ * Keys with a `.` or `..` segment cannot be addressed (see [S3Keys]), so a listing leaves them out. Each is named in a WARN,
+ * the first [LOGGED_KEYS] of a listing; the rest are only counted, and [summarise] says how many.
+ */
+private class DotSegmentSkips {
+    private var skipped = 0
+
+    fun admits(key: String): Boolean {
+        if (!S3Keys.hasDotSegment(key)) return true
+        if (++skipped <= LOGGED_KEYS) LOG.warn("Leaving out S3 key '{}': it has a '.' or '..' path segment and cannot be addressed", key)
+        return false
+    }
+
+    fun summarise(log: org.slf4j.Logger) {
+        if (skipped > LOGGED_KEYS) log.warn("Left out {} S3 key(s) with a '.' or '..' path segment; the first {} are named above", skipped, LOGGED_KEYS)
+    }
+
+    private companion object {
+        const val LOGGED_KEYS = 20
+        val LOG: org.slf4j.Logger = org.slf4j.LoggerFactory.getLogger(S3Provider::class.java)
+    }
+}

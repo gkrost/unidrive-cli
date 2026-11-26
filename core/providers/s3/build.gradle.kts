@@ -16,7 +16,7 @@ dependencies {
     implementation(libs.ktor.client.core)
 
     implementation(libs.slf4j.api)
-    testRuntimeOnly(libs.logback.classic)
+    testImplementation(libs.logback.classic)
 
     testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.coroutines.test)
