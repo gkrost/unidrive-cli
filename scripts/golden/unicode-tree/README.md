@@ -133,7 +133,7 @@ Cleaning up a live run: a recursive delete through the mount (`rm -rf`) is slow 
 The quick way, no cloud account needed (stop any other unidrive mount first; about 5 minutes):
 
 ```powershell
-pwsh scripts/golden/unicode-tree/run-localfs.ps1 -Expected "scripts/golden/unicode-tree/expected/golden-unicode-v2@localfs@<engine>+<client>.tsv"
+pwsh scripts/golden/unicode-tree/run-localfs.ps1   # (add -Expected once a v2 file exists)
 # private builds instead of the installed ones:
 pwsh scripts/golden/unicode-tree/run-localfs.ps1 -EngineJar <unidrive.jar> -ClientDir <folder with unidrive-win.exe> -Expected <file>
 ```
