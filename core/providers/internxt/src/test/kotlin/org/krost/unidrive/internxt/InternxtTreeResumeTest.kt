@@ -128,6 +128,26 @@ class InternxtTreeResumeTest {
         }
 
     @Test
+    fun `hasResumableTreeWalk agrees with treeResumeOf on whether a walk resumes`() =
+        runTest {
+            val staging = Staging()
+            assertFailsWith<IllegalStateException> { walk(staging, mutableListOf(), failOn = "b1") }
+            val rows = staging.rows.values.toList()
+            val cursor = cursorMarker("2026-10-09T10:00:00Z", StreamPosition(), StreamPosition())
+
+            for ((marker, staged, roots) in listOf(
+                Triple(staging.marker, rows, listOf("/")),
+                Triple(staging.marker, rows, listOf("/a")),
+                Triple(staging.marker, emptyList(), listOf("/")),
+                Triple(cursor, rows, listOf("/")),
+                Triple("12|34", rows, listOf("/")),
+                Triple(null, rows, listOf("/")),
+            )) {
+                assertEquals(treeResumeOf(marker, staged, roots) != null, hasResumableTreeWalk(marker, staged, roots), "$marker $roots")
+            }
+        }
+
+    @Test
     fun `rows of another listing are not mistaken for tree rows`() {
         val foreign = listOf(CloudItem("x", "x", "/x", 0, true, null, null, CURSOR_STAGED_TAG, null))
         assertTrue(foreign.none(::isTreeStaged))
