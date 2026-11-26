@@ -80,7 +80,7 @@ class LogoutCommand : Callable<Int> {
                 0
             } catch (e: LifecycleError) {
                 emitJson(lifecycleErrorJson(e))
-                1
+                e.exitCode
             } catch (e: CredentialProtectionException) {
                 emitJson(
                     lifecycleErrorJson(

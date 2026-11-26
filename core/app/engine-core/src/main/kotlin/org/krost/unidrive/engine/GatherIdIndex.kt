@@ -13,6 +13,10 @@ import org.krost.unidrive.CloudItem
  * rule), a loser leaves its collision record (it is no twin). An earlier tombstone stays: a delete at the old path and
  * the item at the new one are already consistent. Id-less items (Dropbox tombstones) and the namespaces' own folders
  * (one root id per page, under a name that can change between pages) are never collapsed.
+ *
+ * [onWithdrawn] is told of each live occurrence the gather map drops (a retraction, an unplaced tombstone, a tombstone at
+ * the same key). The buffered gather plans after the whole listing, so it needs no word of it; the streaming gather has
+ * already planned the occurrence's page and takes back what that plan started (gkrost/unidrive-cli#845).
  */
 class GatherIdIndex internal constructor(
     private val changes: MutableMap<String, CloudItem>,
@@ -20,17 +24,28 @@ class GatherIdIndex internal constructor(
     private val collisions: MutableMap<String, RemoteGather.CollisionRecord>,
     private val gatherKey: (String) -> String,
     private val admit: (CloudItem) -> CloudItem,
+    private val onWithdrawn: (CloudItem) -> Unit = {},
 ) {
     private val keyById = HashMap<String, String>()
 
     /** Admits [item] (resolved, keyed by its path) as the latest occurrence of its id; returns the key's winner (see admit). */
     fun admitLatest(item: CloudItem): CloudItem {
+        var sameKeyLive: CloudItem? = null
         if (collapses(item.id)) {
             val earlier = keyById.put(item.id, item.path)
-            if (earlier != null && gatherKey(earlier) != gatherKey(item.path)) retract(item.id, earlier)
+            if (earlier != null && gatherKey(earlier) != gatherKey(item.path)) {
+                retract(item.id, earlier)
+            } else if (earlier != null && item.deleted) {
+                sameKeyLive = heldAt(gatherKey(earlier))?.takeIf { it.id == item.id && !it.deleted }
+            }
         }
-        return admit(item)
+        val winner = admit(item)
+        // A tombstone that took the key of the live occurrence ends it as a retraction does.
+        sameKeyLive?.let { if (heldAt(gatherKey(item.path))?.deleted == true) onWithdrawn(it) }
+        return winner
     }
+
+    private fun heldAt(fold: String): CloudItem? = keyToPath[fold]?.let { changes[it] }
 
     /**
      * A tombstone the gather cannot place (its id has no row) still ends the live occurrence of that id: the admitted one,
@@ -60,6 +75,7 @@ class GatherIdIndex internal constructor(
         if (holder != null && holder.id == id) {
             if (holder.deleted) return
             changes.remove(holderKey)
+            onWithdrawn(holder)
             keyToPath.remove(fold)
             collisions.remove(holderKey)?.let { record -> (record.losers + record.tombstones).forEach { admit(it) } }
             return
@@ -75,4 +91,5 @@ fun RemoteGather.idIndex(
     changes: MutableMap<String, CloudItem>,
     keyToPath: MutableMap<String, String>,
     collisions: MutableMap<String, RemoteGather.CollisionRecord>,
-) = GatherIdIndex(changes, keyToPath, collisions, ::gatherKey) { admit(changes, keyToPath, collisions, it) }
+    onWithdrawn: (CloudItem) -> Unit = {},
+) = GatherIdIndex(changes, keyToPath, collisions, ::gatherKey, { admit(changes, keyToPath, collisions, it) }, onWithdrawn)

@@ -28,6 +28,7 @@ internal fun Main.vaultPassphraseResolution(): PassphraseResolution =
         configDir = baseConfigDir,
         helperConfig = rawGeneral().unlock_helper,
         prompt = "Vault passphrase: ",
+        sources = effectivePassphraseSources(),
     )
 
 /**

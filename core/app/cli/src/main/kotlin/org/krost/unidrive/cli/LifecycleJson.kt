@@ -28,6 +28,8 @@ internal class LifecycleError(
     cause: Throwable? = null,
     /** Extra keys of the JSON refusal next to `ok`, `error` and `message` (counts only, never a secret). */
     val details: JsonObject = JsonObject(emptyMap()),
+    /** The process exit code of this refusal where it is not the usual 1 (#845: the human-mode code, kept in `--json`). */
+    val exitCode: Int = 1,
 ) : Exception(message, cause)
 
 /** One compact JSON object on stdout. Anything else on stdout would break a front-end's parser. */

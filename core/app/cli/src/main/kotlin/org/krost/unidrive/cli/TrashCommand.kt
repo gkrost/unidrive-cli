@@ -351,7 +351,7 @@ private fun jsonReply(block: () -> JsonObject): Int =
         0
     } catch (e: LifecycleError) {
         emitJson(lifecycleErrorJson(e))
-        1
+        e.exitCode
     } catch (e: Exception) {
         val refusal = unreachableRefusal(e) ?: LifecycleError("internal_error", "unexpected failure: ${e.javaClass.simpleName}")
         emitJson(lifecycleErrorJson(refusal))

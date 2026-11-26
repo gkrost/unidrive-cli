@@ -1620,13 +1620,13 @@ class RemoteGather(
         return ownSpelling ?: existing.remotePath?.let { r -> staleSpellingCleared(r, item, twinKey) }
     }
 
-    // archive#491: the rows of a collision address their item under its own spelling: a twin under the canonical path as the
-    // provider spells it, the item that holds the name under its spelling when that is not the key's. Null otherwise.
+    // archive#491: a collision's rows, and (gkrost/unidrive-cli#948) every file spelled apart from its NFC key, address their
+    // item under its own spelling: a twin as the provider spells it, any other under its spelling. Null otherwise.
     private fun ownSpellingOf(
         path: String,
         item: CloudItem,
         twinKey: Boolean,
-    ): String? = if (twinKey || isCollided(path)) cloudPathOf(item).takeIf { it != item.path } else null
+    ): String? = if (twinKey || isCollided(path) || !item.isFolder) cloudPathOf(item).takeIf { it != item.path } else null
 
     // archive#491: a row's remote path that is the provider's spelling of a name it no longer spells that way (the item was
     // renamed to the NFC form in the cloud) goes: a twin's back to the canonical path, any other row's to its path.
