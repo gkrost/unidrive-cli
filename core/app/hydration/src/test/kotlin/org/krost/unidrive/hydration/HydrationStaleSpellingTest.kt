@@ -115,14 +115,13 @@ class HydrationStaleSpellingTest {
         val mount: MountEngine
         val hydration: HydrationImpl
         val store = StateDbNameSpellingStore(db)
-        val handler: HydrationIpcHandler
+        val handler: HydrationIpcHandler by lazy { HydrationIpcHandler(hydration, spellingsStore = store) } // after the record is made
 
         init {
             db.initialize()
             engine = SyncEngine(provider = provider, db = db, syncRoot = TestScratch.directory("unidrive-stale-sync"), cacheRoot = TestScratch.directory("unidrive-stale-cache"))
             mount = MountEngine.over(engine)
             hydration = HydrationImpl(syncEngine = engine, stateDb = db)
-            handler = HydrationIpcHandler(hydration, spellingsStore = store)
             provider.folders += listOf("/hazards", "/hazards/nfc-nfd-twins")
         }
     }
@@ -190,7 +189,7 @@ class HydrationStaleSpellingTest {
         val now = Instant.now()
         fun row(pending: Boolean) =
             SyncEntry(
-                path = nfc, remotePath = nfd, remoteId = if (pending) null else nfd, remoteHash = "h", remoteSize = 5, remoteModified = now,
+                path = nfc, remotePath = nfd, remoteId = nfd, remoteHash = "h", remoteSize = 5, remoteModified = now,
                 localMtime = now.toEpochMilli(), localSize = 5, isFolder = false, isPinned = false, isHydrated = true, lastSynced = now,
                 editBase = if (pending) "base" else null,
             )
