@@ -59,8 +59,6 @@ class GraphApiService(
     private val baseUrl: String = "${OneDriveConfig.GRAPH_BASE_URL}/${OneDriveConfig.GRAPH_VERSION}",
     // Tests hand in a cache on their own clock and bounds; production uses the defaults.
     private val downloadUrls: DownloadUrlCache = DownloadUrlCache(System::currentTimeMillis),
-    // How long a download waits for the read-ahead batch that claimed its id before it reads the item itself.
-    private val claimWaitMs: Long = CLAIM_WAIT_MS,
     // [rejectedToken] names the token the refused request carried on a forced refresh (#215), so the
     // token manager can take a stored token that already differs from it as fresh instead of rotating again.
     private val tokenProvider: suspend (forceRefresh: Boolean, rejectedToken: String?) -> String,
@@ -177,7 +175,7 @@ class GraphApiService(
     private val urlHits = java.util.concurrent.atomic.AtomicLong()
     private val urlMisses = java.util.concurrent.atomic.AtomicLong()
     private val urlBatches = java.util.concurrent.atomic.AtomicLong()
-    private val urlWaitGaveUp = java.util.concurrent.atomic.AtomicLong()
+    private val urlClaimedDirect = java.util.concurrent.atomic.AtomicLong()
 
     // The read-ahead claims a batch is flying for, by id: a download whose id is claimed takes the batch's answer instead of
     // reading Graph again (the claim took the id out of the pending set, so a plain miss could not see the fetch coming).
@@ -197,30 +195,14 @@ class GraphApiService(
         // later downloads top it up when enough of it is used for a full batch.
         if (parent != null && folderDemand(parent)) startPrefetch(parent, id)
         if (held == null) downloadUrls.markRead(id)
-        // Set when the wait ran out: the revision the batch's claim was retired at, which the direct read publishes against.
-        var supersededAt: Long? = null
-        if (held == null) inFlightBatch[id]?.let { claimed ->
-            // The batch is already reading this id: take its answer, but not for longer than a single read would take
-            // (#417: one batch answer was held up for 15 s inside the HTTP client while every worker waited on it). Null
-            // (it failed, was throttled, or the wait ran out) reads Graph below; that read supersedes the batch's answer.
-            val waitStart = System.nanoTime()
-            val answer = kotlinx.coroutines.withTimeoutOrNull(claimWaitMs) { claimed.await() }
-            val waitedMs = (System.nanoTime() - waitStart) / 1_000_000
-            if (answer != null) {
-                log.debug("download URL cache: a download took its claimed batch's answer after {} ms", waitedMs)
-                return DownloadItem(answer.item, answer)
-            }
-            urlWaitGaveUp.incrementAndGet()
-            // Retire the batch's claim BEFORE the direct read starts: the stamp moves on, so the batch's late answer for this id
-            // is stale and cannot advance it under the read, which publishes against the stamp taken here (a delta or listing
-            // observation after this point still makes it stale, as it should).
-            supersededAt = downloadUrls.supersede(id)
-            log.debug("download URL cache: a download stopped waiting for its claimed batch after {} ms and reads Graph itself", waitedMs)
-        }
         if (held != null) return DownloadItem(held.item, held)
+        // #946: a batch already reading this id is not waited for (it answered 3-5x slower than a direct read, and the wait
+        // often ended in a direct read anyway). Its claim is retired BEFORE the direct read: the stamp moves on, so the
+        // batch's late answer for this id is stale, and the read publishes against the stamp taken here.
+        val superseded = if (inFlightBatch.containsKey(id)) downloadUrls.supersede(id).also { urlClaimedDirect.incrementAndGet() } else null
         // The stamp was captured before the read: an observation that lands while it flies makes this one stale. The entry
         // rides back as `held`, so the download holds it out while it runs and puts it back when it succeeds.
-        val expected = supersededAt ?: downloadUrls.revision(id)
+        val expected = superseded ?: downloadUrls.revision(id)
         val fresh = fetchItem(id)
         val published = downloadUrls.put(listOf(fresh), mapOf(id to expected))
         return DownloadItem(fresh, published[id])
@@ -278,8 +260,8 @@ class GraphApiService(
                 published.forEach { (id, entry) -> answers.getValue(id).complete(entry) }
                 val n = urlBatches.incrementAndGet()
                 log.debug(
-                    "download URL cache: hits={} misses={} batches={} gaveUp={} (last batch {} items, {} ms from launch to answer)",
-                    urlHits.get(), urlMisses.get(), n, urlWaitGaveUp.get(), claims.size, tookMs,
+                    "download URL cache: hits={} misses={} batches={} claimedRead={} (last batch {} items, {} ms from launch to answer)",
+                    urlHits.get(), urlMisses.get(), n, urlClaimedDirect.get(), claims.size, tookMs,
                 )
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -1803,7 +1785,6 @@ class GraphApiService(
 
         // How long a download waits for the batch that claimed its id before it reads the item itself: about the p90 of a
         // single GET /items/{id} (260 ms median, 400 to 700 ms p90 measured), far under a batch of 20 (1.7 to 2.4 s).
-        internal const val CLAIM_WAIT_MS = 500L
 
         // The waits before the retries of one chunk (archive#1175: a dropped connection is retried as a chunk, not as an attempt).
         private val CHUNK_RETRY_DELAYS_MS = listOf(2_000L, 4_000L, 8_000L)
