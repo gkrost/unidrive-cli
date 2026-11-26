@@ -254,6 +254,21 @@ class InternxtGatherStreamTest {
         }
 
     @Test
+    fun `resuming a cursor listing reads the staging twice at most, once to vouch for the marker and once to resume`() =
+        runTest {
+            val staging = ReadBackStaging(dieAfterPages = 13)
+            runCatching { gather(provider(largeDrive().engine).also { it.gatherChunkRows = chunk }, staging.context()) }
+            staging.dieAfterPages = null
+
+            var passes = 0
+            val base = staging.context()
+            val counted = base.copy(resumedItems = Iterable { passes++; base.resumedItems.iterator() })
+            provider(largeDrive().engine).also { it.gatherChunkRows = chunk }.delta(null, null, counted)
+
+            assertTrue(passes in 1..2, "the stored rows were read $passes times")
+        }
+
+    @Test
     fun `a gather that stops between two chunks is handed over again from the first chunk by the next attempt`() =
         runTest {
             val staging = ReadBackStaging()
