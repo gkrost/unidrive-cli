@@ -246,7 +246,7 @@ private fun Main.profileNeedsVaultedXtraPassphrase(profile: ProfileInfo): Boolea
     return credentials.isNullOrBlank() || !Files.isRegularFile(Path.of(credentials).resolve("unidrive-xtra-pass"))
 }
 
-private fun org.krost.unidrive.sync.RawProvider?.hasSealedSecretField(): Boolean =
+internal fun org.krost.unidrive.sync.RawProvider?.hasSealedSecretField(): Boolean =
     this != null &&
         listOf(access_key_id, secret_access_key, password, client_id, client_secret)
             .any { it?.startsWith(org.krost.unidrive.auth.KeyedCredentialProtector.PREFIX) == true }
