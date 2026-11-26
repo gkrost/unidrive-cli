@@ -196,6 +196,31 @@ class VaultXtraJsonTest {
         assertError("invalid_request")
     }
 
+    // Human-mode order (what a person would see): no vault, then the key files, then the vault passphrase at the write.
+
+    @Test
+    fun `vault xtra-set --json without a vault and without stdin flags answers vault_absent like the human mode`() {
+        assertEquals(1, run("vault", "xtra-set", "--json"))
+        assertError("vault_absent")
+    }
+
+    @Test
+    fun `vault xtra-clear --json without a vault and without stdin flags answers vault_absent like the human mode`() {
+        assertEquals(1, run("vault", "xtra-clear", "--json"))
+        assertError("vault_absent")
+    }
+
+    @Test
+    fun `vault xtra-set --json with a wrong vault passphrase and a mismatching X-tra passphrase answers xtra_passphrase_mismatch like the human mode`() {
+        XtraKeyManager(dir.resolve("xtra.key")).generate("right-xtra-pass".toCharArray())
+        initVault()
+        assertEquals(
+            1,
+            run("vault", "xtra-set", "--json", "--passphrase-stdin", "--xtra-passphrase-stdin", stdin = "not-the-vault-pass\nwrong-xtra-pass\n"),
+        )
+        assertError("xtra_passphrase_mismatch")
+    }
+
     @Test
     fun `vault forget --json is refused as an unknown option and changes nothing`() {
         val data =

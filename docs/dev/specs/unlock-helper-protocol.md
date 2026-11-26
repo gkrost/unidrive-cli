@@ -147,25 +147,38 @@ again. A one-shot CLI process (including `xtra import-key` and `import-age`) fol
 reads the vault first when the vault's passphrase is available without a prompt (environment, systemd
 credential, unlock helper), and otherwise skips the vault step.
 
-**`--json` (gkrost/unidrive-cli#973).** `vault xtra-set --passphrase-stdin --xtra-passphrase-stdin --json` and
-`vault xtra-clear --passphrase-stdin --json` print exactly one JSON object on stdout, so a client matches a token
-instead of the English stderr. Under `--json` nothing is ever prompted: the secrets come only from standard input
-(the vault passphrase on the first line, the X-tra passphrase on the next), and a missing stdin flag or an empty
-line is `invalid_request` (nothing is read, nothing is written). Success: `xtra-set` answers
-`{"ok":true,"key_files_not_under_passphrase":[<key file names>]}` (the list is empty unless an X-tra key file exists
-that the passphrase does not open, as the human mode's `Note:` lines), `xtra-clear` answers
-`{"ok":true,"removed":<bool>}` (`removed` says whether the vault held the entry). Refusal:
-`{"ok":false,"error":"<token>","message":"<English text, not for matching>"}`, exit code 1 (the human mode's exit
-code for the same condition; success is 0). Tokens:
+**`--json` (gkrost/unidrive-cli#973).** `vault init`, `vault encrypt`, `vault change-passphrase`, `vault xtra-set` and
+`vault xtra-clear` take `--json` (the other `vault` subcommands do not, except `internxt-password-set|clear`). Each
+prints exactly one JSON object on stdout, so a client matches a token instead of the English stderr. Under `--json`
+nothing is ever prompted: the secrets come only from standard input, one line each, so the command needs its stdin
+flags (below) and a missing flag or an empty line is `invalid_request` (nothing further is read or written).
+Success is `{"ok":true,...}` with the extra members listed below; a refusal is
+`{"ok":false,"error":"<token>","message":"<English text, not for matching>"}`. Exit code: 0 on success, 1 on any
+refusal (the human mode's exit code for the same condition). Any other failure is `internal_error` (the exception
+type only), as in the other `--json` lifecycle commands.
+
+Checks run in the human mode's order, so a script sees the error a person would: the vault's existence first
+(`vault_exists` for `init`, `vault_absent` for the others), then the stdin lines, then the command's own checks, and
+the vault passphrase where the human mode first uses it (`xtra-set` proves the X-tra passphrase against the key files
+before the vault passphrase is tried at the write, so `xtra_passphrase_mismatch` wins over `vault_bad_passphrase`;
+`encrypt` reads the vault only when `config.toml` exists, so without one it succeeds whatever the passphrase).
+
+| Command | stdin flags (lines, in order) | Success members | Tokens, in check order |
+| --- | --- | --- | --- |
+| `vault init` | `--passphrase-stdin` (new passphrase) | none | `vault_exists`, `invalid_request`, `passphrase_too_short` |
+| `vault encrypt` | `--passphrase-stdin` (vault passphrase) | `profiles`: number of profiles whose secrets moved (0: none, or no `config.toml`) | `vault_absent`, `invalid_request`, `vault_bad_passphrase` |
+| `vault change-passphrase` | `--passphrase-stdin` (current), `--new-passphrase-stdin` (new) | none | `vault_absent`, `invalid_request`, `vault_bad_passphrase`, `passphrase_too_short` |
+| `vault xtra-set` | `--passphrase-stdin` (vault), `--xtra-passphrase-stdin` (X-tra) | `key_files_not_under_passphrase`: key file names the passphrase does not open | `vault_absent`, `invalid_request`, `xtra_passphrase_mismatch`, `vault_bad_passphrase` |
+| `vault xtra-clear` | `--passphrase-stdin` (vault) | `removed`: whether the vault held the entry | `vault_absent`, `invalid_request`, `vault_bad_passphrase` |
 
 | `error` | Meaning |
 | --- | --- |
-| `invalid_request` | `--json` without the stdin flag(s) it needs (`xtra-set`: both; `xtra-clear`: `--passphrase-stdin`), or standard input held no line for one of them |
+| `invalid_request` | a needed stdin flag is missing, or standard input held no line for one of them |
 | `vault_absent` | no `vault.enc` in the config directory |
-| `vault_bad_passphrase` | the vault passphrase does not open `vault.enc`; nothing was written |
-| `xtra_passphrase_mismatch` | (`xtra-set` only) `xtra.key`, `xtra-age.key` or `xtra-tink.key` exists and the X-tra passphrase opens none of them; nothing was stored |
-
-Any other failure is `internal_error` (the exception type only), as in the other `--json` lifecycle commands.
+| `vault_exists` | (`init`) `vault.enc` already exists; nothing was written |
+| `vault_bad_passphrase` | the vault passphrase does not open `vault.enc`; nothing was written (same token as the IPC verbs and `internxt-password-*`) |
+| `passphrase_too_short` | (`init`, `change-passphrase`) the new passphrase is under 8 characters; nothing was written |
+| `xtra_passphrase_mismatch` | (`xtra-set`) `xtra.key`, `xtra-age.key` or `xtra-tink.key` exists and the X-tra passphrase opens none of them; nothing was stored |
 
 **Locked start and the marker.** Whether the vault holds `.xtra` is readable only after an unlock, but a
 locked daemon must decide at its start whether an `xtra_encryption` profile (no environment or credential

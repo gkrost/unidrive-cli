@@ -10,9 +10,9 @@ import java.nio.file.Path
 import javax.crypto.AEADBadTagException
 
 /*
- * gkrost/unidrive-cli#973: `vault xtra-set --json` / `vault xtra-clear --json`. One JSON object on stdout, the
+ * gkrost/unidrive-cli#973: `vault xtra-set --json` / `vault xtra-clear --json`, and `vault init|encrypt|change-passphrase --json`. One JSON object on stdout, the
  * refusal carrying a stable `error` token (invalid_request, vault_absent, vault_bad_passphrase,
- * xtra_passphrase_mismatch), exit 0 or 1 as in human mode. Under --json nothing is ever prompted: the secrets come
+ * xtra_passphrase_mismatch, vault_exists, passphrase_too_short), exit 0 or 1 as in human mode. Under --json nothing is ever prompted: the secrets come
  * only from the stdin flags, one line each (vault passphrase first), and a missing flag or line is invalid_request.
  */
 
@@ -50,14 +50,13 @@ internal fun xtraSetJson(
     xtraPassphraseStdin: Boolean,
 ): Int =
     reply(true) {
+        val vault = openVault(configDir)
         if (!passphraseStdin || !xtraPassphraseStdin) {
             throw LifecycleError("invalid_request", "--json needs --passphrase-stdin and --xtra-passphrase-stdin; it never prompts")
         }
-        val vault = openVault(configDir)
         val vaultPass = requireStdinSecret("--passphrase-stdin")
         val xtraPass = requireStdinSecret("--xtra-passphrase-stdin")
         try {
-            badPassphraseAsRefusal { vault.read(vaultPass) }
             val present = XtraAlgorithm.entries.filter { Files.exists(configDir.resolve(it.keyFileName)) }
             val opening = present.filter { xtraKeyFileOpens(it, configDir, xtraPass) }
             if (present.isNotEmpty() && opening.isEmpty()) {
@@ -88,8 +87,8 @@ internal fun xtraClearJson(
     passphraseStdin: Boolean,
 ): Int =
     reply(true) {
-        if (!passphraseStdin) throw LifecycleError("invalid_request", "--json needs --passphrase-stdin; it never prompts")
         val vault = openVault(configDir)
+        if (!passphraseStdin) throw LifecycleError("invalid_request", "--json needs --passphrase-stdin; it never prompts")
         val passphrase = requireStdinSecret("--passphrase-stdin")
         try {
             val removed =
@@ -104,5 +103,79 @@ internal fun xtraClearJson(
             }
         } finally {
             passphrase.fill('\u0000')
+        }
+    }
+
+private fun requireFlags(
+    vararg given: Boolean,
+    message: String,
+) {
+    if (!given.all { it }) throw LifecycleError("invalid_request", message)
+}
+
+private fun requireLongEnough(passphrase: CharArray) {
+    if (passphrase.size < Vault.MIN_PASSPHRASE_LENGTH) {
+        throw LifecycleError("passphrase_too_short", "the passphrase must be at least ${Vault.MIN_PASSPHRASE_LENGTH} characters")
+    }
+}
+
+internal fun vaultInitJson(
+    configDir: Path,
+    passphraseStdin: Boolean,
+): Int =
+    reply(true) {
+        val vault = Vault(configDir.resolve("vault.enc"))
+        if (vault.exists()) throw LifecycleError("vault_exists", "a vault already exists; use 'vault change-passphrase' to update it")
+        requireFlags(passphraseStdin, message = "--json needs --passphrase-stdin; it never prompts")
+        val passphrase = requireStdinSecret("--passphrase-stdin")
+        try {
+            requireLongEnough(passphrase)
+            vault.init(passphrase)
+            buildJsonObject { put("ok", true) }
+        } finally {
+            passphrase.fill('\u0000')
+        }
+    }
+
+/** [moveCredentials] answers the number of profiles moved into the vault, or null without a config.toml. */
+internal fun vaultEncryptJson(
+    configDir: Path,
+    passphraseStdin: Boolean,
+    moveCredentials: (Vault, CharArray) -> Int?,
+): Int =
+    reply(true) {
+        val vault = openVault(configDir)
+        requireFlags(passphraseStdin, message = "--json needs --passphrase-stdin; it never prompts")
+        val passphrase = requireStdinSecret("--passphrase-stdin")
+        try {
+            val moved = badPassphraseAsRefusal { moveCredentials(vault, passphrase) }
+            buildJsonObject {
+                put("ok", true)
+                put("profiles", moved ?: 0)
+            }
+        } finally {
+            passphrase.fill('\u0000')
+        }
+    }
+
+internal fun vaultChangePassphraseJson(
+    configDir: Path,
+    passphraseStdin: Boolean,
+    newPassphraseStdin: Boolean,
+): Int =
+    reply(true) {
+        val vault = openVault(configDir)
+        requireFlags(passphraseStdin, newPassphraseStdin, message = "--json needs --passphrase-stdin and --new-passphrase-stdin; it never prompts")
+        val oldPass = requireStdinSecret("--passphrase-stdin")
+        var newPass: CharArray? = null
+        try {
+            val data = badPassphraseAsRefusal { vault.read(oldPass) }
+            newPass = requireStdinSecret("--new-passphrase-stdin")
+            requireLongEnough(newPass)
+            vault.write(newPass, data)
+            buildJsonObject { put("ok", true) }
+        } finally {
+            oldPass.fill('\u0000')
+            newPass?.fill('\u0000')
         }
     }
