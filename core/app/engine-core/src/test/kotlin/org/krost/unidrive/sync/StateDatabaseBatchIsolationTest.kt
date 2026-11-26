@@ -97,7 +97,7 @@ class StateDatabaseBatchIsolationTest {
     fun `a hydration delete from another thread survives the rollback of the open batch`() {
         // windows#454 item 11: deleteLocalPendingRow was the one write pair without beginWrite(), so a hydration
         // delete joined the scanner's open batch and its rollback resurrected the row (archive#300 class).
-        val row = entry("/hydration.txt").copy(isHydrated = true, remoteId = "local:p-1", localSize = 5)
+        val row = entry("/hydration.txt").copy(isHydrated = true, remoteId = null, localSize = 5)
         db.upsertEntry(row) // committed before the batch: the delete's target exists
 
         db.beginBatch()

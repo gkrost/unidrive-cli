@@ -451,7 +451,7 @@ class StatusCommand : Callable<Int> {
                 println("Sync scope: invalid: ${e.message}")
                 return
             }
-        scopeStatusLine(configured, persistedScope(configDir))?.let { println(it) }
+        scopeStatusLine(configured, try { persistedScope(configDir) } catch (_: IllegalStateException) { emptyList() })?.let { println(it) } // an older schema has no scope to show
         if (configured.isNotEmpty()) {
             val excludes = scopeExcludes(profile, raw)
             val outside =

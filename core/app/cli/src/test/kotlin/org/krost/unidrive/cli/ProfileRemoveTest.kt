@@ -129,7 +129,7 @@ class ProfileRemoveTest {
                 db.upsertEntry(
                     SyncEntry(
                         path = path,
-                        remoteId = "local:$path",
+                        remoteId = null,
                         remoteHash = null,
                         remoteSize = 0,
                         remoteModified = null,

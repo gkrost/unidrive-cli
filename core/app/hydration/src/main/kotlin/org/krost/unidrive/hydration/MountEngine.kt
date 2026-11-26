@@ -1706,7 +1706,7 @@ class MountEngine private constructor(
         size: Long,
     ): CloudItem? {
         val remoteId = entry.remoteId ?: return null
-        if (entry.isFolder || remoteId.startsWith("local:")) return null
+        if (entry.isFolder) return null
         if (size != entry.remoteSize) return null
         if (!cacheMatchesRecordedVersion(entry, cachePath, size)) return null
         val current =
@@ -2060,7 +2060,7 @@ class MountEngine private constructor(
         val oldRemote = remotePathOf(oldPath, oldEntry)
         val newRemote = remotePathOf(newPath, entry = null)
         // archive#402/#403: moved by its cloud id where the row has one (see deleteRemote).
-        val remoteId = oldEntry?.remoteId?.takeUnless { it.startsWith("local:") }
+        val remoteId = oldEntry?.remoteId
         val heldBefore = MoveRecord.versionHeldBefore(provider, oldEntry, oldRemote, log)
         val moved = if (remoteId != null) provider.moveById(remoteId, oldRemote, newRemote) else provider.move(oldRemote, newRemote)
         followRemoteMove(oldPath, newPath, moved, oldEntry, heldBefore)
@@ -2107,7 +2107,7 @@ class MountEngine private constructor(
     ): Boolean {
         val row = db.getEntry(newPath) ?: return false
         val sameItem = row.remoteId == landed.item.id
-        if (row.isFolder || (!sameItem && row.remoteId?.startsWith("local:") == false)) return false
+        if (row.isFolder || (!sameItem && row.remoteId != null)) return false
         val newRemote = remotePathOf(newPath, row)
         val moved =
             if (sameItem) {
@@ -2160,7 +2160,7 @@ class MountEngine private constructor(
         newPath: String,
     ): Boolean {
         val row = db.getEntry(newPath) ?: return false
-        val id = row.remoteId?.takeUnless { it.startsWith("local:") } ?: return false
+        val id = row.remoteId ?: return false
         if (row.isFolder || row.remotePath != null) return false
         val oldRemote = remotePathOf(oldPath, entry = null)
         val newRemote = remotePathOf(newPath, entry = null)
@@ -2188,7 +2188,7 @@ class MountEngine private constructor(
     ): Boolean {
         if (landedId == null) return false
         val keep = db.getEntry(keepPath) ?: return false
-        val keepId = keep.remoteId?.takeUnless { it.startsWith("local:") } ?: return false
+        val keepId = keep.remoteId ?: return false
         if (keep.isFolder) return false
         val stale = remoteItemOrNull(stalePath) ?: return false
         if (stale.isFolder || stale.id != landedId || stale.id == keepId) return false

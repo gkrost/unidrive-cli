@@ -87,4 +87,38 @@ class StatusReadsWhatItCanTest {
         assertTrue(text.contains("Download: 1 file(s)"), text)
         assertEquals(before, sha(), "state.db untouched")
     }
+
+    @Test
+    fun `status of one profile against a state db of an older schema does not crash`() {
+        DriverManager.getConnection("jdbc:sqlite:$stateDb").use { c ->
+            c.createStatement().use { it.executeUpdate("UPDATE sync_state SET value='3' WHERE key='schema_version'") }
+        }
+        val before = sha()
+        val exit = CommandLine(Main()).execute("-c", configDir.toString(), "-p", "localtest", "status")
+        assertEquals(0, exit, out.toString(Charsets.UTF_8))
+        assertEquals(before, sha(), "state.db untouched")
+    }
+
+    @Test
+    fun `status audit against a refused older schema prints the refusal and no gap numbers`() {
+        DriverManager.getConnection("jdbc:sqlite:$stateDb").use { c ->
+            c.createStatement().use { it.executeUpdate("UPDATE sync_state SET value='3' WHERE key='schema_version'") }
+        }
+        val originalErr = System.err
+        val err = ByteArrayOutputStream()
+        System.setErr(PrintStream(err, true, Charsets.UTF_8))
+        val before = sha()
+        val exit =
+            try {
+                CommandLine(Main()).apply { executionExceptionHandler = cliExecutionExceptionHandler }
+                    .execute("-c", configDir.toString(), "-p", "localtest", "status", "--audit")
+            } finally {
+                System.setErr(originalErr)
+            }
+        val text = out.toString(Charsets.UTF_8)
+        assertTrue(exit != 0, "a refused state.db is not an answer: $text")
+        assertTrue(err.toString(Charsets.UTF_8).contains("older unidrive"), "the refusal is printed")
+        assertFalse(text.contains("gap", ignoreCase = true) || text.contains("tracked", ignoreCase = true), "no audit numbers: $text")
+        assertEquals(before, sha(), "state.db untouched")
+    }
 }

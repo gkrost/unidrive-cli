@@ -77,7 +77,7 @@ class PendingCommandTest {
 
     private fun seedRow(
         path: String,
-        remoteId: String? = "local:${path.hashCode()}",
+        remoteId: String? = null,
         localSize: Long = 10,
     ) {
         val db = StateDatabase(profileDir.resolve("state.db"))
@@ -117,6 +117,15 @@ class PendingCommandTest {
         out.reset()
         err.reset()
         return CommandLine(Main()).execute("-c", dir.toString(), "pending", *args)
+    }
+
+    @Test
+    fun `the json form never publishes the key a pending row is stored under as its remote id`() {
+        seedRow("/stuck.txt", localSize = 42)
+        assertEquals(0, run("list", "--json"))
+        val row = Json.parseToJsonElement(out.toString(Charsets.UTF_8)).jsonObject.getValue("rows").toString()
+        assertTrue("\"remote_id\":null" in row, row)
+        assertFalse("local:" in row, row)
     }
 
     @Test
