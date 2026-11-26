@@ -435,7 +435,8 @@ class HydrationImpl(
         // gkrost/unidrive-cli#391: a cache copy the enumeration's reap removes (a delete seen in the cloud, a gone folder) leaves the
         // running total at once; before, it stayed in `cache.bytes` until the next walk, up to EVICTION_RECONCILE_INTERVAL_MS later.
         mount.onReapedCacheCopy { path -> forgetCacheFile(path) }
-        mount.onEnumeratedPaths(ParentBackOffers(this)::onListed) // gkrost/unidrive-cli#951
+        mount.onEnumeratedPaths { parentBackOffers.onEnumerated(it) } // gkrost/unidrive-cli#951: evidence that a gone folder exists again
+        mount.onFolderListed { parentBackOffers.onFolderListed(it) }
         pause.onResume { recoveryUploadScope.launch { offerFailedPendingUploadsAgain() } } // test drive 2 E3
     }
 
@@ -1853,6 +1854,7 @@ class HydrationImpl(
 
     // gkrost/unidrive-cli#848: the round timers and the `history.retry` admission (HistoryRetry.kt beside this file, which the
     internal val historyRetries = HistoryRetryRounds(this) // ratchet keeps from growing), reading this class's state at call time.
+    internal val parentBackOffers = ParentBackOffers(this)
 
     /**
      * gkrost/unidrive-cli#70: an upload that used all [maxUploadAttempts] is offered again after the next delay of
@@ -4143,6 +4145,7 @@ class HydrationImpl(
         path: String,
         landedId: String?,
     ) {
+        parentBackOffers.onUploaded(path) // gkrost/unidrive-cli#951: the upload landed, so the folders above it exist
         val stale = caseRenamedFrom.remove(PathNormalizer.nfc(path)) ?: return
         try {
             if (mount.trashStaleSpelling(stale, path, landedId)) {

@@ -49,6 +49,7 @@ class HydrationParentGoneFinalTest {
     private suspend fun env(): Env {
         val provider = MemProvider()
         provider.seedFolder("/dir")
+        provider.seedFolder("/other")
         val env =
             Env(
                 provider,
@@ -212,6 +213,86 @@ class HydrationParentGoneFinalTest {
         advanceTimeBy(24 * 60 * 60 * 1000L)
         advanceUntilIdle()
         assertEquals(2, env.provider.uploadAttempts.get(), "no second offer")
+        env.stop()
+    }
+
+    // A file written below [folder] whose upload runs to its end.
+    private suspend fun HydrationImpl.writeFile(
+        folder: String,
+        name: String,
+    ) {
+        val created = assertIs<CreateResult.Ok>(create("conn", "h-$name", "$folder/$name"))
+        Files.writeString(created.cachePath, name)
+        openForWrite("conn", "h-$name", "$folder/$name", created.cachePath)
+    }
+
+    // The folder was deleted and made again between two full listings: the second shows the same row, so it changes nothing.
+    private suspend fun Env.recreatedUnseen(scope: CoroutineScope) {
+        folderBack()
+        listing(reset = true)
+        if (scope is TestScope) scope.advanceUntilIdle()
+        assertNull(provider.remote["/dir/new.txt"], "precondition: a listing of an unchanged row is no evidence")
+        assertEquals(1, provider.uploadAttempts.get(), "precondition: only the first refusal reached the provider")
+    }
+
+    @Test
+    fun `a sibling upload into the recreated folder offers its refused rows once and they upload`() = runTest {
+        val env = env()
+        val hydration = env.refusedParentGone(this, retryDelays = emptyList())
+        env.recreatedUnseen(this)
+
+        hydration.writeFile("/dir", "sibling.txt")
+        advanceUntilIdle()
+
+        assertEquals("sibling.txt", env.provider.remote["/dir/sibling.txt"]?.let { String(it) })
+        assertEquals("only copy", env.provider.remote["/dir/new.txt"]?.let { String(it) })
+        assertEquals(3, env.provider.uploadAttempts.get(), "the refusal, the sibling and one offer")
+        env.stop()
+    }
+
+    @Test
+    fun `a listing of the refused folder itself offers its refused rows once and they upload`() = runTest {
+        val env = env()
+        val hydration = env.refusedParentGone(this, retryDelays = emptyList())
+        env.recreatedUnseen(this)
+
+        org.krost.unidrive.engine.CursorState(env.db).setDeltaCursor("") // the folder is browsed while the first scan has not completed
+        env.mount.listFolderLive("/dir") // the provider lists the folder (it holds nothing else, so the answer is null)
+        advanceUntilIdle()
+
+        assertEquals("only copy", env.provider.remote["/dir/new.txt"]?.let { String(it) })
+        assertEquals(2, env.provider.uploadAttempts.get(), "the refusal and one offer")
+        env.stop()
+    }
+
+    @Test
+    fun `a successful upload elsewhere offers nothing`() = runTest {
+        val env = env()
+        val hydration = env.refusedParentGone(this, retryDelays = emptyList())
+        env.recreatedUnseen(this)
+
+        hydration.writeFile("/other", "elsewhere.txt")
+        advanceUntilIdle()
+
+        assertEquals("elsewhere.txt", env.provider.remote["/other/elsewhere.txt"]?.let { String(it) })
+        assertNull(env.provider.remote["/dir/new.txt"], "the refused row was not offered")
+        assertEquals(2, env.provider.uploadAttempts.get(), "the refusal and the upload elsewhere")
+        env.stop()
+    }
+
+    @Test
+    fun `with no evidence nothing is offered after 24 hours`() = runTest {
+        val env = env()
+        val hydration = env.refusedParentGone(this, retryDelays = listOf(60_000L))
+        env.recreatedUnseen(this)
+
+        advanceTimeBy(24 * 60 * 60 * 1000L)
+        env.mount.pause.pause("test", auto = false)
+        env.mount.pause.resume()
+        advanceUntilIdle()
+
+        assertNull(env.provider.remote["/dir/new.txt"])
+        assertEquals(1, env.provider.uploadAttempts.get(), "nothing reached the provider after the refusal")
         env.stop()
     }
 }

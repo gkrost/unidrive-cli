@@ -298,7 +298,7 @@ class MountEngine private constructor(
                 override fun isNameBlocked(path: String) = this@MountEngine.isNameBlocked(path)
 
                 override suspend fun listChildren(path: String) =
-                    watchingCredentials { provider.listChildren(remotePathOf(path)) }.also { recordProviderContact() }
+                    listFromProvider(remotePathOf(path))
 
                 override suspend fun createFolder(path: String) =
                     watchingCredentials { createRemoteFolder(path) }.also { recordProviderContact() }
@@ -335,7 +335,7 @@ class MountEngine private constructor(
             gather = gather,
             guard = guard,
             remotePathOf = { path, row -> remotePathOf(path, row) },
-            listRemote = { remotePath -> watchingCredentials { provider.listChildren(remotePath) }.also { recordProviderContact() } },
+            listRemote = { remotePath -> listFromProvider(remotePath) },
             log = log,
         )
 
@@ -365,8 +365,7 @@ class MountEngine private constructor(
                         row: SyncEntry?,
                     ) = this@MountEngine.remotePathOf(path, row)
 
-                    override suspend fun listRemote(remotePath: String) =
-                        watchingCredentials { provider.listChildren(remotePath) }.also { recordProviderContact() }
+                    override suspend fun listRemote(remotePath: String) = listFromProvider(remotePath)
 
                     override fun providerReachable() = wiring.enumeration.tracker.snapshot().state != EnumerationStatus.State.FAILED
 
@@ -385,6 +384,21 @@ class MountEngine private constructor(
     fun onReapedCacheCopy(listener: (path: String) -> Unit) {
         wiring.enumeration.reapGuards.onCacheCopyDropped = listener
     }
+
+    // gkrost/unidrive-cli#951: told the remote path of every folder the provider listed successfully (set by the hydration layer).
+    @Volatile
+    private var folderListed: (remotePath: String) -> Unit = {}
+
+    fun onFolderListed(listener: (remotePath: String) -> Unit) {
+        folderListed = listener
+    }
+
+    // The provider's listing of a cloud folder, with the credential watch; a listing that succeeded shows the folder exists.
+    private suspend fun listFromProvider(remotePath: String): List<CloudItem> =
+        watchingCredentials { provider.listChildren(remotePath) }.also {
+            recordProviderContact()
+            folderListed(remotePath)
+        }
 
     /** gkrost/unidrive-cli#951: [listener] is told the paths each enumeration changed in state.db ([RemoteEnumeration.ReapGuards.onPathsChanged]). */
     fun onEnumeratedPaths(listener: (paths: Set<String>) -> Unit) {
