@@ -45,8 +45,8 @@ class StateDatabaseConnectorTest {
         } finally {
             ro.close()
         }
-        // The writer, the reader the writable database read on, and the read-only database's one connection.
-        assertEquals(listOf("open:state.db", "openReadOnly:state.db", "openReadOnly:state.db"), connector.opened)
+        // The writer, the reader the writable database read on, and the read-only database's one connection, and the in-memory reference its schema is compared with (#845).
+        assertEquals(listOf("open:state.db", "openReadOnly:state.db", "openReadOnly:state.db", "open:memory"), connector.opened)
     }
 
     @Test
