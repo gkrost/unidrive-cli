@@ -214,6 +214,27 @@ class ResumableStagingTest {
     }
 
     @Test
+    fun `a tracking download staging name is a one-attempt name`() {
+        assertFalse(ResumableStaging.isPersistent(dir.resolve(".f.bin.unidrive-download-0b0c7a1e-1c1c-4c1c-8c1c-0b0c7a1e1c1c")))
+        assertTrue(ResumableStaging.isPersistent(dir.resolve("f.bin")))
+    }
+
+    @Test
+    fun `a failed mid-stream checkpoint does not abort the transfer`() {
+        val destination = dir.resolve("g.bin")
+        val staging = assertNotNull(ResumableStaging.open(destination, identity.copy(size = 20L * 1024 * 1024)))
+        // A non-empty folder where the record goes: moving the record over it fails, as a scanner's lock does on Windows.
+        val sidecar = dir.resolve("g.bin" + ResumableStaging.SIDECAR_SUFFIX)
+        Files.createDirectories(sidecar)
+        Files.write(sidecar.resolve("keep"), ByteArray(1))
+
+        staging.write(ByteArray(5 * 1024 * 1024), 0, 5 * 1024 * 1024)
+
+        assertEquals(5L * 1024 * 1024, staging.offset)
+        staging.discard()
+    }
+
+    @Test
     fun `a one-attempt staging name never keeps its partial`() {
         val staging = dir.resolve("f.bin.hydrating-0b0c7a1e-1c1c-4c1c-8c1c-0b0c7a1e1c1c")
         assertFalse(ResumableStaging.isPersistent(staging))

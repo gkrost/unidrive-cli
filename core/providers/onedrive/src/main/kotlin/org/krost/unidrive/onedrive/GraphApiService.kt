@@ -595,6 +595,11 @@ class GraphApiService(
                             val waitMs = pickBackoffMsWithBody(response, body, throttleAttempts, totalThrottleWaitMs)
                             return@execute DownloadOutcome.Throttle(waitMs, response.status.value)
                         }
+                        if (resumeFrom > 0L && response.status == HttpStatusCode.RequestedRangeNotSatisfiable) {
+                            // The kept prefix cannot be continued (the object changed or the host refuses Range): drop it, ask for the whole object.
+                            org.krost.unidrive.http.ResumableStaging.discardFor(destPath)
+                            return@execute DownloadOutcome.RangeRefused.also { rangeRefused = true }
+                        }
                         if (!response.status.isSuccess()) {
                             throw GraphApiException(
                                 "Download failed: ${response.status} - ${readBoundedErrorBody(response)}",

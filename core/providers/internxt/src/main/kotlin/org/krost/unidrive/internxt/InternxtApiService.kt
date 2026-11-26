@@ -1450,6 +1450,11 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                         timeout { requestTimeoutMillis = downloadRequestTimeoutMs(expectedSize) }
                         if (from > 0L) header(HttpHeaders.Range, "bytes=$from-")
                     }.execute { response ->
+                        if (from > 0L && response.status == HttpStatusCode.RequestedRangeNotSatisfiable) {
+                            // The kept prefix cannot be continued: drop it and ask for the whole shard.
+                            org.krost.unidrive.http.ResumableStaging.discardFor(destination)
+                            return@execute null
+                        }
                         if (!response.status.isSuccess()) {
                             // #262: a throttling storage host's Retry-After reaches the shard-commit retry and the bridge budget.
                             // The presigned URL's error body is not quoted (it can echo the signed request).

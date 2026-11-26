@@ -60,7 +60,7 @@ enum class RangeAnswer {
  * same destination (in this process or another) holds it, so the caller falls back to a plain staged download.
  *
  * The partial is kept (not deleted) by [release] so a retry finds it; [discard] deletes it. A destination that is a
- * one-attempt staging name (a hydration `.hydrating-<uuid>`) cannot be found by a later call, so [persistent] is false for it
+ * one-attempt staging name (a hydration `.hydrating-<uuid>`, a tracking `.unidrive-download-<uuid>`) cannot be found by a later call, so [persistent] is false for it
  * and [cleanupOnFailure] deletes it when the call that owns it fails.
  */
 class ResumableStaging private constructor(
@@ -146,7 +146,8 @@ class ResumableStaging private constructor(
     ) {
         val bytes = ByteBuffer.wrap(buf, from, length)
         while (bytes.hasRemaining()) offset += channel.write(bytes, offset)
-        if (offset - checkpointed >= CHECKPOINT_BYTES) checkpoint()
+        // A failed checkpoint (a scanner holding the record on Windows) must not abort the transfer: the next boundary or the close records it.
+        if (offset - checkpointed >= CHECKPOINT_BYTES) runCatching { checkpoint() }
     }
 
     /** The partial as a stream, for a caller that transforms the bytes (decrypts) as it writes. Closing it does nothing. */
@@ -254,7 +255,7 @@ class ResumableStaging private constructor(
         private val CONTENT_RANGE = Regex("""bytes (\d+)-(\d+)/(\d+|\*)""")
 
         // A name made for one attempt: a hydration staging file (`.hydrating-<uuid>`) is never asked for again.
-        private val ONE_ATTEMPT_NAME = Regex("""\.hydrating-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$""")
+        private val ONE_ATTEMPT_NAME = Regex("""\.(?:hydrating|unidrive-download)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$""")
 
         private fun namesFor(destination: Path): Pair<Path, Path>? {
             val name = destination.fileName?.toString() ?: return null

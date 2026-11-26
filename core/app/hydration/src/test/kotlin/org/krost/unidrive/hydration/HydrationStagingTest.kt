@@ -41,6 +41,19 @@ class HydrationStagingTest {
     }
 
     @Test
+    fun the_resume_record_beside_an_empty_partial_is_not_taken_for_the_download() {
+        val staged = dir.resolve(HydrationStaging.stagingName("report.pdf"))
+        val name = staged.fileName.toString()
+        dir.resolve("$name.part.unidrive-tmp").writeBytes(ByteArray(0))
+        dir.resolve("$name.resume.unidrive-tmp").writeBytes(ByteArray(150))
+        val download = StagedDownload(staged)
+        assertEquals(0L, download.bytes())
+
+        dir.resolve("$name.part.unidrive-tmp").writeBytes(ByteArray(4096))
+        assertEquals(4096L, download.bytes(), "the first look did not latch onto the record")
+    }
+
+    @Test
     fun another_downloads_staging_file_in_the_same_folder_is_not_counted() {
         val staged = dir.resolve(HydrationStaging.stagingName("report.pdf"))
         val other = dir.resolve(HydrationStaging.stagingName("report.pdf"))
