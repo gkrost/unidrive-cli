@@ -42,7 +42,7 @@ class HydrationIpcHandlerNameClashTest {
 
         val reply = r.call("create", "path" to "/$nfd")
 
-        assertEquals("""{"ok":false,"error":"name_clash"}""", reply.trim())
+        assertNameClash(reply.trim())
     }
 
     @Test
@@ -59,7 +59,7 @@ class HydrationIpcHandlerNameClashTest {
 
         val reply = r.call("open_write", "path" to "/$nfd", "cache_path" to json(cache.toString()))
 
-        assertEquals("""{"ok":false,"error":"name_clash"}""", reply.trim())
+        assertNameClash(reply.trim())
         assertEquals(uploadsBefore, r.env.syncEngine.uploadAttempts(), "nothing was queued for the twin")
     }
 
@@ -68,7 +68,7 @@ class HydrationIpcHandlerNameClashTest {
         val r = rig(this)
         assertTrue(r.call("create", "path" to "/$nfd").contains("\"ok\":true"))
 
-        assertEquals("""{"ok":false,"error":"name_clash"}""", r.call("create", "path" to "/$nfc").trim())
+        assertNameClash(r.call("create", "path" to "/$nfc").trim())
     }
 
     @Test
@@ -78,7 +78,7 @@ class HydrationIpcHandlerNameClashTest {
 
         val reply = r.call("unlink", "path" to "/$nfd")
 
-        assertEquals("""{"ok":false,"error":"name_clash"}""", reply.trim())
+        assertNameClash(reply.trim())
         assertNotNull(r.env.stateDb.remoteSizeOf("/$nfc"), "the composed file is still there")
     }
 
@@ -89,7 +89,7 @@ class HydrationIpcHandlerNameClashTest {
         val dirNfd = "/dire" + String(intArrayOf(0x301), 0, 1)
         assertTrue(r.call("mkdir", "path" to dirNfc).contains("\"ok\":true"))
 
-        assertEquals("""{"ok":false,"error":"name_clash"}""", r.call("create", "path" to "$dirNfd/a.txt").trim())
+        assertNameClash(r.call("create", "path" to "$dirNfd/a.txt").trim())
         assertTrue(r.call("create", "path" to "$dirNfc/a.txt").contains("\"ok\":true"), "the first spelling keeps working")
     }
 
@@ -101,7 +101,7 @@ class HydrationIpcHandlerNameClashTest {
 
         val reply = r.call("rename", "old_path" to "/plain.txt", "new_path" to "/$nfd")
 
-        assertEquals("""{"ok":false,"error":"name_clash"}""", reply.trim())
+        assertNameClash(reply.trim())
         assertNotNull(r.env.stateDb.remoteSizeOf("/plain.txt"), "the source stays where it was")
     }
 
@@ -119,7 +119,7 @@ class HydrationIpcHandlerNameClashTest {
     fun `once the first member is deleted the other spelling may be used`() = runTest {
         val r = rig(this)
         assertTrue(r.call("create", "path" to "/$nfc").contains("\"ok\":true"))
-        assertEquals("""{"ok":false,"error":"name_clash"}""", r.call("create", "path" to "/$nfd").trim())
+        assertNameClash(r.call("create", "path" to "/$nfd").trim())
 
         assertTrue(r.call("unlink", "path" to "/$nfc").contains("\"ok\":true"))
 
@@ -145,7 +145,7 @@ class HydrationIpcHandlerNameClashTest {
         gate.complete(Unit)
 
         assertTrue(first.await().contains("\"ok\":true"))
-        assertEquals("""{"ok":false,"error":"name_clash"}""", second.await().trim())
+        assertNameClash(second.await().trim())
         assertEquals(1, fake.calls.size, "only the first spelling's folder create ran: ${fake.calls}")
     }
 
@@ -160,7 +160,8 @@ class HydrationIpcHandlerNameClashTest {
 
         fake.create = CreateResult.Ok(fake.cache, "h-1")
         assertTrue(handler.handle("conn2", """{"verb":"hydration.create","path":"/$nfd"}""").contains("\"ok\":true"))
-        assertEquals("""{"ok":false,"error":"name_clash"}""", handler.handle("conn1", """{"verb":"hydration.create","path":"/$nfc"}""").trim())
+        // Owner decision 2026-11-26 (#948): the NFC spelling wins over the earlier decomposed one (nothing unsynced in the fake).
+        assertTrue(handler.handle("conn1", """{"verb":"hydration.create","path":"/$nfc"}""").contains("\"ok\":true"))
     }
 
     // #517 review: the rename's structured refusals are their own RenameResult variants, not Failed members —

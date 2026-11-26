@@ -117,6 +117,9 @@ class OneDriveCreateCollisionTest {
                                 respond(driveItemJson("kept-both-id", "AGENTS 1.md"), HttpStatusCode.OK, jsonHeaders())
                             }
                         }
+                        // cli#950: the parent listing that tells a true duplicate from a fold: the exact name is there.
+                        request.method == HttpMethod.Get && request.url.encodedPath.endsWith("/children") ->
+                            respond("""{"value":[{"id":"existing-id","name":"AGENTS.md","size":1,"file":{}}]}""", HttpStatusCode.OK, jsonHeaders())
                         request.method.value == "PATCH" ->
                             respond(driveItemJson("kept-both-id", "AGENTS 1.md"), HttpStatusCode.OK, jsonHeaders())
                         else -> respond("{}", HttpStatusCode.OK, jsonHeaders())
@@ -334,6 +337,9 @@ class OneDriveCreateCollisionTest {
                 }
                 request.method == HttpMethod.Get && request.url.encodedPath.endsWith("root:/report.txt") ->
                     respond(existing, HttpStatusCode.OK, jsonHeaders())
+                // cli#950: the parent listing that tells a true duplicate from a fold: the exact name is there.
+                request.method == HttpMethod.Get && request.url.encodedPath.endsWith("/children") ->
+                    respond("""{"value":[{"id":"existing-id","name":"report.txt","size":1,"file":{}}]}""", HttpStatusCode.OK, jsonHeaders())
                 request.method.value == "PATCH" ->
                     respond(driveItemJson("copy-id", "report 1.txt"), HttpStatusCode.OK, jsonHeaders())
                 else -> respond("{}", HttpStatusCode.OK, jsonHeaders())
