@@ -113,6 +113,10 @@ python3 scripts/golden/unicode-tree/golden.py run --profile <p> --mount ~/Drive 
 python3 scripts/golden/unicode-tree/golden.py verify <dir> --strict-mtime --max-lines 100000
 ```
 
+`run` waits until no row is pending; a row that failed (`error`) is final and does not hold the wait. The summary says `upload : settled`,
+`FAILED n`, or `NOT SETTLED (n pending)`; exit 2 only for rows still pending, exit 1 for failed rows when no `--expected` classifies them.
+Stdout is line-buffered by the script itself. Tests with a fake daemon view: `python3 -I -m unittest discover -s scripts/golden/unicode-tree -p 'test_*.py' -v`.
+
 `run` refuses to overwrite an existing target folder, so a live run needs a fresh `--prefix`. A name the mount refuses
 (`File exists`, the NFC/NFD twins) is reported and the copy goes on.
 

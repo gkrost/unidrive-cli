@@ -499,10 +499,10 @@ def daemon_findings(ipc, prefix, manifest, watch=False, timeout=600, log=print):
     while True:
         got, leaks = tree()
         ents = list(got.values())
-        pending = sum(bool(e.get('pending_upload')) for e in ents)
         errors = sum(bool(e.get('error')) for e in ents)
+        pending = sum(bool(e.get('pending_upload')) and not e.get('error') for e in ents)  # a failed row keeps its pending flag but is final
         norem = sum(1 for e in ents if not e.get('folder') and not e.get('remote_id'))
-        log(f"  {time.strftime('%H:%M:%S')}  entries {len(ents)}/{len(expected)}, pending {pending}, error {errors}, no remote id {norem}, leaked {len(leaks)}")
+        log(f"  {time.strftime('%H:%M:%S')}  entries {len(ents)}/{len(expected)}, pending {pending}, failed {errors}, no remote id {norem}, leaked {len(leaks)}")
         if not watch or (pending == 0 and len(ents) >= len(expected)) or time.time() > deadline:
             break
         time.sleep(10)
@@ -524,6 +524,14 @@ def daemon_findings(ipc, prefix, manifest, watch=False, timeout=600, log=print):
                 f.append(f'NOREMOTE {to_ascii(k)}')
     f += [f'EXTRA    {to_ascii(k)}' for k in sort_ordinal(got) if k not in expected]
     return f
+
+
+def upload_verdict(daemon_f, classified):
+    """(label, exit code) of the upload wait: rows still PENDING -> exit 2; failed (ERROR) rows -> 'FAILED n', exit 1 unless --expected classifies them."""
+    pending = sum(x.startswith('PENDING') for x in daemon_f)
+    failed = sum(x.startswith('ERROR') for x in daemon_f)
+    parts = ([f'NOT SETTLED ({pending} pending)'] if pending else []) + ([f'FAILED {failed}'] if failed else [])
+    return (', '.join(parts) or 'settled'), (2 if pending else 1 if failed and not classified else 0)
 
 
 def cmd_daemon_view(a):
@@ -786,11 +794,11 @@ def cmd_run(a):
         print(f'  copy returned after {time.time() - t0:.1f} s, {len(copy_errors)} error(s)')
         for n, e in copy_errors:
             print(f'  ERR {n}: {e}')
-        step(f'wait until the daemon has nothing pending (timeout {a.timeout} s)')
+        step(f'wait until the daemon has nothing pending; failed rows are final (timeout {a.timeout} s)')
         ipc = Ipc(profile, 'read', ipc_cfg)
         cloud_prefix = f'/{prefix}/{sid}'
         daemon_f = daemon_findings(ipc, cloud_prefix, man, watch=True, timeout=a.timeout)
-        settled = not any(x.startswith('PENDING') for x in daemon_f)
+        upload_label, exit_code = upload_verdict(daemon_f, bool(a.expected))
         surfaces = [('mount', 'verify', str(target))]
         if remote_dir:
             surfaces = [('provider', 'verify', str(remote_dir / prefix / sid)), ('mirror', 'verify:mirror', str(mirror / prefix / sid))] + surfaces
@@ -814,9 +822,8 @@ def cmd_run(a):
             files['remote-live'] = ('remote-live', rf)
             results.append(('remote', f'{rs}; findings {len(rf)}'))
             print(f'  remote   {rs}; findings {len(rf)}')
-        exit_code = 0 if settled else 2
-        if not settled:
-            print('  NOT SETTLED within the timeout')
+        if upload_label != 'settled':
+            print(f'  upload: {upload_label}')
         step(f'compare with {Path(a.expected).name}' if a.expected else 'no --expected given: findings are not classified')
         for name, (tool, f) in files.items():
             (out / f'{name}.findings').write_text('\n'.join(f) + '\n', encoding='utf-8')
@@ -827,7 +834,7 @@ def cmd_run(a):
                 if code and exit_code == 0:
                     exit_code = 1
         lines = [f'{sid} run {work.name}', f'engine : {launcher}', f"target : {'isolated localfs profile ' + profile if a.localfs else 'profile ' + profile + ' via ' + mount}",
-                 f"upload : {'settled' if settled else 'NOT SETTLED'}"] + [f'{n:<9} {s}' for n, s in results]
+                 f'upload : {upload_label}'] + [f'{n:<9} {s}' for n, s in results]
         (work / 'SUMMARY.txt').write_text('\n'.join(lines) + '\n')
         step('summary')
         print('\n'.join(lines))
@@ -865,6 +872,7 @@ def main():
     u.add_argument('--profile'); u.add_argument('--mount'); u.add_argument('--prefix', default='_INBOX'); u.add_argument('--work'); u.add_argument('--launcher')
     u.add_argument('--expected'); u.add_argument('--timeout', type=int, default=900); u.add_argument('--remote-live', action='store_true'); u.add_argument('--subtree'); u.set_defaults(f=cmd_run)
     a = ap.parse_args()
+    sys.stdout.reconfigure(line_buffering=True)  # progress shows live when piped, without relying on python -u
     sys.exit(a.f(a))
 
 
