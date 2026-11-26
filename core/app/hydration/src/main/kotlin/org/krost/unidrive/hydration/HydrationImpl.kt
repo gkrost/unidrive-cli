@@ -27,7 +27,6 @@ import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -446,14 +445,6 @@ class HydrationImpl(
     private val lastWalkAtMs = AtomicLong(0L)
 
     companion object {
-        /**
-         * The recovery-upload scope a host gets when it passes none. A [kotlinx.coroutines.SupervisorJob],
-         * so one failed recovery upload cannot cancel the uploads queued behind it (a plain [kotlinx.coroutines.Job]
-         * fails the whole scope on the first failure, and every launch into it afterwards is dead). The daemon's
-         * own wiring passes a supervising scope as well.
-         */
-        internal fun defaultRecoveryUploadScope(): CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
         // A provider refusal must not hot-loop, but unchanged local bytes get another chance after transient provider-side
         // state can expire.
         private const val UPLOAD_REFUSAL_RETRY_AFTER_MS = 6L * 60 * 60 * 1000
@@ -3349,6 +3340,9 @@ class HydrationImpl(
         val stamp = runCatching { refusalStamp(mount.resolveCachePath(entry.path)) }.getOrNull() ?: return false
         return stamp != "$baselineMtime|$baselineSize"
     }
+
+    override fun holdsUnsyncedBytesAt(path: String): Boolean =
+        stateDb.getEntry(path)?.let { !it.isFolder && (it.remoteId == null || holdsUnsyncedBytes(it) || hasUploadSlot(it.path)) } == true
 
     // archive#1040 M4: the renames whose cache copy still has to follow them (see [RenameRollForward]).
     private val renames = RenameRollForward(stateDb, mount) { oldNorm, newNorm -> moveCacheFile(oldNorm, newNorm) }

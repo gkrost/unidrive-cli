@@ -629,7 +629,7 @@ class DaemonRuntime(
                     server.registerIdleExemptVerbs(HydrationIpcHandler.VERBS)
                     server.registerIdleHold { hydrationIpc?.holdsConnectionState(it) == true } // what a read-scope connection holds (#926)
                     server.registerCancelOnPeerGoneVerbs(HydrationIpcHandler.CANCEL_ON_PEER_GONE_VERBS) // gkrost/unidrive-cli#760
-                    hydrationIpc?.start(serveScope, server::writeToConnection)
+                    hydrationIpc?.apply { start(serveScope, server::writeToConnection); onSubscriberDisconnected(server::closeConnection) }
                     server.registerConnectionCloseListener { connId ->
                         hydrationIpc?.onSubscriberDisconnect(connId)
                     }
@@ -1214,7 +1214,7 @@ class DaemonRuntime(
         // on a breaking change and engine_version does not order dev builds. IpcContractLevelTest pins the IPC surface
         // of each level and fails when the surface changes without a raise. 8 (gkrost/unidrive-cli#851) shipped on main;
         // the history verbs (gkrost/unidrive-cli#848, merged here at their own 8) are the raise to 9 on top of it.
-        const val IPC_CONTRACT_LEVEL: Int = 17
+        const val IPC_CONTRACT_LEVEL: Int = 18
 
         /**
          * Whether a successful `hydration.subscribe` is followed by the one guarded enumerate: only for a

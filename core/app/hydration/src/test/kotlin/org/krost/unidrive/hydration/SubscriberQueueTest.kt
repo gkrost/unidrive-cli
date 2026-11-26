@@ -57,11 +57,30 @@ class SubscriberQueueTest {
     }
 
     @Test
-    fun `with only outcomes queued the oldest beyond the hard cap goes`() {
+    fun `with only outcomes queued an offer beyond the hard cap reports it and drops nothing`() {
         val q = queue(capacity = 2, hardCap = 4)
-        for (i in 1L..6L) q.offer(E(i, terminal = true))
+        val reported = (1L..6L).map { q.offer(E(it, terminal = true)) }
 
-        assertEquals(listOf(3L, 4L, 5L, 6L), q.drain().map { it.seq })
-        assertEquals(2, q.dropped.get())
+        assertEquals(listOf(false, false, false, false, true, true), reported, "from the fifth outcome the subscriber is to be disconnected")
+        assertEquals((1L..6L).toList(), q.drain().map { it.seq })
+        assertEquals(0, q.dropped.get())
+    }
+    @Test
+    fun `the hard cap applies while droppable events are still queued and the queue is under capacity`() {
+        val q = queue(capacity = 100, hardCap = 4)
+        val reported = (1L..6L).map { q.offer(E(it, terminal = it != 3L)) } // 3 is droppable and stays queued
+
+        assertEquals(listOf(false, false, false, false, false, true), reported, "the fifth outcome is over the cap although a droppable event is queued")
+    }
+
+    @Test
+    fun `a drained replay no longer widens the live capacity`() {
+        val replay = (1L..10L).map { E(it, terminal = false) }
+        val q = queue(capacity = 2, hardCap = 100, replay = replay)
+        repeat(10) { q.poll() }
+
+        for (i in 11L..15L) q.offer(E(i, terminal = false))
+
+        assertEquals(3, q.dropped.get(), "five offered, two kept: the replay's room is gone with the replay")
     }
 }

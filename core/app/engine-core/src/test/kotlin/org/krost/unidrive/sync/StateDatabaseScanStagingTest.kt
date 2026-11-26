@@ -519,6 +519,67 @@ class StateDatabaseScanStagingTest {
             db.close()
         }
     }
+
+    @Test
+    fun `rows persisted mid-pass are not yielded on re-iteration of the resumed rows`() {
+        val db = opened()
+        try {
+            val scanId = db.beginScan(initialMarker = null)
+
+            fun item(id: String) =
+                CloudItem(id, id, "/$id", 1, false, null, null, "tag|$id", null, parentId = "p", version = "v-$id")
+            db.persistScanPage(scanId, listOf("b", "d", "f").map(::item), "m1")
+            val resumed = db.stagedRowsSnapshot(scanId)
+            assertEquals(listOf("b", "d", "f"), resumed.map { it.id })
+
+            // The pass goes on: a new page, whose ids sort before, between and after the resumed ones, and one resumed row staged again.
+            db.persistScanPage(scanId, listOf("a", "c", "g", "d").map(::item), "m2")
+
+            assertEquals(listOf("b", "d", "f"), resumed.map { it.id }, "the pass's own rows are not resumed rows")
+            assertEquals("tag|d", resumed.first { it.id == "d" }.hash)
+            assertEquals(listOf("a", "b", "c", "d", "f", "g"), db.loadStagedItems(scanId).map { it.id }, "they are staged, though")
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun `resumed rows read through stagedRowsOf are exactly the rows loadStagedItems returns, a chunk at a time`() {
+        val db = opened()
+        try {
+            val scanId = db.beginScan(initialMarker = null)
+            val items =
+                (0 until 53).map { i ->
+                    CloudItem(
+                        id = "id%02d".format(i),
+                        name = "n$i",
+                        path = "/n$i",
+                        size = i.toLong(),
+                        isFolder = i % 5 == 0,
+                        modified = null,
+                        created = null,
+                        hash = "tag|$i",
+                        mimeType = null,
+                        parentId = "p",
+                        version = "v$i",
+                    )
+                }
+            db.persistScanPage(scanId, items.drop(20).reversed(), "m1")
+            db.persistScanPage(scanId, items.take(25), "m2")
+            val chunks = mutableListOf<Int>()
+
+            val resumed =
+                org.krost.unidrive.stagedRowsOf(chunk = 10) { after, limit ->
+                    db.loadStagedPage(scanId, after, limit).also { chunks += it.size }
+                }
+
+            assertEquals(db.loadStagedItems(scanId), resumed.toList(), "the same rows in the same order as the list it replaces")
+            assertEquals(listOf(10, 10, 10, 10, 10, 3), chunks, "no read returned more than one chunk")
+            assertEquals(db.loadStagedItems(scanId), resumed.toList(), "a second pass reads the staging again and gives the same rows")
+        } finally {
+            db.close()
+        }
+    }
 }
 
 /** Stages pages of ten rows and halts the JVM after the last one: no close, no shutdown hook. */
