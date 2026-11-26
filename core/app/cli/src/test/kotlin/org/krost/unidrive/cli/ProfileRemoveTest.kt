@@ -1075,4 +1075,99 @@ class ProfileRemoveTest {
             check.close()
         }
     }
+
+    // ── caches and default_profile (item #749-7 of the audit follow-up issue) ───
+
+    private val hydrationDir: Path get() = dir.resolve("cache/unidrive/hydration/gone")
+    private val ignoreRulesDir: Path get() = dir.resolve("cache/unidrive/ignore-rules/gone")
+
+    private fun populateCaches() {
+        Files.createDirectories(hydrationDir.resolve("sub"))
+        Files.writeString(hydrationDir.resolve("sub/file.bin"), "cached")
+        Files.createDirectories(ignoreRulesDir)
+        Files.writeString(ignoreRulesDir.resolve(".unidriveignore"), "*.tmp")
+    }
+
+    private fun profilesConfig(
+        default: String?,
+        vararg names: String,
+    ) {
+        val general = if (default != null) "[general]\ndefault_profile = \"$default\"\n\n" else "[general]\n\n"
+        val sections =
+            names.joinToString("\n") {
+                "[providers.$it]\ntype = \"localfs\"\nmode = \"mirror\"\n" +
+                    "sync_root = \"${toml(dir.resolve("roots").resolve(it))}\"\nroot_path = \"${toml(dir.resolve("remote-$it"))}\"\n"
+            }
+        Files.writeString(configFile, general + sections)
+    }
+
+    private fun defaultProfile() = SyncConfig.parseRaw(Files.readString(configFile)).general.default_profile
+
+    @Test
+    fun `profile remove deletes the profile's hydration and ignore-rules caches`() {
+        populate()
+        populateCaches()
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--json"), stderr())
+
+        assertFalse(Files.exists(hydrationDir), "the hydration cache goes")
+        assertFalse(Files.exists(ignoreRulesDir), "the ignore-rules cache goes")
+    }
+
+    @Test
+    fun `profile remove keeps a hydration cache that holds never-uploaded edits and prints its path`() {
+        populate()
+        writeState("/a.txt" to false)
+        populateCaches()
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--force-pending"), stderr())
+
+        assertTrue(Files.exists(hydrationDir.resolve("sub/file.bin")), "the cache with unsent edits stays")
+        assertTrue(hydrationDir.toString() in stdout(), stdout())
+    }
+
+    @Test
+    fun `removing the default profile with exactly one profile left makes that one the default`() {
+        populate()
+        assertEquals("gone", defaultProfile())
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--json"), stderr())
+
+        assertEquals("keep", defaultProfile())
+    }
+
+    @Test
+    fun `removing the default profile with several left clears default_profile`() {
+        populate()
+        profilesConfig("gone", "gone", "keep", "other")
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--json"), stderr())
+
+        assertNull(defaultProfile())
+        assertEquals(setOf("keep", "other"), profiles())
+    }
+
+    @Test
+    fun `removing a non-default profile leaves default_profile unchanged`() {
+        profilesConfig("gone", "gone", "keep")
+
+        assertEquals(0, run("profile", "remove", "keep", "--yes", "--json"), stderr())
+
+        assertEquals("gone", defaultProfile())
+    }
+
+    @Test
+    fun `cache deletion never follows a symlink out of the cache root`() {
+        populate()
+        populateCaches()
+        val outside = Files.createDirectories(dir.resolve("outside"))
+        Files.writeString(outside.resolve("precious.txt"), "keep me")
+        val made = runCatching { Files.createSymbolicLink(hydrationDir.resolve("escape"), outside) }
+        assumeTrue("symbolic links are not available here", made.isSuccess)
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--json"), stderr())
+
+        assertTrue(Files.exists(outside.resolve("precious.txt")), "what the link points to is never deleted")
+        assertFalse(Files.exists(hydrationDir), "the cache itself goes")
+    }
 }

@@ -621,6 +621,9 @@ class ProfileRemoveCommand : Callable<Int> {
         }
         if (result.deletedProfileDir) println("  Deleted: ${result.profileDir}")
         if (result.vaultEntryRemoved) println("  Vault entry of profile '$name' removed.")
+        if (result.cachesRemoved) println("  Deleted the hydration and ignore-rules caches.")
+        result.keptCachePath?.let { println("  Kept the hydration cache, it holds edits that never reached the cloud: $it") }
+        result.newDefault?.let { println("  default_profile is now '$it'.") }
         result.vaultWarning?.let { System.err.println("Warning: ${it.removePrefix("vault: ")}") }
         println("Profile '$name' removed.")
         return 0
