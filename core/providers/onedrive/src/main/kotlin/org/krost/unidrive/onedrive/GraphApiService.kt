@@ -55,7 +55,7 @@ class GraphApiService(
     // Tests hand in a whole client (a bare MockEngine client, or one with their own timeouts); production builds its own.
     httpClient: HttpClient? = null,
     // Tests point the requests at a loopback server; production talks to Graph.
-    private val baseUrl: String = "${OneDriveConfig.GRAPH_BASE_URL}/${OneDriveConfig.GRAPH_VERSION}",
+    internal val baseUrl: String = "${OneDriveConfig.GRAPH_BASE_URL}/${OneDriveConfig.GRAPH_VERSION}",
     // Tests hand in a cache on their own clock and bounds; production uses the defaults.
     private val downloadUrls: DownloadUrlCache = DownloadUrlCache(System::currentTimeMillis),
     // [rejectedToken] names the token the refused request carried on a forced refresh (#215), so the
@@ -77,7 +77,7 @@ class GraphApiService(
         requestMetrics.sink = sink
     }
 
-    private val json = org.krost.unidrive.UnidriveJson
+    internal val json = org.krost.unidrive.UnidriveJson
     private val sessionStore = UploadSessionStore(config.tokenPath)
     internal val uploadReservations = UploadReservationStore(config.tokenPath)
 
@@ -1568,7 +1568,7 @@ class GraphApiService(
 
     private fun List<String>?.nextExpectedStart(): Long? = this?.firstOrNull()?.substringBefore("-")?.toLongOrNull()
 
-    private suspend fun authenticatedRequest(
+    internal suspend fun authenticatedRequest(
         url: String,
         method: HttpMethod = HttpMethod.Get,
     ): HttpResponse = requireSuccess(sendThrottled(url, method))

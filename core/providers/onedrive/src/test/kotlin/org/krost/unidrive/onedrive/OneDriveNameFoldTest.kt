@@ -193,6 +193,27 @@ class OneDriveNameFoldTest {
         }
 
     @Test
+    fun `a 409 on an empty folder is no fold - it is retried, never blocked, and the later attempt uploads`() =
+        runTest {
+            // The sibling that caused the 409 is gone by the time the folder is listed: nothing to name, nothing to refuse.
+            val graph = drive()
+            val provider = providerWith(graph)
+            graph.forcedConflicts = 1
+
+            val first = assertFailsWith<ProviderException> { provider.upload(local(), "/fold/a.txt", existingRemoteId = null) }
+
+            assertTrue(first !is NameRefusedException, "no permanent similar_name block on an empty listing: $first")
+            assertTrue(first !is PermanentUploadFailureException, "retryable")
+            assertTrue(graph.requests.none { it.contains("conflictBehavior=rename") }, "no keep-both: ${graph.requests}")
+
+            val landed = provider.upload(local(), "/fold/a.txt", existingRemoteId = null)
+
+            assertEquals("a.txt", landed.name)
+            assertEquals("new", String(assertNotNull(graph.find("/fold/a.txt")).bytes))
+            provider.close()
+        }
+
+    @Test
     fun `a true duplicate of the exact name still keeps both`() =
         runTest {
             val graph = drive("STRASSE.txt")

@@ -127,4 +127,17 @@ class OneDriveNameFoldMountTest {
         assertEquals(listOf("STRASSE.txt"), graph.find("/fold")!!.children.keys.toList(), "no ' 1' copy on the drive")
         assertEquals("precious", Files.readString(engine.resolveCachePath("/fold/Straße.txt")), "the local file is kept")
     }
+
+    @Test
+    fun `a 409 on an empty folder does not block the row - the retry uploads it`() {
+        graph.seed("/fold", isFolder = true)
+        runBlocking { engine.enumerateRemoteIntoState(reset = true) }
+        graph.forcedConflicts = 1
+
+        val done = write("/fold/a.txt", "precious")
+
+        assertEquals(true, done.ok, "the retry landed it: ${done.error?.message}")
+        assertEquals("precious", String(assertNotNull(graph.find("/fold/a.txt")).bytes))
+        assertEquals(0, hydration.uploadHealth().blocked.count, "never a block on an empty listing")
+    }
 }

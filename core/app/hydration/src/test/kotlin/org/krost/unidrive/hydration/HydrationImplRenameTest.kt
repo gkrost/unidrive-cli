@@ -241,6 +241,25 @@ class HydrationImplRenameTest {
         assertNull(db.getEntry("/b.txt"))
     }
 
+    // gkrost/unidrive-cli#950 (review of #979, P2): a rename the drive refuses by the new name is the blocked-row refusal, with
+    // the sibling: the 409 cause of the refusal must not turn it back into new_path_exists.
+    @Test
+    fun rename_answers_the_name_refusal_with_its_token_and_sibling_not_new_path_exists() = runTest {
+        val (impl, provider, db) = freshEnv()
+        seedFile(db, "/a.txt")
+        provider.throwOnMove =
+            org.krost.unidrive.NameRefusedException(
+                "refused",
+                sibling = "STRASSE.txt",
+                cause = ProviderException("conflict", httpStatus = 409),
+            )
+
+        val result = impl.rename("/a.txt", "/Stra\u00dfe.txt")
+
+        assertEquals(RenameResult.Failed(HydrationError.NameRefused("similar_name", "STRASSE.txt")), result)
+        assertNotNull(db.getEntry("/a.txt"), "nothing moved: the source row stays")
+    }
+
     @Test
     fun rename_keeps_other_provider_statuses_as_a_failure() = runTest {
         val (impl, provider, db) = freshEnv()

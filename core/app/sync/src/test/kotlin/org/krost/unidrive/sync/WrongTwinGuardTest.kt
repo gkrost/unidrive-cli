@@ -131,6 +131,22 @@ class WrongTwinGuardTest {
             assertEquals("a-dup", db.getEntry("/renamed.txt")?.remoteId)
         }
 
+    // gkrost/unidrive-cli#950 (review of #979, P2): a move the drive refuses by the new name blocks the row with the sibling.
+    @Test
+    fun `a rename the drive refuses by its name blocks the row naming the sibling`() =
+        runTest {
+            engine.syncOnce()
+            provider.moveByIdFailure =
+                org.krost.unidrive.NameRefusedException("refused", sibling = "STRASSE.txt")
+            Files.move(syncRoot.resolve("dup.txt"), syncRoot.resolve("renamed.txt"))
+
+            engine.syncOnce()
+
+            val block = assertNotNull(db.nameBlock("/dup.txt"), "the source row is blocked by name")
+            assertEquals("similar_name", block.reason)
+            assertEquals("STRASSE.txt", block.sibling)
+        }
+
     @Test
     fun `a tracked folder delete carries the row's kind to a provider that takes typed deletes`() =
         runTest {
@@ -264,6 +280,7 @@ class WrongTwinGuardTest {
         val movedPaths = mutableListOf<Pair<String, String>>()
         val movedByIds = mutableListOf<Triple<String, String, String>>()
         val downloadedIds = mutableListOf<String>()
+        var moveByIdFailure: Exception? = null
 
         private fun itemOf(id: String): CloudItem = deltaItems.first { it.id == id }
 
@@ -327,6 +344,7 @@ class WrongTwinGuardTest {
             fromPath: String,
             toPath: String,
         ): CloudItem {
+            moveByIdFailure?.let { throw it }
             movedByIds += Triple(remoteId, fromPath, toPath)
             return itemOf(remoteId)
         }

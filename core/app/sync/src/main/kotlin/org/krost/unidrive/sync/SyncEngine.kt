@@ -3633,6 +3633,7 @@ open class SyncEngine(
                     provider.move(remoteFrom, remoteTo)
                 }
             } catch (e: Exception) {
+                (e as? org.krost.unidrive.NameRefusedException)?.let { db.markNameBlocked(action.fromPath, it.reason, it.sibling) }
                 auditLog?.emit(
                     action = "Move",
                     path = action.path,

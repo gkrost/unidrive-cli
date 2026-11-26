@@ -752,7 +752,7 @@ class OneDriveProvider(
     ): CloudItem {
         rejectUnsupportedName(toPath)
         val item = itemAt(fromPath)
-        return refusingNames(toPath) { graphApi.moveItem(item.id, toPath, fromPath, ifMatchETag = item.eTag).toCloudItem() }
+        return graphApi.refusingNames(toPath) { graphApi.moveItem(item.id, toPath, fromPath, ifMatchETag = item.eTag).toCloudItem() }
     }
 
     override suspend fun moveById(
@@ -766,24 +766,12 @@ class OneDriveProvider(
         // the real one. A 404 here fails the move, as the path based move fails for an item it cannot find.
         val current = graphApi.getItemById(remoteId)
         if (SharedItemId.isShared(remoteId)) {
-            return refusingNames(toPath) {
+            return graphApi.refusingNames(toPath, SharedItemId.parse(remoteId), current.parentReference?.id) {
                 graphApi.moveItem(remoteId, toPath, fromPath, ifMatchETag = current.eTag).toCloudItem().copy(id = remoteId, path = toPath)
             }
         }
-        return refusingNames(toPath) { graphApi.moveItem(remoteId, toPath, current.pathInDrive() ?: fromPath, ifMatchETag = current.eTag).toCloudItem() }
+        return graphApi.refusingNames(toPath) { graphApi.moveItem(remoteId, toPath, current.pathInDrive() ?: fromPath, ifMatchETag = current.eTag).toCloudItem() }
     }
-
-    // A rename onto a name the drive judges as a sibling's (cli#950): refused as similar_name naming the sibling, as a create is.
-    // An exact-name sibling is a true duplicate and keeps the 409.
-    private suspend fun <T> refusingNames(toPath: String, block: suspend () -> T): T =
-        try {
-            block()
-        } catch (e: GraphApiException) {
-            e.throwIfPermanentNameRefusal(toPath)
-            if (e.isSimilarName()) throw nameRefused(toPath, e, e)
-            if (e.isNameAlreadyExists()) graphApi.refuseFoldedName(toPath, e)
-            throw e
-        }
 
     private fun rejectUnsupportedName(path: String) {
         OneDriveNameRules.issue(path)?.let { rule ->
