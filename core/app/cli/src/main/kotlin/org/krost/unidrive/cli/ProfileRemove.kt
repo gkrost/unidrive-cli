@@ -15,6 +15,7 @@ import org.krost.unidrive.sync.Vault
 import org.krost.unidrive.io.VAULT_PASSPHRASE_ENV
 import org.krost.unidrive.sync.isValidProfileName
 import org.krost.unidrive.sync.removeProfileSection
+import org.krost.unidrive.sync.setDefaultProfile
 import java.io.IOException
 import java.net.UnixDomainSocketAddress
 import java.nio.channels.SocketChannel
@@ -73,6 +74,12 @@ internal object ProfileRemover {
         val vaultEntryRemoved: Boolean = false,
         /** Why the vault entry could not be dropped and how to drop it later; null when there was nothing to keep. */
         val vaultWarning: String? = null,
+        /** The hydration and ignore-rules caches kept (in that order) because the hydration cache holds edits that never reached the cloud; empty otherwise. */
+        val keptCaches: List<Path?> = emptyList(),
+        /** True when a cache folder (hydration or ignore rules) was deleted. */
+        val cachesRemoved: Boolean = false,
+        /** The profile `[general] default_profile` names after the removal, when the removed one was the default. */
+        val newDefault: String? = null,
     )
 
     /** The config of [configDir] as text and parsed, or a [LifecycleError] naming why it cannot be read. */
@@ -254,6 +261,9 @@ internal object ProfileRemover {
         var removedMode: String? = null
         var syncRoot = ""
         var wasDefault = false
+        var newDefault: String? = null
+        var cachesRemoved = false
+        var keptCaches: List<Path?> = emptyList()
         var vaultDrop = VaultDrop(removed = false, kept = false, warning = null)
         try {
             // The look that may delete rows runs here, under the lock: no daemon can start between the check and the deletion.
@@ -264,8 +274,15 @@ internal object ProfileRemover {
                 syncRoot = localRootOf(name, latestRaw, latestProvider).toString()
                 wasDefault = latestRaw.general.default_profile == name
                 removedMode = latestProvider.mode
+                // Decided first, from the state.db, before anything is deleted: the cache may hold the only copy of unsent edits.
+                val cacheHoldsEdits = cacheHoldsUnsentEdits(profileDir, configDir, name)
+                var newText = removeProfileSection(content.lines(), name).joinToString("\n")
+                if (wasDefault) {
+                    newDefault = (latestRaw.providers.keys - name).singleOrNull()
+                    newText = setDefaultProfile(newText, newDefault)
+                }
                 try {
-                    ConfigFileTransaction.writeAtomically(configPath, removeProfileSection(content.lines(), name).joinToString("\n"))
+                    ConfigFileTransaction.writeAtomically(configPath, newText)
                 } catch (e: IOException) {
                     throw LifecycleError("config_write_failed", "config.toml could not be written: ${e.javaClass.simpleName}; nothing was removed", e)
                 }
@@ -274,6 +291,9 @@ internal object ProfileRemover {
                 vaultDrop.warning?.let { warnings += it }
 
                 // The IPC tokens and socket belong to a daemon that is gone: always removed, also with --keep-data.
+                val cacheResult = removeCaches(name, syncRoot, cacheHoldsEdits, keepData, warnings)
+                cachesRemoved = cacheResult.removed
+                keptCaches = cacheResult.kept
                 tokensRemoved = removeIpcTokens(profileDir, warnings)
                 socketRemoved = removeSocket(socket, warnings)
 
@@ -293,40 +313,136 @@ internal object ProfileRemover {
         val profileDirGone = dirExists && !Files.exists(profileDir)
         val stateRemoved = dirExists && !keepData && warnings.none { it.startsWith("state: ") }
         val json =
-            buildJsonObject {
-                put("ok", true)
-                put("profile", name)
-                put("mode", removedMode)
-                put("daemon_stopped", daemonStopped)
-                put("was_default_profile", wasDefault)
-                put(
-                    "removed",
-                    buildJsonObject {
-                        put("config_section", true)
-                        put("state_folder", stateRemoved)
-                        put("credentials", credentialsRemoved)
-                        put("ipc_tokens", tokensRemoved)
-                        put("socket", socketRemoved)
-                        put("vault_entry", vaultDrop.removed)
-                    },
-                )
-                put(
-                    "kept",
-                    buildJsonObject {
-                        // The local root is never touched: for a mirror profile the sync root, for a mount profile the mount root.
-                        put("sync_root", syncRoot)
-                        put("state_folder", Files.isDirectory(profileDir))
-                        put("credentials", credentialsKept)
-                        // True when the vault could not be opened or written: it may still hold the profile's entry.
-                        put("vault_entry", vaultDrop.kept)
-                        // Credentials held outside the profile folder (an OS secret store) are not touched.
-                        put("secret_store", "not touched")
-                    },
-                )
-                put("warnings", JsonArray(warnings.map { JsonPrimitive(it) }))
-            }
-        return Result(json, profileDir, profileDirGone, vaultDrop.removed, vaultDrop.warning)
+            RemovalFacts(
+                name, removedMode, daemonStopped, wasDefault, if (wasDefault) newDefault else raw.general.default_profile,
+                RemovedFlags(stateRemoved, credentialsRemoved, tokensRemoved, socketRemoved, cachesRemoved),
+                KeptFlags(syncRoot, Files.isDirectory(profileDir), credentialsKept, keptCaches),
+                vaultDrop, warnings,
+            ).toJson()
+        return Result(json, profileDir, profileDirGone, vaultDrop.removed, vaultDrop.warning, keptCaches, cachesRemoved, newDefault.takeIf { wasDefault })
     }
+}
+
+private class RemovedFlags(
+    val stateFolder: Boolean,
+    val credentials: Boolean,
+    val ipcTokens: Boolean,
+    val socket: Boolean,
+    val caches: Boolean,
+)
+
+private class KeptFlags(
+    val syncRoot: String,
+    val stateFolder: Boolean,
+    val credentials: Boolean,
+    val caches: List<Path?>,
+)
+
+/** What a removal did, as the one JSON object both forms report. */
+private class RemovalFacts(
+    val name: String,
+    val mode: String?,
+    val daemonStopped: Boolean,
+    val wasDefault: Boolean,
+    val defaultProfile: String?,
+    val removed: RemovedFlags,
+    val kept: KeptFlags,
+    val vaultDrop: VaultDrop,
+    val warnings: List<String>,
+) {
+    fun toJson(): JsonObject =
+        buildJsonObject {
+            put("ok", true)
+            put("profile", name)
+            put("mode", mode)
+            put("daemon_stopped", daemonStopped)
+            put("was_default_profile", wasDefault)
+            put("default_profile", defaultProfile)
+            put(
+                "removed",
+                buildJsonObject {
+                    put("config_section", true)
+                    put("state_folder", removed.stateFolder)
+                    put("credentials", removed.credentials)
+                    put("ipc_tokens", removed.ipcTokens)
+                    put("socket", removed.socket)
+                    put("vault_entry", vaultDrop.removed)
+                    put("caches", removed.caches)
+                },
+            )
+            put(
+                "kept",
+                buildJsonObject {
+                    // The local root is never touched: for a mirror profile the sync root, for a mount profile the mount root.
+                    put("sync_root", kept.syncRoot)
+                    put("state_folder", kept.stateFolder)
+                    put("credentials", kept.credentials)
+                    // True when the vault could not be opened or written: it may still hold the profile's entry.
+                    put("vault_entry", vaultDrop.kept)
+                    // Credentials held outside the profile folder (an OS secret store) are not touched.
+                    put("secret_store", "not touched")
+                    // Set when the hydration cache holds edits that never reached the cloud: it is kept at this path.
+                    put("hydration_cache", kept.caches.getOrNull(0)?.toString())
+                    put("ignore_rules_cache", kept.caches.getOrNull(1)?.toString())
+                },
+            )
+            put("warnings", JsonArray(warnings.map { JsonPrimitive(it) }))
+        }
+}
+
+/**
+ * True when the profile's caches may hold the only copy of an edit that never reached the cloud: its state.db has rows
+ * waiting for upload (failed ones included), judged by the rule `profile remove` and `logout` gate on ([PendingGate]).
+ * A state.db that cannot be read is judged the conservative way; a profile without one has nothing pending.
+ */
+private fun cacheHoldsUnsentEdits(
+    profileDir: Path,
+    configDir: Path,
+    name: String,
+): Boolean {
+    val stateDb = profileDir.resolve("state.db")
+    if (!Files.exists(stateDb)) return false
+    val split = PendingGate.split(stateDb, configDir, name) ?: return true
+    return split.waiting.isNotEmpty()
+}
+
+private class CacheResult(
+    val removed: Boolean,
+    val kept: List<Path?>,
+)
+
+/**
+ * Deletes the profile's hydration cache and ignore-rules cache, found by the resolver the daemon uses
+ * ([ProfileRemoveHooks.cacheRoot] with [SyncEngine.hydrationCacheRoot] / [SyncEngine.ignoreRuleFilesRoot]). Links are
+ * entries, never followed. With [holdsEdits] both stay (the rule-file cache holds copies of pending rule files too) and the
+ * hydration path is reported. A failed delete is a `cache:` warning and never aborts the removal.
+ */
+private fun removeCaches(
+    name: String,
+    syncRoot: String,
+    holdsEdits: Boolean,
+    keepData: Boolean,
+    warnings: MutableList<String>,
+): CacheResult {
+    val cacheRoot = ProfileRemoveHooks.cacheRoot()
+    val hydration = SyncEngine.hydrationCacheRoot(cacheRoot, name)
+    val rules = SyncEngine.ignoreRuleFilesRoot(cacheRoot, name)
+    if (holdsEdits || keepData) {
+        // Only folders that exist are reported. With --keep-data the kept state.db still points at the cache.
+        val kept = listOf(hydration, rules).map { dir -> dir.takeIf { Files.exists(it, LinkOption.NOFOLLOW_LINKS) } }
+        if (kept.all { it == null }) return CacheResult(false, emptyList())
+        val why = if (holdsEdits) "the hydration cache holds edits that never reached the cloud" else "--keep-data keeps the state.db that points at them"
+        warnings += "cache: kept ${kept.filterNotNull().joinToString(" and ")}, $why"
+        return CacheResult(false, kept)
+    }
+    var removed = false
+    for (dir in listOf(hydration, rules)) {
+        if (!Files.exists(dir, LinkOption.NOFOLLOW_LINKS)) continue
+        val local = mutableListOf<String>()
+        if (ProfilePurge.purge(dir, ProfilePurge.ProtectedRoot.of(syncRoot), local)) removed = true
+        warnings += local.map { "cache: ${it.removePrefix("state: ")} (in $dir)" }
+    }
+    return CacheResult(removed, emptyList())
 }
 
 /** What became of the profile's vault entry: dropped, or kept with the reason and the way to drop it later. */
