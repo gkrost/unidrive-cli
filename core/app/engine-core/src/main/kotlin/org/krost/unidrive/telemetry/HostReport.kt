@@ -22,6 +22,10 @@ class HostReport(
     val bytes: Long?,
     val errorClass: String?,
     val errorMessage: String?,
+    /** How many items the row stands for (gkrost/unidrive-cli#954); null for a row of one. */
+    val count: Int? = null,
+    /** A sample of the items' paths, stored as data, never run through the sanitizer. */
+    val firstPaths: List<String>? = null,
 )
 
 enum class HostReportWrite { RECORDED, REPLAYED, CONFLICT, NOT_RECORDED }
@@ -47,6 +51,8 @@ fun TransferHistory.recordHostReport(
             errorMessage = HistorySanitizer.message(report.errorMessage),
             source = report.source,
             operation = report.operation,
+            reportCount = report.count,
+            reportFirstPaths = report.firstPaths,
         )
     return writeHostReport(row, report.errorFingerprint(), timeoutMs)
 }

@@ -1,11 +1,13 @@
 package org.krost.unidrive.cli
 
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.longOrNull
 import org.krost.unidrive.telemetry.HostReport
 import org.krost.unidrive.telemetry.HostReportWrite
+import org.krost.unidrive.telemetry.MAX_REPORT_FIRST_PATHS
 import org.krost.unidrive.telemetry.TransferHistory
 import org.krost.unidrive.telemetry.TransferResult
 import org.krost.unidrive.telemetry.recordHostReport
@@ -32,7 +34,7 @@ internal object HistoryReportVerb {
     fun operationIdOf(requestId: String): String = "host:$requestId"
 
     private val MEMBERS = setOf("verb", "request_id", "source", "operation", "path", "result", "finished_at_ms")
-    private val OPTIONAL = setOf("started_at_ms", "bytes", "error_class", "error_message")
+    private val OPTIONAL = setOf("started_at_ms", "bytes", "error_class", "error_message", "count", "first_paths")
 
     private sealed interface Parsed {
         class Ok(val requestId: String, val report: HostReport) : Parsed
@@ -87,6 +89,8 @@ internal object HistoryReportVerb {
         val bytes = body.long("bytes")
         val errorClass = body.string("error_class")
         val errorMessage = body.string("error_message")
+        val count = body.long("count")
+        val firstPaths = body.stringList("first_paths")
         val valid =
             requestId != null && isCanonicalUuid(requestId) &&
                 source != null && operation != null && OPERATION.matches(operation) &&
@@ -96,13 +100,14 @@ internal object HistoryReportVerb {
                 (started == null || started in 0..finished) &&
                 (bytes == null || bytes >= 0) &&
                 (errorClass == null || errorClass.length <= MAX_TOKEN_LENGTH) &&
-                (errorMessage == null || errorMessage.length <= MAX_MESSAGE_LENGTH)
+                (errorMessage == null || errorMessage.length <= MAX_MESSAGE_LENGTH) &&
+                validCoalescing(count, firstPaths)
         if (!valid) return Parsed.Refused("invalid_request")
         // An unknown source is its own answer, after the shape is right: a client learns it is not on the list.
         if (source !in SOURCES) return Parsed.Refused("unknown_source")
         return Parsed.Ok(
             requestId!!,
-            HostReport(operationIdOf(requestId), source!!, operation!!, path!!, result!!, started, finished!!, bytes, errorClass, errorMessage),
+            HostReport(operationIdOf(requestId), source!!, operation!!, path!!, result!!, started, finished!!, bytes, errorClass, errorMessage, count?.toInt(), firstPaths),
         )
     }
 
@@ -111,7 +116,22 @@ internal object HistoryReportVerb {
         body.keys.containsAll(MEMBERS) &&
             (MEMBERS + OPTIONAL).containsAll(body.keys) &&
             listOf("started_at_ms", "bytes").all { it !in body || body.long(it) != null } &&
-            listOf("error_class", "error_message").all { it !in body || body.string(it) != null }
+            listOf("error_class", "error_message").all { it !in body || body.string(it) != null } &&
+            ("count" !in body || body.long("count") != null) &&
+            ("first_paths" !in body || body.stringList("first_paths") != null)
+
+    // `count` is a positive int; `first_paths` is 1..10 paths shaped like `path`, no more than `count` when both are there.
+    private fun validCoalescing(
+        count: Long?,
+        firstPaths: List<String>?,
+    ): Boolean =
+        (count == null || count in 1..Int.MAX_VALUE) &&
+            (firstPaths == null || (firstPaths.size in 1..MAX_REPORT_FIRST_PATHS && firstPaths.all(::validPath))) &&
+            (firstPaths == null || count == null || firstPaths.size <= count)
+
+    // An array whose every element is a string; anything else (a non-array, a null or a number inside) is null.
+    private fun JsonObject.stringList(key: String): List<String>? =
+        (this[key] as? JsonArray)?.map { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content ?: return null }
 
     private fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
 
