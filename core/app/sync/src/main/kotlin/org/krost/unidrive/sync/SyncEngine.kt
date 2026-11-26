@@ -3624,12 +3624,8 @@ open class SyncEngine(
                 // pending row has none and is never planned for a remote move (gkrost/unidrive-cli#845).
                 provider.moveById(action.remoteId, remoteFrom, remoteTo)
             } catch (e: Exception) {
-                auditLog?.emit(
-                    action = "Move",
-                    path = action.path,
-                    fromPath = action.fromPath,
-                    result = "failed:${e.javaClass.simpleName}: ${e.message}",
-                )
+                (e as? org.krost.unidrive.NameRefusedException)?.let { db.markNameBlocked(action.fromPath, it.reason, it.sibling) }
+                auditLog?.emit(action = "Move", path = action.path, fromPath = action.fromPath, result = "failed:${e.javaClass.simpleName}: ${e.message}")
                 throw e
             }
         val localPath = placeholder.resolveLocal(action.path)

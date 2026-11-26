@@ -1,6 +1,8 @@
 package org.krost.unidrive.onedrive
 
 import org.krost.unidrive.NameRefusedException
+import org.krost.unidrive.ProviderException
+import org.krost.unidrive.onedrive.model.DriveItem
 import java.text.Normalizer
 import java.util.Locale
 
@@ -53,24 +55,34 @@ internal object OneDriveNameFolds {
 private val foldLog = org.slf4j.LoggerFactory.getLogger(OneDriveNameFolds::class.java)
 
 /**
- * cli#950 (owner decision: no silent " 1" copies): the drive answered a create 409. When the parent's listing holds
- * no sibling of exactly that name, it is no true duplicate: the drive folded the name onto something, and the keep-both
- * `rename` would land it as "<sibling> 1.ext" with the original missing. The name is refused as `similar_name`,
- * naming the sibling the fold key matches ([OneDriveNameFolds.foldedSibling]) or none when the key does not know the
- * fold (WARN with the name and the listing's names). An exact-name sibling returns null: a true duplicate, which keeps
- * its own handling (keep-both), as does a listing that fails (nothing is known).
+ * cli#950 (owner decision: no silent " 1" copies): the drive answered a create or a rename 409. When the folder's listing
+ * ([list], by default the children of the path's parent in the caller's own drive) holds no sibling of exactly that name,
+ * it is no true duplicate: the drive folded the name onto something, and the keep-both `rename` would land it as
+ * "<sibling> 1.ext" with the original missing. The name is refused as `similar_name`, naming the sibling the fold key
+ * matches ([OneDriveNameFolds.foldedSibling]) or none when the key does not know the fold (WARN with the name and the
+ * listing's names). An exact-name sibling returns null: a true duplicate, which keeps its own handling.
+ *
+ * Two answers decide nothing and are retryable [ProviderException]s, never a block and never a keep-both copy: a listing
+ * that fails, and a listing that is EMPTY (the sibling that conflicted is gone by now, or the listing lags: with no sibling at
+ * all a 409 is not a fold). The upload ladder asks again and the later attempt decides; after its attempts the row ends
+ * failed with that error.
  */
-internal suspend fun GraphApiService.refuseFoldedName(path: String, refused: GraphApiException): Nothing? {
+internal suspend fun GraphApiService.refuseFoldedName(
+    path: String,
+    refused: GraphApiException,
+    list: (suspend () -> List<DriveItem>)? = null,
+): Nothing? {
     val parent = path.substringBeforeLast('/', "").ifEmpty { "/" }
     val name = path.substringAfterLast('/')
-    val names =
-        try {
-            listChildren(parent).mapNotNull { it.name }
-        } catch (_: GraphApiException) {
-            return null
-        } catch (_: java.io.IOException) {
-            return null
-        }
+    val names = listedNames(path, refused, list ?: { listChildren(parent) })
+    if (names.isEmpty()) {
+        throw ProviderException(
+            "OneDrive answered 409 nameAlreadyExists for '$path' but its folder lists nothing: the item that conflicted is gone or not " +
+                "listed yet, so this is no fold; not keeping a copy, the operation is retried",
+            cause = refused,
+            requestId = refused.requestId,
+        )
+    }
     if (OneDriveNameFolds.hasExact(name, names)) return null
     val sibling = OneDriveNameFolds.foldedSibling(name, names)
     if (sibling == null) {
@@ -78,7 +90,7 @@ internal suspend fun GraphApiService.refuseFoldedName(path: String, refused: Gra
             "OneDrive answered 409 for '{}' but the folder lists no sibling of that name and none the fold key matches; refusing it as " +
                 "similar_name (other names there: {}).",
             path,
-            names.takeIf { it.isNotEmpty() }?.take(20)?.joinToString(", ") { "'$it'" } ?: "none found",
+            names.take(20).joinToString(", ") { "'$it'" },
         )
     }
     throw NameRefusedException(
@@ -89,3 +101,25 @@ internal suspend fun GraphApiService.refuseFoldedName(path: String, refused: Gra
         requestId = refused.requestId,
     )
 }
+
+private suspend fun listedNames(
+    path: String,
+    refused: GraphApiException,
+    list: suspend () -> List<DriveItem>,
+): List<String> =
+    try {
+        list().mapNotNull { it.name }
+    } catch (e: GraphApiException) {
+        throw listingFailed(path, refused, e)
+    } catch (e: java.io.IOException) {
+        throw listingFailed(path, refused, e)
+    }
+
+private fun listingFailed(path: String, refused: GraphApiException, listing: Exception): ProviderException =
+    ProviderException(
+        "OneDrive answered 409 nameAlreadyExists for '$path' and the folder listing that tells a duplicate from a folded name failed " +
+            "(${listing.message}); not keeping a copy, the upload is retried",
+        cause = listing,
+        requestId = refused.requestId,
+        httpStatus = (listing as? GraphApiException)?.statusCode?.takeIf { it > 0 },
+    )

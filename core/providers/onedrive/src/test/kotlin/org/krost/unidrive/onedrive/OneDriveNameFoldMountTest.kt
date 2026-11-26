@@ -24,6 +24,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * gkrost/unidrive-cli#950 under the real mount front-end: a create the drive answers 409 for because it folds the name
@@ -107,5 +108,36 @@ class OneDriveNameFoldMountTest {
         val blocked = hydration.uploadHealth().blocked
         assertEquals(1, blocked.count)
         assertEquals(HydrationImpl.BlockedItem("/fold/Straße.txt", "similar_name", sibling = "STRASSE.txt", parent = null), blocked.items.single())
+    }
+
+    @Test
+    fun `a listing that keeps failing after the 409 ends the row failed with the listing error and no copy`() {
+        graph.seed("/fold", isFolder = true)
+        graph.seed("/fold/STRASSE.txt", bytes = "first".toByteArray())
+        runBlocking { engine.enumerateRemoteIntoState(reset = true) }
+        graph.failedListings = -1
+        graph.requests.clear()
+
+        val done = write("/fold/Straße.txt", "precious")
+
+        assertEquals(false, done.ok)
+        assertTrue(done.error?.message.orEmpty().contains("listing failed"), "names the listing error: ${done.error?.message}")
+        assertTrue(graph.requestsOf("PUT").size > 1, "the upload was retried: ${graph.requests}")
+        assertTrue(graph.requests.none { it.contains("conflictBehavior=rename") }, "no keep-both: ${graph.requests}")
+        assertEquals(listOf("STRASSE.txt"), graph.find("/fold")!!.children.keys.toList(), "no ' 1' copy on the drive")
+        assertEquals("precious", Files.readString(engine.resolveCachePath("/fold/Straße.txt")), "the local file is kept")
+    }
+
+    @Test
+    fun `a 409 on an empty folder does not block the row - the retry uploads it`() {
+        graph.seed("/fold", isFolder = true)
+        runBlocking { engine.enumerateRemoteIntoState(reset = true) }
+        graph.forcedConflicts = 1
+
+        val done = write("/fold/a.txt", "precious")
+
+        assertEquals(true, done.ok, "the retry landed it: ${done.error?.message}")
+        assertEquals("precious", String(assertNotNull(graph.find("/fold/a.txt")).bytes))
+        assertEquals(0, hydration.uploadHealth().blocked.count, "never a block on an empty listing")
     }
 }

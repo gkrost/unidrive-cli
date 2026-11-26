@@ -2,6 +2,8 @@ package org.krost.unidrive.onedrive
 
 import kotlinx.coroutines.test.runTest
 import org.krost.unidrive.NameRefusedException
+import org.krost.unidrive.PermanentUploadFailureException
+import org.krost.unidrive.ProviderException
 import org.krost.unidrive.testing.TestScratch
 import java.nio.file.Files
 import java.nio.file.Path
@@ -12,6 +14,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -146,6 +149,67 @@ class OneDriveNameFoldTest {
             assertNull(refusal.sibling, "no key-matched sibling to name")
             assertEquals(listOf("a.txt"), graph.find("/fold")!!.children.keys.toList(), "no ' 1' copy")
             assertTrue(graph.requests.none { it.contains("conflictBehavior=rename") }, "never retried as keep-both: ${graph.requests}")
+            provider.close()
+        }
+
+    @Test
+    fun `a listing that errors after the 409 is retried and the later listing decides, never a renamed copy`() =
+        runTest {
+            val graph = drive("STRASSE.txt")
+            val provider = providerWith(graph)
+            graph.failedListings = 1
+
+            val first = assertFailsWith<ProviderException> { provider.upload(local(), "/fold/Straße.txt", existingRemoteId = null) }
+
+            assertTrue(first !is PermanentUploadFailureException, "retryable: the upload ladder tries again")
+            assertTrue(graph.requests.none { it.contains("conflictBehavior=rename") }, "no keep-both on an unknown answer: ${graph.requests}")
+            assertEquals(listOf("STRASSE.txt"), graph.find("/fold")!!.children.keys.toList(), "no copy exists")
+
+            // The retry: the listing answers and shows the folded sibling.
+            val second = assertFailsWith<NameRefusedException> { provider.upload(local(), "/fold/Straße.txt", existingRemoteId = null) }
+
+            assertEquals(NameRefusedException.SIMILAR_NAME, second.reason)
+            assertEquals("STRASSE.txt", second.sibling)
+            assertEquals(listOf("STRASSE.txt"), graph.find("/fold")!!.children.keys.toList())
+            provider.close()
+        }
+
+    @Test
+    fun `a listing that keeps failing names the listing error and never lands a renamed copy`() =
+        runTest {
+            val graph = drive("STRASSE.txt")
+            val provider = providerWith(graph)
+            graph.failedListings = -1
+
+            repeat(3) {
+                val failure = assertFailsWith<ProviderException> { provider.upload(local(), "/fold/Straße.txt", existingRemoteId = null) }
+                assertIs<ProviderException>(failure)
+                assertTrue(failure.message.orEmpty().contains("listing failed"), "names the listing error: ${failure.message}")
+            }
+
+            assertTrue(graph.requests.none { it.contains("conflictBehavior=rename") }, "no keep-both: ${graph.requests}")
+            assertEquals(listOf("STRASSE.txt"), graph.find("/fold")!!.children.keys.toList(), "no copy exists")
+            provider.close()
+        }
+
+    @Test
+    fun `a 409 on an empty folder is no fold - it is retried, never blocked, and the later attempt uploads`() =
+        runTest {
+            // The sibling that caused the 409 is gone by the time the folder is listed: nothing to name, nothing to refuse.
+            val graph = drive()
+            val provider = providerWith(graph)
+            graph.forcedConflicts = 1
+
+            val first = assertFailsWith<ProviderException> { provider.upload(local(), "/fold/a.txt", existingRemoteId = null) }
+
+            assertTrue(first !is NameRefusedException, "no permanent similar_name block on an empty listing: $first")
+            assertTrue(first !is PermanentUploadFailureException, "retryable")
+            assertTrue(graph.requests.none { it.contains("conflictBehavior=rename") }, "no keep-both: ${graph.requests}")
+
+            val landed = provider.upload(local(), "/fold/a.txt", existingRemoteId = null)
+
+            assertEquals("a.txt", landed.name)
+            assertEquals("new", String(assertNotNull(graph.find("/fold/a.txt")).bytes))
             provider.close()
         }
 
