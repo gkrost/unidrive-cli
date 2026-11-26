@@ -111,6 +111,26 @@ class S3ProviderTest {
         }
 
     @Test
+    fun `a resumed listing fed from the staging in chunks yields exactly the staged items, a chunk at a time`() =
+        runTest {
+            val fake = FakeS3(pageSize = 100)
+            val staged = (0 until 25).map { CloudItem("k%02d.txt".format(it), "", "placeholder", 1, false, null, null, null, null) }
+            staged.forEach { fake.put(it.id, "1") }
+            fake.put("k99.txt", "2")
+            val reads = mutableListOf<Int>()
+            val resumed =
+                org.krost.unidrive.stagedRowsOf(chunk = 10) { after, limit ->
+                    staged.filter { after == null || it.id > after }.take(limit).also { reads += it.size }
+                }
+            val context = ScanContext("k24.txt", resumed, { _, _ -> })
+
+            val page = provider(fake).delta(null, scanContext = context)
+
+            assertEquals((staged.map { it.id } + "k99.txt").map { "/$it" }, page.items.map { it.path }, "the staged items, then the listed one")
+            assertEquals(listOf(10, 10, 5), reads, "the staging was read in chunks of 10, once")
+        }
+
+    @Test
     fun `children are the files and the folders one level down, not the folder's own marker`() =
         runTest {
             val fake = FakeS3()

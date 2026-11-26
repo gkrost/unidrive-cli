@@ -267,8 +267,8 @@ internal const val CURSOR_ANCESTOR_TAG: String = "cursor-listing|ancestor"
  */
 internal class CursorResume(
     val marker: CursorMarker,
-    val rows: List<CloudItem>,
-    val ancestors: List<CloudItem> = emptyList(),
+    val rows: Iterable<CloudItem>,
+    val ancestors: Iterable<CloudItem> = emptyList(),
 )
 
 /**
@@ -280,13 +280,14 @@ internal class CursorResume(
  */
 internal fun cursorResumeOf(
     marker: String?,
-    staged: List<CloudItem>,
+    staged: Iterable<CloudItem>,
 ): CursorResume? {
     val decoded = decodeCursorMarker(marker) ?: return null
-    val mine = staged.filter(::isCursorStaged)
+    // Lazy views, each pass reading the staging again: the rows of a long listing are not held here.
+    val mine = Iterable { staged.asSequence().filter(::isCursorStaged).iterator() }
     val claimsProgress = decoded.folders != StreamPosition() || decoded.files != StreamPosition()
-    if (claimsProgress && mine.isEmpty()) return null
-    return CursorResume(decoded, mine, staged.filter { it.hash == CURSOR_ANCESTOR_TAG })
+    if (claimsProgress && mine.none()) return null
+    return CursorResume(decoded, mine, Iterable { staged.asSequence().filter { it.hash == CURSOR_ANCESTOR_TAG }.iterator() })
 }
 
 /**
