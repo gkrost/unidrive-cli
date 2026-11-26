@@ -293,7 +293,17 @@ that holds both as two files would have the second one's bytes replace the first
 - The daemon remembers, per name below the root, the spelling the first mutating verb used for it (the `path` as the
   client sent it, before the NFC step). A later `create`, `mkdir`, `open_write`, `open_write_begin`, `rename` (either
   end), `unlink` or `rmdir` that names that name, or a folder above it, by another spelling answers
-  `{"ok":false,"error":"name_clash"}` before anything is touched or queued. The client renames one of the two files.
+  `{"ok":false,"error":"name_clash","sibling":"<the spelling it clashed with>"}` before anything is touched or queued. The
+  client renames one of the two files.
+- **The NFC spelling always wins** (owner decision 2026-11-26, gkrost/unidrive-cli#948): a `create`, `open_write` or
+  `open_write_begin` that names the NFC spelling of a name a client first used in decomposed form replaces that earlier
+  twin (its row is deleted first on `create`). The decomposed spelling after an NFC one is the refused one. A decomposed
+  twin that holds bytes the cloud has not seen (never uploaded, an edit or an upload not finished) is never replaced: the
+  NFC arrival is refused with `{"ok":false,"error":"name_clash","sibling":"<the decomposed twin>","reason":"unsynced_bytes"}`
+  and the twin keeps its row.
+- A pair the cloud listing brought in (the item spelled in NFC holds the name, its decomposed twin sits under a decorated
+  name) is known without a first verb: the decomposed spelling of its name is a `name_clash`. A decomposed cloud name with
+  no twin takes either spelling (#24, 2026-11-02).
 - Only names with a non-ASCII character are tracked (a plain ASCII name cannot have a twin). A successful `unlink`,
   `rmdir` or the old end of a `rename` frees the spellings of the name and of everything below it.
 - Reads are not guarded: a read verb resolves an NFD request to the NFC row (archive#171).
@@ -883,7 +893,7 @@ noticed at once, not when the download ends. Requests the client sends while one
 | `outside_scope` | create, mkdir, rename (both ends), open_write_begin | path outside the profile's sync_path set |
 | `read_only` | create, mkdir, unlink, rmdir, rename (either end), open_write_begin, open_write | the path is the trash or the backups root or lies below it (section 4.1), or is the root of a view or lies below it (section 4.2); nothing was touched or queued |
 | `busy` | dehydrate, replace-rename, unlink, rmdir | an upload is in flight on that path (unlink, dehydrate), below it (rmdir), or on the source or destination of a replace-rename; nothing was touched, retry once the upload's `completed` event has arrived |
-| `name_clash` | create, mkdir, open_write, open_write_begin, rename, unlink, rmdir | the path names a name, or a folder above it, by another Unicode spelling (composed / decomposed) than the one a client used for it first (kept in state.db across restarts, section 3.9); both are one row and one cloud path, so the second would overwrite or delete the first. Nothing was touched or queued. Section 3.9 |
+| `name_clash` | create, mkdir, open_write, open_write_begin, rename, unlink, rmdir | the path names a name, or a folder above it, by another Unicode spelling (composed / decomposed) than the one a client used for it first (kept in state.db across restarts, section 3.9); both are one row and one cloud path, so the second would overwrite or delete the first. Nothing was touched or queued. The reply names the other spelling (`sibling`) and, when the NFC spelling is refused because the decomposed twin holds unsynced bytes, `"reason":"unsynced_bytes"`. Section 3.9 |
 | `excluded` | completed event, rename | keep-local name, never uploaded; a rename of a row that has a cloud copy onto such a name is refused with it (the row and the remote are untouched, `HydrationImpl.rename`) |
 | `cancelled` | completed event; open_read, hydrate (and their `failed` / `completed` events) | upload aborted by hydration.cancel; a wait for a download ended by hydration.cancel or by the connection closing (section 5): not a failure, the entry shows no `error`. Pinned by `events/failed-cancelled.ndjson` and `events/completed-download-cancelled.ndjson` |
 | `similar_name[: <sibling>]` | failed and completed events, `hydration.list` (`blocked`) | the drive compares the entry's name as equal to a sibling's and refused it under its own name and under a server name; the local file is kept, nothing is retried. `: <sibling>` names the conflicting sibling when known |
