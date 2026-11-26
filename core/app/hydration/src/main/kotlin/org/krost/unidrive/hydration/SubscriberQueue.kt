@@ -2,6 +2,7 @@ package org.krost.unidrive.hydration
 
 import kotlinx.coroutines.channels.Channel
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * One subscribed connection's queue (see [HydrationIpcHandler]). [wake] (conflated) tells the writer coroutine that the queue
@@ -15,7 +16,7 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 internal class SubscriberQueue<E>(
     replay: List<E>,
-    liveCapacity: Int,
+    private val liveCapacity: Int,
     private val terminalHardCap: Int,
     private val isTerminal: (E) -> Boolean,
     private val seqOf: (E) -> Long,
@@ -25,7 +26,28 @@ internal class SubscriberQueue<E>(
     private val other = ArrayDeque<E>()
     val wake = Channel<Unit>(Channel.CONFLATED)
     val dropped = AtomicInteger(0)
-    private val capacity = liveCapacity + replay.size
+
+    // The replay is room on top of [liveCapacity] only while it is still queued (review of #984): its elements are never cut,
+    // and once they are delivered the live bound is the plain one again.
+    private val replayTailSeq = replay.lastOrNull()?.let(seqOf) ?: Long.MIN_VALUE
+    private var replayPending = replay.size
+
+    /** The dispatch number of the last element [poll] handed out (or the one the subscriber started after): what it has been given. */
+    @Volatile
+    var lastPolledSeq: Long = Long.MIN_VALUE
+
+    private val polls = AtomicLong(0)
+    private var pollsAtLastLook = -1L
+
+    /**
+     * True when the reader was last given something before [seq] and has not polled since the previous call: it is not reading
+     * while the replay ring approaches [seq] (gkrost/unidrive-cli#845). Under the handler's fan-out lock.
+     */
+    fun notReadingBefore(seq: Long): Boolean {
+        if (lastPolledSeq >= seq) return false
+        val now = polls.get()
+        return (now == pollsAtLastLook).also { pollsAtLastLook = now }
+    }
 
     init {
         replay.forEach(::enqueue)
@@ -41,14 +63,12 @@ internal class SubscriberQueue<E>(
         var overHardCap = false
         synchronized(lock) {
             enqueue(element)
-            if (terminal.size + other.size > capacity) {
-                if (other.isNotEmpty()) {
-                    other.removeFirst()
-                    dropped.incrementAndGet()
-                } else if (terminal.size > terminalHardCap) {
-                    overHardCap = true
-                }
+            if (terminal.size + other.size > liveCapacity + replayPending && other.isNotEmpty()) {
+                other.removeFirst()
+                dropped.incrementAndGet()
             }
+            // Whatever else is queued: outcomes are never dropped, so their number is what the cap bounds.
+            if (terminal.size > terminalHardCap) overHardCap = true
         }
         wake.trySend(Unit)
         return overHardCap
@@ -56,9 +76,21 @@ internal class SubscriberQueue<E>(
 
     fun poll(): E? =
         synchronized(lock) {
-            val t = terminal.firstOrNull() ?: return other.removeFirstOrNull()
+            val t = terminal.firstOrNull()
             val o = other.firstOrNull()
-            if (o == null || seqOf(t) < seqOf(o)) terminal.removeFirst() else other.removeFirst()
+            val next =
+                when {
+                    t == null -> other.removeFirstOrNull()
+                    o == null || seqOf(t) < seqOf(o) -> terminal.removeFirst()
+                    else -> other.removeFirst()
+                }
+            if (next != null) {
+                val seq = seqOf(next)
+                if (seq <= replayTailSeq && replayPending > 0) replayPending--
+                lastPolledSeq = seq
+                polls.incrementAndGet()
+            }
+            next
         }
 
     private fun enqueue(element: E) {
