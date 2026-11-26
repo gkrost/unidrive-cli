@@ -356,7 +356,7 @@ class DaemonRuntime(
                 }
             }
             try {
-                authenticateOrRelogin(provider) // #861: an expired Internxt session signs in with the vaulted password
+                authenticateOrRelogin(provider, vaultRelogin, signInTarget, credentialHealthCheck) // #861: an expired Internxt session signs in with the vaulted password
             } catch (e: Exception) {
                 System.err.println(
                     "unidrive daemon: authentication failed for profile " +
@@ -1017,7 +1017,7 @@ class DaemonRuntime(
                 server.registerHandler(AuthLoginRpcHandler.BEGIN) { _, json -> signInHandler.begin(json) }
                 server.registerHandler(AuthLoginRpcHandler.COMPLETE) { _, json -> signInHandler.complete(json) }
                 server.registerHandler(AuthLoginRpcHandler.LOGIN) { _, json -> signInHandler.login(json) }
-                vaultRelogin?.let { r -> serveScope.launch { r.watch(credentialHealthTtlMs.coerceAtLeast(1_000), { sessionExpired(credentialHealth, mount) }, signInHandler::login) } } // #861
+                vaultRelogin?.let { r -> serveScope.launch { r.watch(credentialHealthTtlMs.coerceAtLeast(1_000), { sessionExpired(credentialHealth, mount, signedInAtMs) }, signInHandler::login) } } // #861
 
                 // auth.check (§4.12, archive#1240): the credential check goes through the daemon's own provider instance, the one that
                 // holds and refreshes the token, so a CLI check never races that refresh.
@@ -1188,32 +1188,6 @@ class DaemonRuntime(
         runCatching { lock?.unlock() }
         lock = null
     }
-
-    // gkrost/unidrive-cli#861: the start's authentication; an expired session (never a signed-out one) is signed in again
-    // with the vaulted password through the auth.login step before the start gives up, and a two-factor account says so.
-    private suspend fun authenticateOrRelogin(provider: CloudProvider) {
-        try {
-            provider.authenticateAndLog()
-        } catch (e: org.krost.unidrive.AuthRequiredException) {
-            val relogin = vaultRelogin ?: throw e
-            val target = signInTarget ?: throw e
-            val expired = credentialHealthCheck?.let { CredentialHealthMonitor.toReading(it(), 0L).state } == CredentialHealthMonitor.State.EXPIRED
-            if (!expired) throw e
-            when (relogin.attempt(AuthLoginRpcHandler(target, onSignedIn = {})::login)) {
-                InternxtVaultRelogin.Outcome.SIGNED_IN -> provider.authenticateAndLog()
-                InternxtVaultRelogin.Outcome.TOTP_REQUIRED -> throw org.krost.unidrive.AuthRequiredException("${e.message} (totp_required: the vaulted password needs a two-factor code)", e)
-                else -> throw e
-            }
-        }
-    }
-
-    // gkrost/unidrive-cli#861: the session needs a sign-in (the reading daemon.status reports as `expired`); a signed-out profile does not.
-    private fun sessionExpired(
-        credentialHealth: CredentialHealthMonitor,
-        mount: MountEngine,
-    ): Boolean =
-        credentialHealth.reading().withRejection(rejectionAfterSignIn(mount.authRejectedAtMs, signedInAtMs), mount.lastProviderContactAtMs).state ==
-            CredentialHealthMonitor.State.EXPIRED
 
     companion object {
         /** gkrost/unidrive-cli#72: the cleanup headroom of a stop (spec I7), on top of the upload drain. */

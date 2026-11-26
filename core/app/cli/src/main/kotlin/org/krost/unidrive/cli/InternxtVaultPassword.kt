@@ -6,6 +6,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import org.krost.unidrive.authenticateAndLog
 import org.krost.unidrive.sync.ProfileInfo
 import org.slf4j.LoggerFactory
 import java.security.MessageDigest
@@ -140,6 +141,53 @@ internal class InternxtVaultRelogin(
         MessageDigest.getInstance("SHA-256")
             .digest((stored.email + "\u0000" + stored.password).toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
+}
+
+/**
+ * The daemon's authentication of [provider] at start: an expired session (never a signed-out one, read by [healthCheck])
+ * is signed in again with the vaulted password through the `auth.login` step before the start gives up, and a two-factor
+ * account says `totp_required` in the refusal. Without [relogin] (no Internxt profile) or [target] it is the plain one.
+ */
+internal suspend fun authenticateOrRelogin(
+    provider: org.krost.unidrive.CloudProvider,
+    relogin: InternxtVaultRelogin?,
+    target: ProfileTarget?,
+    healthCheck: (() -> org.krost.unidrive.CredentialHealth)?,
+) {
+    try {
+        provider.authenticateAndLog()
+    } catch (e: org.krost.unidrive.AuthRequiredException) {
+        val expired = healthCheck?.let { CredentialHealthMonitor.toReading(it(), 0L).state } == CredentialHealthMonitor.State.EXPIRED
+        val outcome = if (relogin != null && target != null && expired) relogin.attempt(AuthLoginRpcHandler(target, onSignedIn = {})::login) else null
+        if (outcome != InternxtVaultRelogin.Outcome.SIGNED_IN) {
+            throw if (outcome == InternxtVaultRelogin.Outcome.TOTP_REQUIRED) {
+                org.krost.unidrive.AuthRequiredException("${e.message} (totp_required: the vaulted password needs a two-factor code)", e)
+            } else {
+                e
+            }
+        }
+        provider.authenticateAndLog()
+    }
+}
+
+/** The running daemon's session needs a sign-in: the reading `daemon.status` reports as `expired` (a signed-out profile does not). */
+internal fun sessionExpired(
+    credentialHealth: CredentialHealthMonitor,
+    mount: org.krost.unidrive.hydration.MountEngine,
+    signedInAtMs: Long?,
+): Boolean =
+    credentialHealth.reading().withRejection(rejectionAfterSignIn(mount.authRejectedAtMs, signedInAtMs), mount.lastProviderContactAtMs).state ==
+        CredentialHealthMonitor.State.EXPIRED
+
+/** `daemon run`'s vault seam: an Internxt profile keeps its sign-in in the vault (the verbs) and signs an expired session in again. */
+internal fun Main.wireDaemonVault(
+    runtime: DaemonRuntime,
+    profile: ProfileInfo,
+    start: DaemonVaultStart,
+) {
+    val internxt = profile.type == "internxt"
+    runtime.vault = daemonVault(start, internxtProfile = profile.name.takeIf { internxt })
+    if (internxt) runtime.vaultRelogin = InternxtVaultRelogin { vaultedInternxtSignIn(profile.name) }
 }
 
 /**

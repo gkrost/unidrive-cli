@@ -234,10 +234,7 @@ class DaemonRunCommand : Runnable {
             // issue#796: the vault seam — the verbs and the `vault-unlock:v1` capability exist when
             // vault.enc exists; the gate starts locked exactly on a locked start.
         ).apply { scopeConfig = { scope -> ScopeConfig.writeScope(parent.configBaseDir().resolve("config.toml"), profile.name, scope) }; presence = presenceSettings(parent) } // #860: sync_path, as `scope set`; #798: [general] require_presence
-        // gkrost/unidrive-cli#861: an Internxt profile keeps its sign-in in the vault (opt-in) and signs an expired session in again.
-        val internxt = profile.type == "internxt"
-        runtime.vault = parent.daemonVault(vaultStart, internxtProfile = profile.name.takeIf { internxt })
-        if (internxt) runtime.vaultRelogin = InternxtVaultRelogin { parent.vaultedInternxtSignIn(profile.name) }
+        parent.wireDaemonVault(runtime, profile, vaultStart) // #861: an Internxt profile's sign-in in the vault
         // archive#813: the profile the sign-in verbs sign in (its non-secret config, as `auth begin/complete/login` resolve it).
         // A config that cannot be read for it leaves them answering sign_in_unavailable; the daemon runs either way.
         runtime.signInTarget =
