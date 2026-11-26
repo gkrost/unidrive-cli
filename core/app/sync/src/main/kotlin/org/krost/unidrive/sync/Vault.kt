@@ -1,11 +1,5 @@
 package org.krost.unidrive.sync
 
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import org.krost.unidrive.io.OwnerOnly
 import org.krost.unidrive.io.OwnerOnlyAtomicWrite
 import java.io.IOException
@@ -106,7 +100,7 @@ class Vault(
 
         val key = deriveKey(passphrase, salt)
         val plaintext = decrypt(key, iv, ciphertext)
-        val data = parseJson(String(plaintext, Charsets.UTF_8))
+        val data = VaultJson.parseJson(String(plaintext, Charsets.UTF_8))
         beforeMarkerRepair()
         // Repair only the generation we decrypted. Vault replacement and deletion hold the same file lock.
         runCatching {
@@ -122,7 +116,7 @@ class Vault(
         data: Map<String, Map<String, String>>,
     ) {
         requireMinLength(passphrase)
-        val json = toJson(data)
+        val json = VaultJson.toJson(data)
         val salt = randomBytes(SALT_LENGTH)
         val iv = randomBytes(IV_LENGTH)
         val key = deriveKey(passphrase, salt)
@@ -226,30 +220,6 @@ class Vault(
     private fun requireMinLength(passphrase: CharArray) {
         require(passphrase.size >= MIN_PASSPHRASE_LENGTH) {
             "Passphrase must be at least $MIN_PASSPHRASE_LENGTH characters."
-        }
-    }
-
-    // ── JSON serialization ───────────────────────────────────────────────────
-
-    private fun toJson(data: Map<String, Map<String, String>>): String {
-        val obj =
-            buildJsonObject {
-                for ((profile, creds) in data) {
-                    put(
-                        profile,
-                        buildJsonObject {
-                            for ((k, v) in creds) put(k, JsonPrimitive(v))
-                        },
-                    )
-                }
-            }
-        return Json.encodeToString(JsonObject.serializer(), obj)
-    }
-
-    private fun parseJson(json: String): Map<String, Map<String, String>> {
-        val obj = Json.parseToJsonElement(json).jsonObject
-        return obj.mapValues { (_, v) ->
-            v.jsonObject.mapValues { (_, field) -> field.jsonPrimitive.content }
         }
     }
 }
