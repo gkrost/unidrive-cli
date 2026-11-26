@@ -2,65 +2,91 @@ package org.krost.unidrive.sync
 
 import java.nio.file.Path
 import java.sql.Connection
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * What a read-only open of state.db checks before it hands the file out, and what a writable close asks (#845, #744-2).
- * A read-only open never migrates: a file older than this build is refused with the way out, instead of failing in some
- * later query on a column it lacks.
+ * A read-only open never migrates and never writes. Owner decision 2026-11-26, "read what it can": a file that only
+ * lacks additive COLUMNS (they do not bump the stamp) still answers, the missing column reading as NULL; a missing
+ * table, a missing view or a stamp older than this build's is refused with the way out.
  */
 internal object StateDbSchemaCheck {
     private const val MISSING_SHOWN = 3
+
+    /** The tables of a schema with their columns, and its views. */
+    private class Shape(
+        val tables: Map<String, Set<String>>,
+        val views: Set<String>,
+    )
+
+    // This build's own bootstrap, read once per process and connector: it does not change while the process runs.
+    private val references = ConcurrentHashMap<StateDatabaseConnector, Shape>()
 
     /** Rows [c]'s INSERT/UPDATE/DELETE statements changed since it opened; 0 when it only read. A failed probe reads as "changed". */
     fun changedRows(c: Connection): Long =
         runCatching { c.createStatement().use { st -> st.executeQuery("SELECT total_changes()").use { rs -> if (rs.next()) rs.getLong(1) else 1L } } }
             .getOrDefault(1L)
 
-    /** Each table and view of [c] with its column names. */
-    fun shape(c: Connection): Map<String, Set<String>> =
-        c.createStatement().use { st ->
-            st
-                .executeQuery(
-                    "SELECT m.name, p.name FROM sqlite_master m JOIN pragma_table_info(m.name) p " +
-                        "WHERE m.type IN ('table','view') AND m.name NOT LIKE 'sqlite_%'",
-                ).use { rs ->
-                    val shape = mutableMapOf<String, MutableSet<String>>()
-                    while (rs.next()) shape.getOrPut(rs.getString(1)) { mutableSetOf() } += rs.getString(2)
-                    shape
-                }
+    private fun names(
+        c: Connection,
+        sql: String,
+    ): List<String> = c.createStatement().use { st -> st.executeQuery(sql).use { rs -> buildList { while (rs.next()) add(rs.getString(1)) } } }
+
+    private fun shape(c: Connection): Shape {
+        val master = "SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND type="
+        val tables = names(c, master + "'table'").associateWith { names(c, "SELECT name FROM pragma_table_info('$it')").toSet() }
+        return Shape(tables, names(c, master + "'view'").toSet())
+    }
+
+    private fun referenceShape(
+        dbPath: Path,
+        connector: StateDatabaseConnector,
+    ): Shape =
+        references.getOrPut(connector) {
+            val reference = StateDatabase(dbPath, inMemory = true, connector = connector)
+            try {
+                reference.initialize()
+                shape(reference.conn)
+            } finally {
+                reference.close()
+            }
         }
 
     /**
-     * The refusal text for the file open as [c], or null when it is current. [recorded] is its schema stamp. The reference
-     * is this build's own bootstrap in memory through [connector], so no list of names is kept beside the migrations:
-     * the additive migrations do not bump the stamp, and a file can carry the current one and still lack a column.
+     * Admits the read-only connection [c] of the file at [dbPath], stamped [recorded], or throws [IllegalStateException]
+     * with the way out. A table missing columns is shadowed, for this connection only, by a TEMP view that selects NULL
+     * in their place and keeps `rowid` (and `alive_entries` is shadowed with it), so every query by name keeps working: the gap is found
+     * once here, never by catching "no such column" later. The temp schema is not the file: nothing is written to it.
      */
-    fun refusal(
+    fun admit(
         dbPath: Path,
         recorded: Int,
         c: Connection,
         connector: StateDatabaseConnector,
-    ): String? {
-        val missing =
-            if (recorded < StateDatabase.SCHEMA_VERSION) {
-                listOf("schema $recorded, this build needs ${StateDatabase.SCHEMA_VERSION}")
-            } else {
-                val reference = StateDatabase(dbPath, inMemory = true, connector = connector)
-                val expected =
-                    try {
-                        reference.initialize()
-                        shape(reference.conn)
-                    } finally {
-                        reference.close()
-                    }
-                val actual = shape(c)
-                expected.flatMap { (table, columns) ->
-                    val have = actual[table] ?: return@flatMap listOf(table)
-                    (columns - have).map { "$table.$it" }
-                }
+    ) {
+        val missing = mutableListOf<String>()
+        val gaps = mutableMapOf<String, List<String>>()
+        if (recorded < StateDatabase.SCHEMA_VERSION) {
+            missing += "schema $recorded, this build needs ${StateDatabase.SCHEMA_VERSION}"
+        } else {
+            val expected = referenceShape(dbPath, connector)
+            val actual = shape(c)
+            for ((table, columns) in expected.tables) {
+                val have = actual.tables[table]
+                if (have == null) missing += "missing table $table" else if (!have.containsAll(columns)) gaps[table] = (columns - have).toList()
             }
-        if (missing.isEmpty()) return null
-        val shown = missing.take(MISSING_SHOWN).joinToString("; ") + if (missing.size > MISSING_SHOWN) "; ..." else ""
-        return "state.db at $dbPath was written by an older unidrive ($shown); run `unidrive sync` (or start the daemon) once to upgrade it."
+            missing += (expected.views - actual.views).map { "missing view $it" }
+        }
+        if (missing.isNotEmpty()) {
+            val shown = missing.take(MISSING_SHOWN).joinToString("; ") + if (missing.size > MISSING_SHOWN) "; ..." else ""
+            error("state.db at $dbPath was written by an older unidrive ($shown); run `unidrive sync` (or start the daemon) once to upgrade it.")
+        }
+        if (gaps.isEmpty()) return
+        c.createStatement().use { st ->
+            for ((table, absent) in gaps) {
+                st.execute("CREATE TEMP VIEW $table AS SELECT rowid AS rowid, *, ${absent.joinToString(", ") { "NULL AS $it" }} FROM main.$table")
+            }
+            if ("sync_entries" in gaps) st.execute("CREATE TEMP VIEW alive_entries AS SELECT * FROM temp.sync_entries WHERE status='EXISTS'")
+        }
     }
 }

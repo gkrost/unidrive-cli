@@ -10,6 +10,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import org.krost.unidrive.sync.model.SyncEntry
 import org.krost.unidrive.testing.TestScratch
@@ -140,17 +142,67 @@ class StateDatabaseOpenCommitTest {
             }
         }
 
+    private fun exec(file: Path, vararg sql: String) {
+        DriverManager.getConnection("jdbc:sqlite:$file").use { c -> c.createStatement().use { st -> sql.forEach { st.executeUpdate(it) } } }
+    }
+
     @Test
-    fun `a read-only command against an older schema refuses with a clear message and does not migrate`() {
-        for (older in listOf("missing additive column", "older version stamp")) {
-            val file = seededWithoutAdditiveColumn()
-            if (older == "older version stamp") olderStamp(file)
+    fun `a read-only command against a missing additive column still answers and reads it as absent`() {
+        val file = seededWithoutAdditiveColumn()
+        // More gaps of the same kind, with the partial index that rides on one of them.
+        exec(file, "DROP INDEX idx_sync_entries_name_block", "ALTER TABLE sync_entries DROP COLUMN name_block", "ALTER TABLE sync_entries DROP COLUMN upload_refused", "ALTER TABLE sync_entries DROP COLUMN changed_at_ms")
+        withObserver(file) { obs ->
             val before = footprint(file)
-            val ex = assertFailsWith<IllegalStateException>(older) { StateDatabase(file, readOnly = true).initialize() }
+            val version = obs.dataVersion()
+            StateDatabase(file, readOnly = true).also {
+                it.initialize()
+                assertEquals(50, it.getAllEntries().size)
+                var scanned = 0
+                it.scanAliveRowsOncePerPath { scanned++ } // the paged scan reads by rowid, which the shadowing view keeps
+                assertEquals(50, scanned)
+                val entry = assertNotNull(it.getEntry("/f3.txt"))
+                assertEquals("id-3", entry.remoteId)
+                assertNull(entry.changedBy, "the missing column reads as absent")
+                assertNull(entry.changedAtMs)
+                assertNull(it.uploadRefusal("/f3.txt"))
+                assertNull(it.nameBlock("/f3.txt"))
+                assertEquals(0, it.countNameBlocked("x"))
+                assertTrue(it.pendingUploadRows().isEmpty())
+                it.close()
+            }
+            assertEquals(version, obs.dataVersion(), "no commit ran")
+            assertEquals(before, footprint(file), "size, mtime, WAL and bytes unchanged")
+        }
+        assertTrue("changed_by" !in columns(file), "the column was not added")
+    }
+
+    @Test
+    fun `a read-only command against a missing table refuses with a clear message and writes nothing`() {
+        val file = seeded()
+        exec(file, "DROP TABLE rename_intents")
+        withObserver(file) { obs ->
+            val before = footprint(file)
+            val version = obs.dataVersion()
+            val ex = assertFailsWith<IllegalStateException> { StateDatabase(file, readOnly = true).initialize() }
             val msg = ex.message.orEmpty()
-            assertTrue(msg.contains("older unidrive") && msg.contains("unidrive sync"), "clear message ($older), got: $msg")
-            assertEquals(before, footprint(file), "nothing migrated or written ($older)")
-            assertTrue("changed_by" !in columns(file), "the column was not added ($older)")
+            assertTrue(msg.contains("older unidrive") && msg.contains("rename_intents") && msg.contains("unidrive sync"), "clear message, got: $msg")
+            assertEquals(version, obs.dataVersion(), "no commit ran")
+            assertEquals(before, footprint(file), "nothing migrated or written")
+        }
+    }
+
+    @Test
+    fun `a read-only command against stamp 3 refuses with a clear message and writes nothing`() {
+        val file = seededWithoutAdditiveColumn()
+        olderStamp(file)
+        withObserver(file) { obs ->
+            val before = footprint(file)
+            val version = obs.dataVersion()
+            val ex = assertFailsWith<IllegalStateException> { StateDatabase(file, readOnly = true).initialize() }
+            val msg = ex.message.orEmpty()
+            assertTrue(msg.contains("older unidrive") && msg.contains("schema 3") && msg.contains("unidrive sync"), "clear message, got: $msg")
+            assertEquals(version, obs.dataVersion(), "no commit ran")
+            assertEquals(before, footprint(file), "nothing migrated or written")
         }
     }
 

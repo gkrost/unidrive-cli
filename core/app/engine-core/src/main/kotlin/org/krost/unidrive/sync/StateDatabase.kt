@@ -398,7 +398,7 @@ class StateDatabase(
             check(recorded <= SCHEMA_VERSION) {
                 "state.db was written by a newer unidrive (schema $recorded, this build supports $SCHEMA_VERSION)."
             }
-            StateDbSchemaCheck.refusal(dbPath, recorded, c, connector)?.let { error(it) } // never migrated from here (#845)
+            StateDbSchemaCheck.admit(dbPath, recorded, c, connector) // never migrated from here (#845)
         } catch (e: Throwable) {
             runCatching { c.close() }
             throw e
