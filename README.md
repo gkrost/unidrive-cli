@@ -1,6 +1,6 @@
 # `unidrive`
 
-Multi-platform cloud-sync core. Pure JVM, zero telemetry. Modular SPI for Internxt Drive (zero-knowledge E2EE) and Microsoft OneDrive (Graph API). Runs as a user-space Linux daemon via systemd; platform tiers consume the engine over IPC — [`unidrive-mount-linux`](https://github.com/gkrost/unidrive-mount-linux) (FUSE) and the Windows client (CfAPI; new, changed, renamed and deleted files sync from the mount).
+Multi-platform cloud-sync core. Pure JVM, zero telemetry. Modular SPI for Internxt Drive (zero-knowledge E2EE), Microsoft OneDrive (Graph API), Dropbox and S3-compatible storage, plus a local-directory provider for tests. Optional client-side content encryption (X-tra) works over any of them. Runs as a user-space Linux daemon via systemd; platform tiers consume the engine over IPC — [`unidrive-mount-linux`](https://github.com/gkrost/unidrive-mount-linux) (FUSE) and the Windows client (CfAPI; new, changed, renamed and deleted files sync from the mount).
 
 ## Technical Layout
 
@@ -26,7 +26,7 @@ Multi-platform cloud-sync core. Pure JVM, zero telemetry. Modular SPI for Intern
 
 ## Build
 
-JDK 25+ and Linux with `systemd --user` for the packaged daemon. Internxt uses the host's native credential store: Linux requires an unlocked Secret Service and `secret-tool` (`libsecret-tools`), Windows uses user-scoped DPAPI, and macOS uses the user's login Keychain (macOS is not supported or tested in CI yet). Unsupported platforms and unavailable or locked stores fail closed without writing plaintext credentials; that is the Internxt rule. OneDrive's and Dropbox's tokens (Dropbox also its pending sign-in) use the same stores on Windows (DPAPI) and macOS (Keychain), and a token file written earlier is protected the first time it is read; on Linux they stay in `token.json` in the profile folder, written atomically and readable by the current user only, not encrypted (see [`SECURITY.md`](SECURITY.md)). The Gradle wrapper lives in `core/`.
+JDK 25+ and Linux with `systemd --user` for the packaged daemon. Internxt uses the host's native credential store: Linux requires an unlocked Secret Service and `secret-tool` (`libsecret-tools`), Windows uses user-scoped DPAPI, and macOS uses the user's login Keychain (macOS is not supported or tested in CI yet). Unsupported platforms and unavailable or locked stores fail closed without writing plaintext credentials; that is the Internxt rule. OneDrive's and Dropbox's tokens (Dropbox also its pending sign-in) use the same stores on Windows (DPAPI) and macOS (Keychain), and a token file written earlier is protected the first time it is read; on Linux they stay in `token.json` in the profile folder, written atomically and readable by the current user only, not encrypted (see [`SECURITY.md`](SECURITY.md)). With `vault seal-credentials on` these files and the provider secrets in `config.toml` are also sealed under a key kept in the vault (see `vault` below). The Gradle wrapper lives in `core/`.
 
 ```bash
 cd core && ./gradlew :app:cli:shadowJar    # build fat JAR → core/app/cli/build/libs/unidrive-*.jar
@@ -105,7 +105,14 @@ Daemon log: `~/.local/share/unidrive/unidrive.log`. Quick triage: `scripts/dev/l
 
 ### Session & Identity
 - `auth` — OAuth/token provisioning: the interactive sign-in, `begin` and `complete` (a sign-in in two steps, for front-ends), `login` (Internxt, without a console; the password, and with `--email-stdin` / `--totp-stdin` the e-mail and the two-factor code, on standard input; [spec](docs/dev/specs/ipc-authentication.md)) and `check` (`--json`: asks the provider with one call whether the profile's stored sign-in is still accepted, with no daemon, scan, sync or prompt; [spec](docs/dev/specs/cli-auth-check.md)). A sign-in as another user than the one the profile's sync state belongs to is refused (`account_changed`) before anything is stored ([spec](docs/dev/specs/cli-account-name.md))
-- `profile` — multi-profile management (`add`, `list`, `remove`, `default`, `set`)
+- `profile` — multi-profile management (`add`, `list`, `remove`, `default`, `set`, `reset-state`)
+  - `remove` deletes the profile's config section, profile folder, IPC tokens and socket, and its hydration and
+    ignore-rule caches. It keeps the caches (and prints their path) when the hydration cache holds edits that never
+    reached the cloud. If the removed profile was the default and exactly one profile is left, that one becomes the
+    default; otherwise `default_profile` is cleared. Refused while a daemon holds the profile (`--stop` asks it to stop
+    first) and while uploads are on their way (`--force-pending`). The sync root and mount root are never deleted.
+  - `reset-state` shrinks a stopped profile's state after its account was emptied or changed: it drops the `DELETED`
+    tombstones, rewrites `state.db`, and deletes `scan-staging.db` and `telemetry.db`. Offline: no daemon, no cloud call.
 - `backup` — backup profiles (`add`, `list`)
 - `logout` — sign out: remove stored credentials and revoke the token where the provider has a revoke call (Dropbox; for the others only the local credentials go, and the output says so); the sync state is kept (`--delete-state` removes it), and a running daemon performs the sign-out over IPC (`--json` for front-ends)
 
@@ -125,14 +132,17 @@ Daemon log: `~/.local/share/unidrive/unidrive.log`. Quick triage: `scripts/dev/l
 - `log` — show recent sync activity
 
 ### Daemon & Mount
-- `daemon` — per-profile daemon: `run` (foreground until SIGTERM), `status`, `stop`
+- `daemon` — per-profile daemon: `run` (foreground until SIGTERM), `status`, `stop`. A headless start with a `vault.enc` and no
+  source for its passphrase starts locked when the profile reads fields from the vault (or exits 78 with
+  `[general] require_vault`). A locked daemon waits for `vault.unlock` over IPC, which releases the vault's secrets to
+  it (the X-tra passphrase and a stored Internxt password among them). With a stored Internxt password the daemon signs an expired
+  Internxt session in again by itself; an account with a two-factor code reports `totp_required` instead.
+  `[general] require_presence` (`off` by default, `destructive`, `admin`) makes the daemon ask for a presence proof, a
+  signature by the user's platform credential (Windows Hello), before guarded verbs run
+  ([spec](docs/dev/specs/ipc-authentication.md), section 4a). The CLI cannot sign yet, so under `admin` its own guarded
+  requests (`profile remove --stop`, for example) are refused with `presence_required`.
 - `mount` — start the Linux FUSE co-daemon for a profile ([`unidrive-mount-linux`](https://github.com/gkrost/unidrive-mount-linux)); needs a running `daemon run`
 - `migrate` — one-time conversion of a legacy profile to a fixed mirror or mount mode ([independent-profiles](docs/adr/independent-profiles.md)): `inventory` (read-only dry run), `convert --mode mount|mirror`, and `upload-quarantined` for the files a mount conversion set aside
-
-If OneDrive Personal refused large uploads with “Invalid request” before the engine was updated, an unchanged file
-can still be deferred on restart for up to six hours. After updating, use the mount client's upload-queue retry to
-resubmit the cached file without changing it. A new client `hydration.open_write` submission clears the old refusal
-for that file. The transfer-history retry keeps the refusal in force until it expires.
 
 ### Storage
 - `ls` — list a remote folder (no recursion; `--live` forces a provider query)
@@ -144,7 +154,16 @@ for that file. The transfer-history retry keeps the refusal in force until it ex
 - `trash` — trash emulation (`list`, `restore`, `purge`)
 - `versions` — versioned files (`list`, `restore`, `purge`)
 - `relocate` — migrate data between cloud providers (`--from`, `--to`, `--delete-source`; the delete pass removes only what the migration transferred, by id, and is refused after any failed or size-only-skipped file)
-- `vault` — credential vault (`init`, `encrypt`, `decrypt`, `change-passphrase`, `forget`, `seal-credentials`)
+- `vault` — credential vault (`init`, `encrypt`, `decrypt`, `change-passphrase`, `forget`, `seal-credentials`,
+  `xtra-set`, `xtra-clear`, `internxt-password-set`, `internxt-password-clear`). Every subcommand takes `--json`: it
+  prints the result, or the refusal with its error token, as one JSON object and never prompts. Passphrases and
+  passwords come from standard input (`--passphrase-stdin`, `--xtra-passphrase-stdin`, `--password-stdin`) or a masked
+  prompt, never from an argument.
+  - `xtra-set` keeps the X-tra passphrase in the vault, so `vault.unlock` releases it to a daemon that has no other
+    source (the Windows tray starts daemons without a console or environment). `xtra-clear` drops it.
+  - `internxt-password-set` keeps an Internxt profile's password in the vault (opt-in), for the daemon's own re-sign-in
+    on an expired session. No command reads it back. `internxt-password-clear` turns the option off again.
+  - `forget` drops the vault entry of a profile that is no longer configured.
   - `vault seal-credentials on` seals the Internxt mnemonic (`credentials.json`) and the OneDrive and Dropbox OAuth
     tokens (`token.json`, and a pending `auth begin` sign-in) under a key kept in the vault, inside the platform
     protection (DPAPI, Keychain, Secret Service; on Linux the OneDrive and Dropbox tokens have no platform store, so the
@@ -164,8 +183,37 @@ for that file. The transfer-history retry keeps the refusal in force until it ex
     `config.toml` into `vault.enc` altogether.
 - `sweep` — detect and rehydrate zero-byte stub files (`--null-bytes` scan; `--dry-run` and `--rehydrate` modify it)
 
+### Client-side encryption (X-tra)
+- `xtra` — the key of profiles with `xtra_encryption = true`: `init`, `export-key`, `import-key`, `change-passphrase`,
+  and the same for the other content algorithms (`init-age`, `export-age`, `import-age`, `change-passphrase-age`,
+  `init-tink`, `change-passphrase-tink`). `xtra_algorithm` picks `aes-gcm` (the default), `age-v1` (files an offline
+  `age` tool decrypts from the identity alone) or `tink-aes-gcm`. File content is encrypted before it reaches the
+  provider; names, sizes and the folder tree are not. See [`config.example.toml`](docs/config-schema/config.example.toml).
+
+### Front-ends and `--json`
+A command run with `--json` never prompts and always answers with one JSON object, a refusal included, so a front-end
+such as the Windows client can read it. While a daemon runs, `status --pending` and `quota` take their answer from it
+over IPC (`daemon.status`).
+
 ### Tracking-set engine (experimental, frozen)
 - `ts` — `sync`, `claim`, `unclaim`, `status` (see `core/app/sync-tracking/README.md`)
+
+## Provider behaviour
+
+- A broken OneDrive or Internxt download resumes from the bytes already staged (a `Range` request), and the result is
+  checked whole against the provider's hash. A changed remote version starts over from zero.
+- OneDrive folds some names onto others (case, Unicode NFKC, zero-width characters, emoji variants). A name that would
+  land on an existing sibling is refused, with the sibling named and the row blocked, instead of being stored as a
+  renamed `name 1` copy.
+- S3 keys with a `.` or `..` path segment are left out of listings (with a warning) and are never signed. A folder that holds only such keys is not listed.
+- On a mount the NFC spelling of a name wins: a client that writes the NFC spelling of a file it first used in NFD form
+  replaces the earlier twin, and once the NFC upload lands the NFD object is deleted (to the trash where the provider
+  has one). A twin holding bytes the cloud has not seen is not replaced; the write is refused with `unsynced_bytes`.
+
+If OneDrive Personal refused large uploads with “Invalid request” before the engine was updated, an unchanged file
+can still be deferred on restart for up to six hours. After updating, use the mount client's upload-queue retry to
+resubmit the cached file without changing it. A new client `hydration.open_write` submission clears the old refusal
+for that file. The transfer-history retry keeps the refusal in force until it expires.
 
 ## Pipeline log measurements
 
@@ -183,7 +231,7 @@ engine retries. See [the event format and measurement limits](docs/logging.md#su
 
 ## Project state
 
-What is open is in the [issue tracker](https://github.com/gkrost/unidrive-cli/issues) (labels `lane:*`, `sev:*`, `area:*`). [`CLOSED.md`](CLOSED.md) is the ledger of what is done, and [`BOOSTERS.md`](BOOSTERS.md) maps the provider APIs the engine uses and misses.
+What is open is in the [issue tracker](https://github.com/gkrost/unidrive-cli/issues): priority labels `P1`–`P3`, kind labels `bug`, `enhancement`, `security`, `documentation` and `epic`, and `ready for development` / `post-MVP` for the state. Releases are on the [releases page](https://github.com/gkrost/unidrive-cli/releases) (the latest is v0.0.3, a preview). [`CLOSED.md`](CLOSED.md) is the ledger of what is done, and [`BOOSTERS.md`](BOOSTERS.md) maps the provider APIs the engine uses and misses.
 
 ## Issue references
 

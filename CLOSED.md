@@ -214,9 +214,58 @@ Issue and pull request numbers are of gkrost/unidrive-cli.
 - Views: every configured view is filled once at start, and a successful poll keeps the lists fresh (#631, PR #633)
 - Hydration: a `locate` verb answers where the items with the given remote ids are now (#632, PR #638)
 
+### Closed 2026-11-13 to 2026-11-26
+
+Windows Hello, the vault and credentials:
+- The unlock-helper step in the passphrase chain, vault stdin variants, the `vault.unlock` / `vault.lock` verbs and a locked daemon (#796, PR #800; the X-tra passphrase in the vault, PRs #942, #947)
+- The X-tra passphrase no longer reaches child processes (#785, PR #788); `config.toml` provider secrets are protected at rest on Windows (#786, PR #792); a secret protected on another computer is refused, not sent as plaintext (#896, PR #898)
+- `vault xtra-set` / `xtra-clear --json` with stable error tokens (#973, PR #985)
+- IPC hardening from the 2026-11-23 audit: co-daemon passphrase env, handle cap, OAuth loopback, logout atomicity, unlock helper (#927, PR #928)
+
+X-tra client-side encryption (revived, #710):
+- age-v1 with its dependency metadata (#801, PR #820), key material owned by the content strategy (#802), ranged reads on age-v1 (#803, PR #823), CLI verbs for the age identity (#804, PR #807), `xtra_algorithm` in the config schema (#805), Tink as `tink-aes-gcm` (#834, PR #837)
+- Algorithm-mismatch refusals are remembered for the run (#822, PR #832); a decrypt is staged and keeps the destination's permissions (#722, PR #727; #732, PR #735)
+
+IPC and daemon:
+- `hydration.open_read` names the etag of the served row (#707); `hydration.list` carries `changed_by` and `changed_at_ms` (#849, PR #864)
+- `history.list` order, the conflict-safe `history.retry` and the host-reported `history.report` (#848, PRs #872, #937), with `count` and `first_paths` (#954, PR #956)
+- `scope.get` / `scope.set` with a live scope swap (#860, PR #936); whole-sweep progress of a released delete hold (#851, PR #873)
+- A request whose peer disconnects stops its provider work (#760); the IPC sockets left the temp folder (#794); `status --pending` and `quota` answer from `daemon.status` (#706, PR #918); fewer IPC round trips and bounded CLI waits (#442)
+- `daemon run` applies `max_bandwidth_kbps` to mount transfers (#715, PR #720); transfer budget, upload queue depth and cache grace per profile (#72, PR #856)
+- No lost log lines when processes share the log (#897, PR #904); the audit log warns once when it cannot write (#780, PR #789)
+
+Hydration and mount:
+- `hydration.rmdir` names the `not_empty` reason and child and refuses over items indexed after the listing (#717, PR #737); a stale row no longer blocks a folder the cloud emptied (#824, PR #829); a child the listing never shows no longer refuses for days (#853, PR #858); `rm -rf` of a just-emptied folder (#635)
+- A size-based hydration time budget and per-provider maximum file sizes (#508, PR #920)
+- A mount-side delete burst no longer starves transfers: one trash call per listed delete, batches of 50, a coalescing window (#831, PRs #833, #885, #889)
+- A wiped hydration cache keeps local-only rule files (#775, PR #894); download paths keep an existing file aside, and the conflict log is guarded (#768, #779, PR #808)
+- `verify` audits mount profiles and `ls` names the daemon view (#825, PR #828); hydration robustness items (#438)
+
+Sync engine and state:
+- The remaining findings of the 2026-11-14 audit #742-#749 (#841, PRs #844, #846); what is still open is #845
+- A file replaced by a folder of the same name syncs (#723, PR #728); an incomplete enumeration runs no kind-change delete (#731, PR #734); conflict names are length-limited (#724, PR #725); a mirror folder rename (#713); the null-remote-id placeholder row documented and pinned (#782)
+- Tombstone retention, `profile reset-state` and staging reclaim (#863, PRs #865, #869, #871)
+- A `parent_gone` upload refusal is final until the user retries (#951, PR #955)
+- The upload snapshot no longer resolves every pending path per refresh (#763, PR #764)
+- Ignore rules: a cloud-only rule file is downloaded within the pass (#68), an older local rule file (#642), more default junk names (#757, PR #811), a lazy directory stat (#770, PR #811)
+- Audit items: sync engine (#439), core IO and HTTP (#440), providers (#441), core and engine-core addendum (#454), providers addendum (#453); the StateDatabase monitor time (#53) and the dialect-seam spike (#610)
+
+Providers:
+- OneDrive: `$select` on the full enumeration (#11, PR #915); a download asks for its URL directly (#946, PR #967); a name the drive folds onto a sibling is refused naming it (#950, PR #979); the delta folder cache after an ancestor rename (#835); per-tenant concurrency (#13); the 507 refusal (#16); the Cyberduck comparison items (#42); the Personal Vault (#405)
+- Internxt: upload concurrency 4 (#413, PR #923); a transient 502 on the file create is retried (#793, PR #809); `close()` during a start (#532, PR #809); the "prior file none" 409 loop (#665); a tree outside the drive root stays out of the scan loop (#862, PR #866); the security limits a compatible client inherits, documented (#648, PR #815); strict name compatibility (#29); Backups and Favorites as read-only folders (#51, #52, #888)
+- S3: connection reuse, no HEAD before every GET, Content-MD5 on single PUT (#563); configurable transfer concurrency (#576); the MinIO suite (#50)
+- Dropbox: sign-in for front-ends (#48); the redirect URI is printed before the browser sign-in (#142, PR #881)
+- `relocate` creates a missing `--target-path` (#826, PR #827) and no longer hides a `createFolder` 409 (#767); `profile add` for S3 without a console (#65)
+
+Build, tests and tools:
+- JVM baseline 25 (#443); local Gradle time (#726, PR #738); the CDS archive after a deploy (#705, PR #729); `redeploy-local.sh` evicts the startup caches (#733, PR #736); the dependency submission workflow (#357)
+- Tests: temp folders cleaned up (#790, PR #791); timing-sensitive tests (#739, #769, #781, #830); Windows-only failures (#816, #817, #847 PR #854); the shared fake's upload (#187); the Dropbox content-hash vector (#190, PR #880); localfs drift and Unicode tests (#31, PR #879); tracking-set 429 backoff (#18)
+- `golden.py run` reports failed rows promptly, line-buffered (#953, PR #958); `trash --remote --json` (#716, PR #718); the 2026-11-08 code-quality sweep (#535)
+- dist: `install.sh` no longer fetches the Linux co-daemon (#6, PR #914); the mount unit's pre-start unmount (#39); the storm-breaker live check (#312)
+
 ## Merged without closing their issue
 
-Part of a larger issue; what is left is in `BACKLOG.md`.
+Part of a larger issue; what is left is in the issue tracker.
 
 - `relocate` refused to run while its data-loss defects were open (`RELOCATE_ENABLED = false`; #56, #61, #62, #63, PR #94); all four are fixed (#56, #61 closed; #62 PR #636; #63 PR #647) and the command is on again (#653)
 - OneDrive delta: items without `parentReference.path` get their folder's path, and `deleteById` / `moveById` use the id (#82, PR #103); the percent-encoded path of an item is decoded (#58 V3, PR #96); a download is timed from its declared size (#58 V6, PR #113); a chunked create that meets its own empty leftover completes into it (#69, PR #88)
@@ -235,3 +284,11 @@ Part of a larger issue; what is left is in `BACKLOG.md`.
 - ci: `check-windows` and `check-runtime-jdk` off the default PR path; the CI build cache on, tests never cached (part of #596, PR #599)
 - Mount delete: tracked kind for the Internxt folder lookup (part of #634, PR #639); a folder a listing or delta pass already proved climbs no refusal ancestors (part of #634, PR #641)
 - jlink drops `jdk.crypto.ec`, the empty module SunEC left in `java.base` when it moved (part of #456, PR #649)
+- Windows Hello P3: the Internxt mnemonic (PR #943), the OneDrive and Dropbox tokens and pending sign-ins (PR #957) and the `config.toml` secret fields (PR #965) sealed under the vault key (#797; the provider audit #859)
+- Windows Hello P4: presence proofs for guarded IPC verbs, `require_presence` (#798, PR #944); the unlock helper's `sign` op proposed (PR #969)
+- Windows Hello P5: the vault keeps the Internxt password and the engine signs an expired session in again (#861, PR #959)
+- The 2026-11-14 audit remainder (#845): `--json` never prompts (PRs #970, #986), streaming gather and resume (PRs #971, #974, #994, #995), download resume (PRs #977, #996), state.db opens and the `pending_upload` column (PRs #978, #982, #990, #1002), the subscriber cap (PRs #984, #999), `profile remove` caches (PR #987), S3 dot-segment keys (PR #988)
+- NFC and NFD twins (#948): listed rows stay readable under another spelling (PR #980); the NFC spelling wins and the NFD object is deleted once the NFC upload lands (PR #998)
+- OneDrive folds (#950 follow-up): a failed or empty listing after a 409 is retried, shared renames list their own drive, refused renames block the row (PR #992)
+- `rm -r -y` no longer refuses its own run's data (#952, PR #960)
+- Rows the daemon lists but cannot resolve are named: `unresolvable_row`, a doctor check (#40, PR #903); the storm pause and dedup wait are bounded (#74, PR #900); a large OneDrive upload completes only into an item its own session reserved (#69, PR #902)

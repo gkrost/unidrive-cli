@@ -14,7 +14,7 @@ Key refs name symbols (class, function), not line numbers — the code moves fas
 | `/drive/root/delta` with deltaLink persistence | used | dedupe by `id`; ignore `parentReference.path` |
 | `?token=latest` skip initial crawl on reconnect | used | `GraphApiService.getDelta` (`fromLatest`) |
 | 410 Gone `resyncChanges*` restart | used | `OneDriveProvider.getDeltaConverting410` → `DeltaCursorExpiredException` → full re-enumeration |
-| `$select` on delta to slim payload | gap | #11 |
+| `$select` on delta to slim payload | used | `DeltaSelect.kt`: the full enumeration selects the fields `DriveItem` decodes; incremental links and `?token=latest` stay unselected (#11) |
 | `Prefer: deltashow*` | n/a | SPO/ODB only |
 | Change channel on the drive | used | `OneDriveChangeChannel` / `OneDriveChangeSocket` (Graph socket.io endpoint), wired in `OneDriveProvider` (#7); the webhook-subscription route is superseded |
 | Subscription lifetime auto-renewal | used | `SubscriptionRenewalScheduler` |
@@ -31,14 +31,15 @@ Key refs name symbols (class, function), not line numbers — the code moves fas
 | `deferCommit: true` | n/a | |
 | `If-Match` on createUploadSession | used | `ifMatchETag` on `createUploadSession`; stored sessions are bound to it |
 | `If-Match`/`@odata.etag` on mutating calls | used | `uploadSimple`, `moveItem`, `deleteItem` |
-| `fileSize` precheck → early 507 | gap | #16 |
+| `fileSize` precheck → early 507 | API gap | OneDrive Personal answers a session create that carries `item.fileSize` with 400 `invalidRequest` (measured 2026-11-22), so none is sent; a 507 from a chunk is the typed `InsufficientRemoteSpaceException` (`OneDriveSpaceRefusal`, #16) |
 
 ### Download
 | Capability | Status | Key refs |
 |---|---|---|
 | `@microsoft.graph.downloadUrl` preauth (~1h) | used | `GraphApiService.downloadFile`; refreshed when the tempauth token expires |
+| Resume a broken download from the staged prefix | used | `ResumableStaging` (`:app:core`), `OneDriveResume.kt`: `Range: bytes=N-`, only a matching 206 is used, the result is checked whole against the quickXorHash |
 | `Range` header parallel segments | gap | #9 |
-| `If-None-Match` + cTag conditional GET | gap | #10 |
+| `If-None-Match` + cTag conditional GET | n/a | not planned (#10): the delta and the hash check already stop repeated full downloads |
 
 ### Hashes and metadata
 | Capability | Status | Key refs |
@@ -51,10 +52,10 @@ Key refs name symbols (class, function), not line numbers — the code moves fas
 ### Batch / throttle
 | Capability | Status | Key refs |
 |---|---|---|
-| `$batch`, 20 subrequests, no `dependsOn` | partial | the delta-named URL read-ahead sends 20 `GET items/{id}` per `POST /$batch`; a throttled subresponse brakes the shared budget with its `Retry-After` (#8) |
+| `$batch`, 20 subrequests, no `dependsOn` | partial | read-ahead only: the delta-named URL read-ahead sends 20 `GET items/{id}` per `POST /$batch`; a throttled subresponse brakes the shared budget with its `Retry-After`. A download that needs a URL asks `GET /items/{id}` directly and never waits for a batch (`GraphApiService.itemForDownload`, #946). Per-item batching for reconciliation reads is not planned (#8) |
 | Per-inner 429 retry inside batch | gap | |
 | `Retry-After` strict + pause-all-threads on 429 | used | `HttpRetryBudget` (`:app:core`) |
-| Per-tenant concurrency calibration | gap | #13 |
+| Per-tenant concurrency calibration | used | the per-profile transfer budget (#856) and the adaptive storm budget; a per-account-type default can be filed again if a Business tenant throttles (#13) |
 | `HttpRetryBudget` per-provider override | used | `GraphApiService.throttleBudget` (8); per-host budgets in `InternxtApiService` (archive#131, drained) |
 
 ### Sharing
@@ -100,7 +101,7 @@ Key refs name symbols (class, function), not line numbers — the code moves fas
 | Capability | Status | Key refs |
 |---|---|---|
 | Two-layer: metadata + blob bridge | used | `InternxtApiService.startUpload`/`finishUpload`, `createFile`/`replaceFile` |
-| Multipart at ≥100 MiB threshold | used | `InternxtConfig.uploadCutoffMb` (100 MiB) / `uploadChunkMb` / `uploadConcurrency`; `InternxtApiService.startMultipartUpload`, `InternxtProvider.multipartUploadEntry` (archive#578) |
+| Multipart at ≥100 MiB threshold | used | `InternxtConfig.uploadCutoffMb` (100 MiB) / `uploadChunkMb` / `uploadConcurrency` (default 4); `InternxtApiService.startMultipartUpload`, `InternxtProvider.multipartUploadEntry` (archive#578) |
 | File size cap | used | `InternxtProvider.maxFileSizeBytes` (`GET /files/limits`) |
 | Resumable upload protocol | API gap | client-side only: `UploadTombstoneStore` |
 | Hash-based dedup | API gap | |
@@ -112,12 +113,13 @@ Key refs name symbols (class, function), not line numbers — the code moves fas
 | Capability | Status | Key refs |
 |---|---|---|
 | Range requests at bridge layer | used | bridge handles internally |
+| Resume a broken download from the staged prefix | used | `ResumableStaging` (`:app:core`), `ShardBodyPlan.kt`: the kept plaintext prefix is replayed through AES-CTR, and the shard hash, size and completeness checks run over the whole object |
 | Mirror selection | opaque | |
 
 ### Trash, versions, sharing
 | Capability | Status | Key refs |
 |---|---|---|
-| Trash via `POST /storage/trash/add` | used | `InternxtApiService.trashItems` |
+| Trash via `POST /storage/trash/add` | used | `InternxtApiService.trashItems`; deletes by id go in batches of up to 50 per call (`InternxtBatchTrash`) |
 | Versioning history | API gap | |
 | In-place uuid-preserving overwrite | used | `InternxtApiService.replaceFile` |
 | Private + public sharings | gap | `InternxtProvider.capabilities()` declares no `Share` |
@@ -155,15 +157,10 @@ High — correctness or large efficiency win:
 
 Medium — efficiency:
 2. OneDrive `Range` parallel-segment download (#9)
-3. OneDrive `If-None-Match` + cTag conditional GET (#10)
-4. OneDrive `$select` slim delta payload (#11)
-5. OneDrive `$batch` with `dependsOn` + per-inner 429 retry (#8)
-6. OneDrive `createUploadSession` 416 branch
-7. OneDrive `conflictBehavior` user-selectable
-8. OneDrive `createLink` client-side dedupe (#12)
-9. OneDrive per-tenant concurrency calibration (#13)
+3. OneDrive `createUploadSession` 416 branch
+4. OneDrive `conflictBehavior` user-selectable
+5. OneDrive `createLink` client-side dedupe (#12)
 
 Low — guards and UX:
-10. OneDrive `fileSize` precheck → early 507 (#16)
-11. Internxt `encryptVersion` legacy `02-rsa` support
-12. Document Internxt API limitations
+6. Internxt `encryptVersion` legacy `02-rsa` support
+7. Document Internxt API limitations
