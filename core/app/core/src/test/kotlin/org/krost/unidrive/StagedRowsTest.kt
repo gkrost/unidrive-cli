@@ -85,4 +85,22 @@ class StagedRowsTest {
         val stuck = stagedRowsOf(2) { _, _ -> listOf(row(0), row(1)) }
         assertFailsWith<IllegalStateException> { stuck.forEach { } }
     }
+
+    @Test
+    fun `a load that goes back to an earlier id fails instead of cycling`() {
+        val pages = listOf(listOf(row(1), row(2)), listOf(row(3), row(0)), listOf(row(1), row(2)))
+        var n = 0
+        val cycling = stagedRowsOf(2) { _, _ -> pages[n++ % pages.size] }
+        assertFailsWith<IllegalStateException> { cycling.forEach { } }
+    }
+
+    @Test
+    fun `ids are compared in the staging's bytewise order, not UTF-16 order`() {
+        // U+FF5E sorts below U+1F600 bytewise (EF.. < F0..) but above it as UTF-16 (FF5E > D83D).
+        val low = CloudItem("\uFF5E", "a", "/a", 1, false, null, null, null, null)
+        val high = CloudItem("\uD83D\uDE00", "b", "/b", 1, false, null, null, null, null)
+        val pages = listOf(listOf(low), listOf(high), emptyList())
+        var n = 0
+        assertEquals(listOf(low, high), stagedRowsOf(1) { _, _ -> pages[n++] }.toList())
+    }
 }

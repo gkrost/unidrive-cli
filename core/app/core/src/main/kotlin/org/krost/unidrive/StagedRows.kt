@@ -26,9 +26,23 @@ fun stagedRowsOf(
                 yieldAll(rows)
                 if (rows.size < chunk) break
                 val next = rows.last().id
-                check(next != after) { "load must advance past '$after', got '$next' again" }
+                check(after == null || compareUtf8(next, after) > 0) { "load must advance past '$after', got '$next'" }
                 after = next
             }
         }
     }
+}
+
+// The staging orders ids bytewise (SQLite BINARY over UTF-8), which String.compareTo (UTF-16 units) does not for supplementary characters.
+private fun compareUtf8(
+    a: String,
+    b: String,
+): Int {
+    val x = a.encodeToByteArray()
+    val y = b.encodeToByteArray()
+    for (i in 0 until minOf(x.size, y.size)) {
+        val d = (x[i].toInt() and 0xFF) - (y[i].toInt() and 0xFF)
+        if (d != 0) return d
+    }
+    return x.size - y.size
 }
