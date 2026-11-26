@@ -284,6 +284,20 @@ class StateDatabaseOpenCommitTest {
     }
 
     @Test
+    fun `a schema-4 file is read through the pending_upload fallback, not refused, when this build is at schema 5`() {
+        val file = seededWithPendingRow()
+        exec(file, "UPDATE sync_state SET value='4' WHERE key='schema_version'") // a file a schema-4 build wrote
+        StateDbSchemaCheck.expectedExtra["sync_entries"] = setOf("pending_upload") // the column #982's build adds with its stamp 5
+        try {
+            val rows = semanticValues(file, "pending_upload")
+            assertEquals(1, (rows["/pending.txt"] as Number).toInt())
+            assertEquals(0, (rows["/f1.txt"] as Number).toInt())
+        } finally {
+            StateDbSchemaCheck.expectedExtra.remove("sync_entries")
+        }
+    }
+
+    @Test
     fun `a writable open whose migration only runs DDL still checkpoints at close`() {
         val file = seededWithoutAdditiveColumn() // the stamp is current: the open adds the column and changes no row
         withObserver(file) { obs ->

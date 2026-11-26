@@ -328,7 +328,7 @@ class StatusCommand : Callable<Int> {
                 pendingCursor = cursor.pendingCursor
                 // archive#403: the items kept under a decorated name (unresolved duplicates).
                 duplicateNames = duplicateNamesOf(db)
-            } catch (e: IllegalStateException) { System.err.println(e.message) /* older schema: the way out; the audit goes on */ } finally {
+            } finally {
                 db.close()
             }
         }

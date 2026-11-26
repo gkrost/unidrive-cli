@@ -13,6 +13,13 @@ import java.util.concurrent.ConcurrentHashMap
 internal object StateDbSchemaCheck {
     private const val MISSING_SHOWN = 3
 
+    /**
+     * The oldest stamp a read-only open reads (owner decision 2026-11-26, "read what it can"). A newer build's file of
+     * stamp 4 or later is read through the NULL and [fallbacks] views below, not refused for being older than the
+     * build: raising [StateDatabase.SCHEMA_VERSION] (#982: 5) must not make this refuse every file it still reads.
+     */
+    const val OLDEST_READABLE_SCHEMA = 4
+
     /** The tables of a schema with their columns, and its views. */
     private class Shape(
         val tables: Map<String, Set<String>>,
@@ -93,8 +100,8 @@ internal object StateDbSchemaCheck {
     ) {
         val missing = mutableListOf<String>()
         val gaps = mutableMapOf<String, List<String>>()
-        if (recorded < StateDatabase.SCHEMA_VERSION) {
-            missing += "schema $recorded, this build needs ${StateDatabase.SCHEMA_VERSION}"
+        if (recorded < OLDEST_READABLE_SCHEMA) {
+            missing += "schema $recorded, the oldest this build reads is $OLDEST_READABLE_SCHEMA"
         } else {
             val expected = referenceShape(dbPath, connector)
             val actual = shape(c)
