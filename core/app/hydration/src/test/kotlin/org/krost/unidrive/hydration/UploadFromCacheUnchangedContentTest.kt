@@ -185,7 +185,7 @@ class UploadFromCacheUnchangedContentTest {
     fun `a file that never reached the cloud is uploaded`() =
         runTest {
             val content = ByteArray(1024) { 5 }
-            db.upsertEntry(syncedRow("/pending.bin", content, remoteId = "local:abc"))
+            db.upsertEntry(syncedRow("/pending.bin", content, remoteId = null))
             provider.deltaItems = emptyList()
             val cache = cacheFile("pending.bin", content)
 

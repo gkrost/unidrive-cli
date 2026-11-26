@@ -93,7 +93,7 @@ class ProfileResetStateTest {
 
     private fun entry(
         path: String,
-        remoteId: String,
+        remoteId: String?,
     ) = SyncEntry(
         path = path,
         remoteId = remoteId,
@@ -238,7 +238,7 @@ class ProfileResetStateTest {
     fun `pending uploads refuse the reset and nothing changes`() {
         val (s, g, t) =
             seedAll { db ->
-                db.upsertEntry(entry("/pending.txt", "local:/pending.txt").copy(isHydrated = true))
+                db.upsertEntry(entry("/pending.txt", null).copy(isHydrated = true))
             }
         assertEquals(1, resetJson())
         assertEquals("uploads_pending", refusalToken())

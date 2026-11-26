@@ -221,7 +221,7 @@ class StateDatabaseOpenCommitTest {
         assertTrue("changed_by" in columns(file), "the missing column was added")
         StateDatabase(file, readOnly = true).also {
             it.initialize()
-            assertEquals("4", it.getSyncState("schema_version"))
+            assertEquals(StateDatabase.SCHEMA_VERSION.toString(), it.getSyncState("schema_version"))
             it.close()
         }
     }

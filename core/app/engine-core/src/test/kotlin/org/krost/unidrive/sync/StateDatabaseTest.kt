@@ -1768,7 +1768,7 @@ class StateDatabaseTest {
                     "'u-b', '/Docs/b.pdf', 0, 'EXISTS'",
                     "'u-sub', '/Docs/Sub', 1, 'EXISTS'",
                     "'u-c', '/Docs/Sub/c.txt', 0, 'EXISTS'",
-                    "'local:pending', '/Inbox/new.txt', 0, 'EXISTS'",
+                    "'local:6f1c0d1e-0000-4000-8000-000000000001', '/Inbox/new.txt', 0, 'EXISTS'",
                     "'u-gone', '/Gone/old.txt', 0, 'DELETED'",
                 ).forEach { row ->
                     stmt.executeUpdate(
