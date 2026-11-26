@@ -86,6 +86,7 @@ internal class StreamingWithdrawals {
             is SyncAction.CreatePlaceholder -> action.path to action.remoteItem.id
             is SyncAction.UpdatePlaceholder -> action.path to action.remoteItem.id
             is SyncAction.TouchMetadata -> action.path to action.remoteItem.id
+            is SyncAction.MoveLocal -> action.path to action.remoteItem.id
             is SyncAction.Upload -> action.remoteId?.let { action.path to it }
             else -> null
         }
