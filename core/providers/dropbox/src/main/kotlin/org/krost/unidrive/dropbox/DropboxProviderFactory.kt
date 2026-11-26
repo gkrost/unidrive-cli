@@ -16,11 +16,14 @@ import java.nio.file.Path
  * [credentialProtector] keeps token.json (and the pending sign-in) protected at rest, as OneDriveProviderFactory does
  * for OneDrive: the host's native store where every host has one (Windows DPAPI, the macOS Keychain); on Linux it is
  * none, the owner-only file (see [org.krost.unidrive.auth.CredentialProtectors.atRestDefaultOrNull]). A token file
- * written before is read as it is and rewritten protected the first time it is loaded.
+ * written before is read as it is and rewritten protected the first time it is loaded. Over either sits the vault-key seal
+ * (gkrost/unidrive-cli#797, [org.krost.unidrive.auth.CredentialProtectors.sealableAtRestDefault]), which changes nothing
+ * until `vault seal-credentials on`.
  */
+@Suppress("TooManyFunctions") // the interface's bare + properties overload pairs and its credential hooks; none of them hides another
 open class DropboxProviderFactory(
     private val credentialProtector: org.krost.unidrive.auth.CredentialProtector? =
-        org.krost.unidrive.auth.CredentialProtectors.atRestDefaultOrNull(),
+        org.krost.unidrive.auth.CredentialProtectors.sealableAtRestDefault(),
 ) : ProviderFactory {
     override val id = "dropbox"
 
@@ -59,6 +62,10 @@ open class DropboxProviderFactory(
         profileDir: Path,
     ): Boolean = Files.exists(profileDir.resolve(DropboxAuth.TOKEN_FILE))
 
+    // gkrost/unidrive-cli#797: a token.json sealed under the vault key keeps the profile locked until vault.unlock.
+    override fun needsCredentialSeal(profileDir: Path): Boolean =
+        org.krost.unidrive.auth.KeyedCredentialProtector.isSealed(profileDir.resolve(DropboxAuth.TOKEN_FILE))
+
     // archive#866: the no-redirect code flow. `auth begin` hands out the authorize url and keeps the PKCE
     // verifier as a pending flow in the profile folder; `auth complete --code-stdin` exchanges the
     // code the user pasted. Dropbox has no device-code flow, so there is nothing to poll: one call.
@@ -85,7 +92,8 @@ open class DropboxProviderFactory(
         val flow = PendingDropboxFlow(handle, verifier, expiresAt.toString())
         // The save must succeed: no pending flow means no later process can complete the sign-in,
         // so an IOException here stops the handle from being handed out (it propagates).
-        pendingFlowStore(profileDir).save(flow)
+        // A new flow replaces a pending one, even one sealed under a key this process lacks (#797).
+        pendingFlowStore(profileDir).saveReplacingSealed(flow)
         val authorizeUrl =
             newHttpClientForBegin().use { client ->
                 DropboxAuth(
@@ -211,6 +219,9 @@ open class DropboxProviderFactory(
                     CredentialHealth.ExpiresIn(remainingMs / 3_600_000, "${remainingMs / 3_600_000}h", remainingMs = remainingMs)
                 }
             }
+        } catch (e: org.krost.unidrive.auth.CredentialLockedException) {
+            // Locked (#797): neither signed out nor unparseable; the message names the file and vault.unlock.
+            CredentialHealth.Warning(e.message ?: "token.json is sealed; unlock the vault")
         } catch (_: Exception) {
             CredentialHealth.Warning("token.json exists but could not be parsed")
         }

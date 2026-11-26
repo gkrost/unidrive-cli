@@ -84,11 +84,12 @@ class DropboxAuth(
     /**
      * Persists a freshly exchanged grant (the browser flow and the no-redirect flow share it). A grant of another account
      * than the one the profile's state belongs to ([AccountOwner], the token answer's `account_id`) is refused before
-     * anything is stored ([org.krost.unidrive.AccountChangedException]).
+     * anything is stored ([org.krost.unidrive.AccountChangedException]). A sign-in may replace a token.json sealed under
+     * a key this process lacks (#797); the refresh keeps the strict save.
      */
     internal fun saveToken(fresh: DropboxToken) {
         AccountOwner.requireSameUser(config.tokenPath, fresh.accountId)
-        store.save(fresh)
+        store.saveReplacingSealed(fresh)
         token = fresh
         AccountOwner.record(config.tokenPath, fresh.accountId)
     }

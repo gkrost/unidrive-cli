@@ -455,6 +455,16 @@ class AuthLifecycleTest {
     }
 
     @Test
+    fun `a sign-in step over a sealed file in a locked process says locked, not a failed sign-in (#797)`() {
+        val locked = { org.krost.unidrive.auth.CredentialLockedException("/p/device-flow.json is sealed under the vault key; unlock the vault first (vault.unlock)") }
+        assertEquals(
+            emptyList(),
+            signInTokens(listOf("locked" to locked), "credential_protection_unavailable", "credential_protection_unavailable"),
+        )
+        assertTrue("device-flow.json" in json().getValue("message").jsonPrimitive.content && "vault.unlock" in json().getValue("message").jsonPrimitive.content)
+    }
+
+    @Test
     fun `an unexpected failure is still one JSON refusal with the exception type only`() {
         LifecycleHooks.factoryFor = { throw IllegalStateException("client_secret=SHHH") }
 

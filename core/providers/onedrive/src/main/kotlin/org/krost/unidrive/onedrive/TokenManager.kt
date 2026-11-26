@@ -125,7 +125,7 @@ class TokenManager(
     private suspend fun storeSignIn(fresh: Token): Token {
         val user = identityOf(fresh)
         AccountOwner.requireSameUser(config.tokenPath, user)
-        oauthService.saveToken(fresh)
+        oauthService.saveToken(fresh, signIn = true)
         token = fresh
         saveDirty = false
         AccountOwner.record(config.tokenPath, user)

@@ -63,8 +63,15 @@ class OAuthService(
 
     suspend fun loadToken(): Token? = credentialStore.load()
 
-    suspend fun saveToken(token: Token) {
-        credentialStore.save(token)
+    /**
+     * [signIn] true for a sign-in: fresh credentials may replace a token.json sealed under a key this process lacks
+     * (#797). A refresh keeps the strict save, so a locked process never downgrades a sealed file.
+     */
+    suspend fun saveToken(
+        token: Token,
+        signIn: Boolean = false,
+    ) {
+        if (signIn) credentialStore.saveReplacingSealed(token) else credentialStore.save(token)
     }
 
     /** Removes the stored token, and its protected copy when [OneDriveConfig.credentialProtector] is set. */
