@@ -641,6 +641,9 @@ class FakeCloudProvider : CloudProvider {
     // the next API call failed.
     var persistThenFail: Boolean = false
 
+    /** The rows [org.krost.unidrive.ScanContext.resumedItems] held when the last delta() began. */
+    var lastResumedItems: List<CloudItem> = emptyList()
+
     override suspend fun delta(
         cursor: String?,
         onPageProgress: ((itemsSoFar: Int) -> Unit)?,
@@ -649,6 +652,8 @@ class FakeCloudProvider : CloudProvider {
         deltaCalls++
         deltaCursorArguments.add(cursor)
         lastScanContext = scanContext
+        // The resumed rows are a lazy view of the staging, which the engine clears when the pass completes: read them now.
+        lastResumedItems = scanContext?.resumedItems?.toList().orEmpty()
         duringDelta?.invoke()
         suspendDuringDelta?.invoke()
         if (deltaThrowExpiredOnResumedCursor && cursor != null) {
