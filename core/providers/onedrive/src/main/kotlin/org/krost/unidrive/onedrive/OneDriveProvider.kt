@@ -337,17 +337,6 @@ class OneDriveProvider(
     private fun GraphApiException.isItemGone(): Boolean =
         statusCode == 404 && message?.contains("resolved to a different name") != true
 
-    private fun GraphApiException.isInvalidRequest(): Boolean =
-        statusCode == 400 && message?.contains("\"code\":\"invalidRequest\"") == true
-
-    private fun GraphApiException.isNameAlreadyExists(): Boolean =
-        statusCode == 409 && message?.contains("nameAlreadyExists") == true
-
-    // A name the drive compares as equal to a sibling's although it differs: the file shapes of the refusal say
-    // so ("The specified item name is incompatible with a similar name on an existing item.").
-    private fun GraphApiException.isSimilarName(): Boolean =
-        isNameAlreadyExists() && message?.contains("similar name", ignoreCase = true) == true
-
     // The item at [path], and only that item. The drive resolves a path with the same name comparison it
     // applies to siblings, so a lookup of one name can answer its similar sibling: a delete or a move built on it
     // would act on the wrong file. A resolution to another name is answered as a missing item instead.
@@ -799,17 +788,6 @@ class OneDriveProvider(
     private fun rejectUnsupportedName(path: String) {
         OneDriveNameRules.issue(path)?.let { rule ->
             throw PermanentUploadFailureException("OneDrive cannot use '$path': $rule")
-        }
-    }
-
-    private fun GraphApiException.throwIfPermanentNameRefusal(path: String) {
-        val issue = OneDriveNameRules.issue(path)
-        if (isInvalidRequest() || statusCode == 403 && path.contains("_vti_", ignoreCase = true)) {
-            val reason = issue ?: if (statusCode == 403) "name contains the reserved _vti_ token" else "Graph rejected this name or path as invalidRequest"
-            throw PermanentUploadFailureException(
-                "OneDrive rejected '$path': $reason${if (isInvalidRequest()) " (invalidRequest)" else " (403 accessDenied)"}; Graph said: $message",
-                cause = this,
-            )
         }
     }
 
