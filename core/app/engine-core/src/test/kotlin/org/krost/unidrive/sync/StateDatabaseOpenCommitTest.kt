@@ -214,7 +214,7 @@ class StateDatabaseOpenCommitTest {
         db.initialize()
         try {
             return db.conn.createStatement().use { st ->
-                st.executeQuery("SELECT path, $column FROM alive_entries WHERE path IN ('/pending.txt', '/f1.txt')").use { rs ->
+                st.executeQuery("SELECT path, $column FROM alive_entries WHERE path IN ('/pending.txt', '/f1.txt', '/report.txt')").use { rs ->
                     buildMap { while (rs.next()) put(rs.getString(1), rs.getObject(2)) }
                 }
             }
@@ -263,38 +263,54 @@ class StateDatabaseOpenCommitTest {
         }
     }
 
-    @Test
-    fun `a v4 file with a pending local row read by a build with the pending_upload column shows it as pending`() {
+    /** A file as a schema-4 build wrote it: a minted pending row, a cloud row, and an S3 cloud row whose key starts with `local:`. */
+    private fun seededAsSchema4(): Path {
         val file = seededWithPendingRow()
-        assertEquals("remote_id GLOB 'local:*'", StateDbSchemaCheck.fallbacks["pending_upload"], "#982 keeps this registration")
-        StateDbSchemaCheck.expectedExtra["sync_entries"] = setOf("pending_upload")
-        try {
-            withObserver(file) { obs ->
-                val before = footprint(file)
-                val version = obs.dataVersion()
-                val rows = semanticValues(file, "pending_upload")
-                assertEquals(1, (rows["/pending.txt"] as Number).toInt())
-                assertEquals(0, (rows["/f1.txt"] as Number).toInt())
-                assertEquals(version, obs.dataVersion(), "no commit ran")
-                assertEquals(before, footprint(file), "nothing written")
-            }
-        } finally {
-            StateDbSchemaCheck.expectedExtra.remove("sync_entries")
+        StateDatabase(file).also { db ->
+            db.initialize()
+            db.upsertEntry(
+                SyncEntry(
+                    path = "/report.txt", remoteId = "local:report.txt", remoteHash = "h", remoteSize = 3,
+                    remoteModified = Instant.parse("2026-03-28T12:00:00Z"), localMtime = 1, localSize = 3, isFolder = false,
+                    isPinned = false, isHydrated = true, lastSynced = Instant.parse("2026-03-28T12:00:00Z"),
+                ),
+            )
+            db.close()
         }
+        exec(file, "DROP VIEW alive_entries", "DROP INDEX IF EXISTS idx_sync_entries_pending_upload", "ALTER TABLE sync_entries DROP COLUMN pending_upload",
+            "CREATE VIEW alive_entries AS SELECT * FROM sync_entries WHERE status='EXISTS'", "UPDATE sync_state SET value='4' WHERE key='schema_version'")
+        assertTrue("pending_upload" !in columns(file), "the fixture is a schema 4 file")
+        return file
     }
 
     @Test
-    fun `a schema-4 file is read through the pending_upload fallback, not refused, when this build is at schema 5`() {
-        val file = seededWithPendingRow()
-        exec(file, "UPDATE sync_state SET value='4' WHERE key='schema_version'") // a file a schema-4 build wrote
-        StateDbSchemaCheck.expectedExtra["sync_entries"] = setOf("pending_upload") // the column #982's build adds with its stamp 5
-        try {
-            val rows = semanticValues(file, "pending_upload")
-            assertEquals(1, (rows["/pending.txt"] as Number).toInt())
-            assertEquals(0, (rows["/f1.txt"] as Number).toInt())
-        } finally {
-            StateDbSchemaCheck.expectedExtra.remove("sync_entries")
+    fun `a schema-4 file opens read-only on a schema-5 build`() {
+        val file = seededAsSchema4()
+        assertEquals(5, StateDatabase.SCHEMA_VERSION, "this runs at the real schema 5")
+        withObserver(file) { obs ->
+            val before = footprint(file)
+            val version = obs.dataVersion()
+            StateDatabase(file, readOnly = true).also {
+                it.initialize()
+                assertTrue(assertNotNull(it.getEntry("/pending.txt")).isPendingUpload, "the minted row is pending")
+                assertTrue(!assertNotNull(it.getEntry("/report.txt")).isPendingUpload, "the local:-named cloud key is not")
+                assertEquals(listOf("/pending.txt"), it.pendingUploadPaths())
+                it.close()
+            }
+            assertEquals(version, obs.dataVersion(), "no commit ran")
+            assertEquals(before, footprint(file), "nothing written, nothing migrated")
         }
+        assertTrue("pending_upload" !in columns(file))
+    }
+
+    @Test
+    fun `a schema-4 S3 key local report txt reads as pending_upload 0, a minted key as 1`() {
+        val file = seededAsSchema4()
+        assertEquals(PendingUploadKeys.SCHEMA4_FALLBACK_SQL, StateDbSchemaCheck.fallbacks["pending_upload"], "#982's rule is the registered fallback")
+        val rows = semanticValues(file, "pending_upload")
+        assertEquals(1, (rows["/pending.txt"] as Number).toInt())
+        assertEquals(0, (rows["/report.txt"] as Number).toInt())
+        assertEquals(0, (rows["/f1.txt"] as Number).toInt())
     }
 
     @Test

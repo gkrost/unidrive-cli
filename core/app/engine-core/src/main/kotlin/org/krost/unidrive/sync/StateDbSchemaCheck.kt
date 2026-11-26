@@ -34,9 +34,9 @@ internal object StateDbSchemaCheck {
      * is absent as NULL (no entry). A column that changes what existing rows MEAN needs an entry that derives the
      * value from what the older file has. `pending_upload` (gkrost/unidrive-cli#744-3, #982: schema 5) must stay
      * registered here: a schema-4 file marks a pending upload by the id `local:<uuid>`, and NULL would read every
-     * pending row as a cloud row. Whichever of #978 and #982 merges second wires the real column to this entry.
+     * pending row as a cloud row. The registered SQL is #982's own rule ([PendingUploadKeys.SCHEMA4_FALLBACK_SQL]).
      */
-    internal val fallbacks = ConcurrentHashMap<String, String>(mapOf("pending_upload" to "remote_id GLOB 'local:*'"))
+    internal val fallbacks = ConcurrentHashMap<String, String>(mapOf("pending_upload" to PendingUploadKeys.SCHEMA4_FALLBACK_SQL))
 
     /** Test seam: table -> columns a later build adds, expected on top of this build's own bootstrap. */
     internal val expectedExtra = ConcurrentHashMap<String, Set<String>>()
