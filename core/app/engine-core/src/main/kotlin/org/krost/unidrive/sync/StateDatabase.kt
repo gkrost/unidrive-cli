@@ -71,6 +71,7 @@ class StateDatabase(
     val file: Path get() = dbPath
 
     private var _conn: Connection? = null
+    private var openedSchemaCookie: Long? = null // SQLite's schema cookie as the writable connection opened, before the bootstrap
     internal val conn: Connection
         get() = _conn ?: error("StateDatabase not initialized — call initialize() first")
 
@@ -275,6 +276,7 @@ class StateDatabase(
                 }
                 _conn = fresh
                 fresh = null // adopted: [_conn] closes it from here on
+                openedSchemaCookie = StateDbSchemaCheck.schemaCookie(conn) // a DDL-only migration changes no row: close() sees the cookie move
                 try {
                     bootstrapSchema()
                     if (!isDisposable) restrictSidecars()
@@ -414,10 +416,8 @@ class StateDatabase(
             statements.clear()
             scanStaging.close()
             _conn?.takeIf { !it.isClosed }?.let { c ->
-                // Moves what the WAL holds into the file and empties it, waiting a second at most for a reader of another
-                // connection: a copy of state.db alone is then complete again. The last connection to close does this
-                // anyway; this one may not be the last.
-                if (!readOnly && !isDisposable && StateDbSchemaCheck.changedRows(c) > 0) {
+                // Moves the WAL into the file and empties it (waits a second at most for another connection's reader), so a copy of state.db is complete.
+                if (!readOnly && !isDisposable && StateDbSchemaCheck.changedSince(c, openedSchemaCookie)) {
                     // #384 (measured in docs/dev/findings/state-db-optimize-page-size.md): the default `PRAGMA optimize`
                     // records the planner statistics before the checkpoint, so the next start reads them from the file —
                     // never a plain ANALYZE or an optimize mask, which analyse fully. Since SQLite 3.54 the bundled driver
