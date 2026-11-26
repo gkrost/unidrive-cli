@@ -339,13 +339,19 @@ class HydrationIpcHandler(
      * IpcServer's connection-close listener so subscribers tear down when their
      * UDS connection drops.
      */
-    fun start(scope: CoroutineScope, writer: suspend (connectionId: String, line: String) -> Boolean) = stream.start(scope, writer)
+    fun start(scope: CoroutineScope, writer: suspend (connectionId: String, line: String) -> Boolean) {
+        nfcWins.scope = scope
+        stream.start(scope, writer)
+    }
 
     /** gkrost/unidrive-cli#845: how the daemon closes a disconnected subscriber's connection; unset, it is only dropped. */
     fun onSubscriberDisconnected(closeConnection: (connectionId: String) -> Unit) = stream.onSubscriberDisconnected(closeConnection)
 
     /** Fan an event out to every subscriber (the single collector at the caller site drains hydration.events into here). */
-    fun dispatchEvent(event: HydrationEvent) = stream.dispatch(event)
+    fun dispatchEvent(event: HydrationEvent) {
+        stream.dispatch(event)
+        nfcWins.landed(event)
+    }
 
     /**
      * Tear down a subscriber: cancel its writer coroutine, close its queue, drop

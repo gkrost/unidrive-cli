@@ -54,6 +54,35 @@ internal class MountDelete(
      * state.db is only updated after the provider call succeeds (or is
      * determined to be a no-op because the remote is already gone).
      */
+    /**
+     * gkrost/unidrive-cli#948 (owner decision 2026-11-26): the NFC upload of [path] landed over the name the cloud held as
+     * [oldRemote], the item [previousId]. On a drive that addresses its items by path the old object is still there under the
+     * decomposed name: it is deleted (to the provider's trash where it has one), so one spelling is left. Nothing is deleted
+     * unless the row now holds another item than [previousId] (an upload that replaced it in place left nothing stale) and the
+     * decomposed name still is [previousId]. A failure is logged and changes nothing else: the NFC file and its row stay.
+     */
+    @Suppress("TooGenericExceptionCaught") // any failure of the delete is logged, never raised
+    suspend fun deleteStaleSpelling(
+        oldRemote: String,
+        previousId: String,
+        path: String,
+    ): Boolean {
+        val current = db.getEntry(path)?.remoteId
+        if (current == null || current == previousId) return false
+        return try {
+            val old = provider.getMetadata(oldRemote)
+            if (old.id != previousId || old.isFolder || old.deleted) return false
+            provider.delete(oldRemote)
+            log.info("#948: the decomposed object of {} is deleted after its NFC upload landed", path)
+            true
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log.warn("#948: the decomposed object of {} could not be deleted after its NFC upload landed: {}", path, e.javaClass.simpleName)
+            false
+        }
+    }
+
     @Suppress("TooGenericExceptionCaught") // any failure is classified: already gone, or rethrown unchanged
     suspend fun deleteRemote(
         path: String,

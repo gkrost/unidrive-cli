@@ -1,5 +1,7 @@
 package org.krost.unidrive.hydration
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonPrimitive
 import org.krost.unidrive.sync.PathNormalizer
 
@@ -21,6 +23,21 @@ internal class NfcSpellingWins(
     private val spellings: NameSpellings,
     private val hydration: Hydration,
 ) {
+    /** The scope the old object's delete runs in (the daemon's, set by [HydrationIpcHandler.start]); none: nothing is deleted. */
+    @Volatile var scope: CoroutineScope? = null
+
+    /**
+     * Owner decision (2026-11-26): the NFC upload of a name the cloud held in decomposed form landed, so the old object goes
+     * (to the trash where the provider has one) and one spelling is left. The delete runs outside the event's dispatch and
+     * never touches the NFC file; its failure is logged by [Hydration.deleteStaleSpelling].
+     */
+    fun landed(event: HydrationEvent) {
+        if (event !is HydrationEvent.Completed || !event.ok || event.direction != HydrationEvent.Completed.Direction.UPLOAD) return
+        if (!spellings.hasStale(event.path)) return
+        val stale = spellings.takeStale(event.path) ?: return
+        scope?.launch { hydration.deleteStaleSpelling(stale.remotePath, stale.remoteId, event.path) }
+    }
+
     /** The refusal reply for [rawPath], naming the spelling it clashed with; [reason] is added when the clash is not a plain one. */
     fun clashReply(
         rawPath: String,
