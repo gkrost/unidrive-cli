@@ -32,8 +32,13 @@ internal class SubscriberQueue<E>(
         if (replay.isNotEmpty()) wake.trySend(Unit)
     }
 
-    /** Add [element]; when over capacity, drop the oldest element that is not terminal. */
-    fun offer(element: E) {
+    /**
+     * Add [element]; when over capacity, drop the oldest element that is not terminal. Returns true when only outcomes are
+     * queued and they exceed the hard cap: the reader is gone for good in all but name, the queue drops nothing more, and the
+     * caller disconnects the subscriber (gkrost/unidrive-cli#845, item #746-9).
+     */
+    fun offer(element: E): Boolean {
+        var overHardCap = false
         synchronized(lock) {
             enqueue(element)
             if (terminal.size + other.size > capacity) {
@@ -41,13 +46,12 @@ internal class SubscriberQueue<E>(
                     other.removeFirst()
                     dropped.incrementAndGet()
                 } else if (terminal.size > terminalHardCap) {
-                    // Only outcomes are queued and the reader is gone for good in all but name: bound the memory.
-                    terminal.removeFirst()
-                    dropped.incrementAndGet()
+                    overHardCap = true
                 }
             }
         }
         wake.trySend(Unit)
+        return overHardCap
     }
 
     fun poll(): E? =
