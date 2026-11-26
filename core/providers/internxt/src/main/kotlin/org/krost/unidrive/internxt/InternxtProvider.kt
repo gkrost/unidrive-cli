@@ -3391,12 +3391,6 @@ class InternxtProvider(
         // are encoded in resumeMarker. A fresh scan starts both offsets at 0
         // with an empty resumedItems list.
         val resume = parseResumeOffsets(scanContext?.resumeMarker)
-        // Rows the cursor listing or the tree walk staged are theirs: their markers do not parse as offsets, so
-        // this listing starts over, and stale rows of another listing would rejoin it as if they were current.
-        val resumedRows =
-            scanContext?.resumedItems.orEmpty().filter { !isCursorStaged(it) && it.hash != CURSOR_ANCESTOR_TAG && !isTreeStaged(it) }
-        val resumedFolders = resumedRows.filter { it.isFolder }
-        val resumedFiles = resumedRows.filter { !it.isFolder }
         val allFiles = mutableListOf<InternxtFile>()
         val allFolders = mutableListOf<InternxtFolder>()
         // Resumed items rejoin the gather as Internxt model objects so the
@@ -3404,9 +3398,7 @@ class InternxtProvider(
         // updatedAt is unknown (the engine stripped it during staging), so
         // they're absent from the cursor-advance computation below — the
         // freshly-fetched pages dominate that anyway.
-        resumedFolders.mapTo(allFolders) { it.toResumedFolder() }
-        resumedFiles.mapTo(allFiles) { it.toResumedFile() }
-        logRowsWithoutStoredObject(resumedFiles.count(::namesNoStoredObject), "offset listing")
+        logRowsWithoutStoredObject(resumeOffsetRows(scanContext?.resumedItems ?: emptyList(), allFolders, allFiles), "offset listing")
 
         // UD-352: this delta() loops internally over both /files and /folders
         // pagination, accumulating *all* pages before returning a single
@@ -4559,7 +4551,7 @@ class InternxtProvider(
     ): DeltaPage? {
         val begun = System.nanoTime()
         val rootUuid = authService.getValidCredentials().rootFolderId
-        val staged = scanContext?.resumedItems.orEmpty()
+        val staged = (scanContext?.resumedItems ?: emptyList())
         val resume = cursorResumeOf(scanContext?.resumeMarker, staged)
         val startedAt = resume?.marker?.startedAt ?: serverNow().toString()
         var foldersAt = resume?.marker?.folders ?: StreamPosition()
@@ -4573,7 +4565,7 @@ class InternxtProvider(
         // answer the paths that run through them. Staged with the live rows, so a restart keeps them.
         val ancestors = LinkedHashMap<String, InternxtFolder>()
         if (resume == null) {
-            logFreshCursorStart(scanContext?.resumeMarker, staged.size)
+            logFreshCursorStart(scanContext?.resumeMarker, staged.count())
         } else {
             resumeFrom(resume, stream, folders, files, ancestors)
             logRowsWithoutStoredObject(resume.rows.count(::namesNoStoredObject), "cursor listing")
@@ -4768,7 +4760,7 @@ class InternxtProvider(
         // no context, is handed them on their own.
         creatableRoots: Set<String> = scanContext?.creatableRoots.orEmpty(),
     ): DeltaPage {
-        val resume = treeResumeOf(scanContext?.resumeMarker, scanContext?.resumedItems.orEmpty(), scopeRoots)
+        val resume = treeResumeOf(scanContext?.resumeMarker, (scanContext?.resumedItems ?: emptyList()), scopeRoots)
         val takenOverFrom = listingMarkerToCarry(scanContext?.resumeMarker)
         // The cursor of the page is the instant the walk began; a resumed walk keeps the first attempt's instant,
         // so the next incremental delta asks for everything since the beginning, the outage included.

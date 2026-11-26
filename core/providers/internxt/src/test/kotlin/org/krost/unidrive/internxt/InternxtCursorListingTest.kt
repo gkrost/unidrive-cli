@@ -74,6 +74,19 @@ class InternxtCursorListingTest {
                 }
             return ScanContext(markers.lastOrNull(), staged + foreign, persistPage, onProgress = onProgress)
         }
+
+        /** The size of every chunk [chunkedContext] read back from the staging. */
+        val chunkReads: MutableList<Int> = Collections.synchronizedList(mutableListOf())
+
+        /** [context], the rows read back [chunk] at a time as the engine hands them over: nothing is listed up front. */
+        fun chunkedContext(chunk: Int): ScanContext {
+            val staged = rows.values.sortedBy { it.id }.map { it.copy(path = "/${it.name}", created = null, mimeType = null) }
+            val resumed =
+                org.krost.unidrive.stagedRowsOf(chunk) { after, limit ->
+                    staged.filter { after == null || it.id > after }.take(limit).also { chunkReads += it.size }
+                }
+            return ScanContext(markers.lastOrNull(), resumed, persistPage)
+        }
     }
 
 
@@ -265,6 +278,33 @@ class InternxtCursorListingTest {
         }
 
     @Test
+    fun `a resumed cursor listing fed from the staging in chunks yields the same items as one fed the whole list`() =
+        runTest {
+            val staging = FakeStaging()
+            provider(DriveMock().engine).delta(null, null, staging.context()) // stores everything, both streams done
+            val whole = provider(DriveMock().engine).delta(null, null, staging.context())
+
+            val chunked = provider(DriveMock().engine).delta(null, null, staging.chunkedContext(chunk = 2))
+
+            assertEquals(whole.items.map(::essence), chunked.items.map(::essence), "the same items, in the same order")
+            assertTrue(staging.chunkReads.isNotEmpty() && staging.chunkReads.all { it <= 2 }, "no read of the staging returned more than a chunk")
+        }
+
+    @Test
+    fun `resuming the cursor listing reads no staged row until its rows are asked for`() {
+        val marker = cursorMarker("2026-10-03T10:00:00Z", StreamPosition(done = true), StreamPosition(done = true))
+        val pulled = java.util.concurrent.atomic.AtomicInteger()
+        val rows = (0 until 1000).map { CloudItem("f$it", "n$it", "/n$it", 1, false, null, null, CURSOR_STAGED_TAG, null) }
+        val staged = Iterable { rows.asSequence().onEach { pulled.incrementAndGet() }.iterator() }
+
+        val resume = assertNotNull(cursorResumeOf(marker, staged))
+
+        assertTrue(pulled.get() <= 1, "deciding whether the scan is resumable looks at one row at most, it pulled ${pulled.get()}")
+        assertEquals(1000, resume.rows.count())
+        assertEquals(0, resume.ancestors.count())
+    }
+
+    @Test
     fun `a marker of the offset listing is not resumable, the cursor listing starts over, ignores its rows and replaces the marker`() =
         runTest {
             val drive = DriveMock()
@@ -307,7 +347,7 @@ class InternxtCursorListingTest {
             assertNotNull(cursorResumeOf(unstarted, emptyList()), "no progress is claimed, nothing contradicts it")
             assertNull(cursorResumeOf(claimsDone, emptyList()))
             assertNull(cursorResumeOf(claimsDone, listOf(untagged)), "rows of another listing do not vouch for this marker")
-            assertEquals(listOf(tagged), assertNotNull(cursorResumeOf(claimsDone, listOf(untagged, tagged))).rows)
+            assertEquals(listOf(tagged), assertNotNull(cursorResumeOf(claimsDone, listOf(untagged, tagged))).rows.toList())
             assertNull(cursorResumeOf(InternxtProvider.buildMarker(2, 3), listOf(tagged)), "an offset marker is never resumed, whatever rows are there")
         }
 

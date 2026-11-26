@@ -519,6 +519,44 @@ class StateDatabaseScanStagingTest {
             db.close()
         }
     }
+
+    @Test
+    fun `resumed rows read through stagedRowsOf are exactly the rows loadStagedItems returns, a chunk at a time`() {
+        val db = opened()
+        try {
+            val scanId = db.beginScan(initialMarker = null)
+            val items =
+                (0 until 53).map { i ->
+                    CloudItem(
+                        id = "id%02d".format(i),
+                        name = "n$i",
+                        path = "/n$i",
+                        size = i.toLong(),
+                        isFolder = i % 5 == 0,
+                        modified = null,
+                        created = null,
+                        hash = "tag|$i",
+                        mimeType = null,
+                        parentId = "p",
+                        version = "v$i",
+                    )
+                }
+            db.persistScanPage(scanId, items.drop(20).reversed(), "m1")
+            db.persistScanPage(scanId, items.take(25), "m2")
+            val chunks = mutableListOf<Int>()
+
+            val resumed =
+                org.krost.unidrive.stagedRowsOf(chunk = 10) { after, limit ->
+                    db.loadStagedPage(scanId, after, limit).also { chunks += it.size }
+                }
+
+            assertEquals(db.loadStagedItems(scanId), resumed.toList(), "the same rows in the same order as the list it replaces")
+            assertEquals(listOf(10, 10, 10, 10, 10, 3), chunks, "no read returned more than one chunk")
+            assertEquals(db.loadStagedItems(scanId), resumed.toList(), "a second pass reads the staging again and gives the same rows")
+        } finally {
+            db.close()
+        }
+    }
 }
 
 /** Stages pages of ten rows and halts the JVM after the last one: no close, no shutdown hook. */

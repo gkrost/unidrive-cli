@@ -789,18 +789,13 @@ class RemoteGather(
         // slice is cleared. A throw mid-scan leaves both the slice and the
         // checkpoint intact so the next launch can pick up from there.
         val activeScan = db.getActiveScan(staleThreshold = java.time.Duration.ofHours(SCAN_CHECKPOINT_STALE_HOURS))
-        val resumedItems: List<CloudItem> =
-            if (activeScan != null) db.loadStagedItems(activeScan.scanId) else emptyList()
         val scanId =
             activeScan?.scanId
                 ?: db.beginScan(initialMarker = null)
+        val resumedItems: Iterable<CloudItem> =
+            if (activeScan != null) org.krost.unidrive.stagedRowsOf { after, limit -> db.loadStagedPage(scanId, after, limit) } else emptyList()
         if (activeScan != null) {
-            log.info(
-                "Resuming Internxt-style scan id={} marker={} ({} previously-staged items)",
-                scanId,
-                activeScan.marker,
-                resumedItems.size,
-            )
+            log.info("Resuming Internxt-style scan id={} marker={}", scanId, activeScan.marker)
         }
         val scanContext =
             org.krost.unidrive.ScanContext(

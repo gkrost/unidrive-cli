@@ -100,20 +100,26 @@ internal class TreeResume(
  */
 internal fun treeResumeOf(
     marker: String?,
-    staged: List<CloudItem>,
+    staged: Iterable<CloudItem>,
     scopeRoots: List<String>,
 ): TreeResume? {
     val decoded = decodeTreeMarker(marker) ?: return null
     if (decoded.roots != scopeRoots) return null
-    val mine = staged.filter(::isTreeStaged)
-    if (decoded.startsDone.isNotEmpty() && mine.isEmpty()) return null
-    val folderRows = mine.filter { it.isFolder }
-    return TreeResume(
-        marker = decoded,
-        files = mine.filter { !it.isFolder }.map { it.toTreeResumedFile() },
-        folders = folderRows.map { with(InternxtProvider) { it.toResumedFolder() } },
-        listedFolders = folderRows.filter { it.hash == TREE_DONE_TAG }.mapTo(HashSet()) { it.id } + decoded.startsDone,
-    )
+    // One pass over the staged rows: only the model objects the walk holds are kept, not the rows.
+    val files = mutableListOf<InternxtFile>()
+    val folders = mutableListOf<InternxtFolder>()
+    val listedFolders = HashSet<String>()
+    for (row in staged) {
+        if (!isTreeStaged(row)) continue
+        if (!row.isFolder) {
+            files += row.toTreeResumedFile()
+            continue
+        }
+        folders += with(InternxtProvider) { row.toResumedFolder() }
+        if (row.hash == TREE_DONE_TAG) listedFolders += row.id
+    }
+    if (decoded.startsDone.isNotEmpty() && files.isEmpty() && folders.isEmpty()) return null
+    return TreeResume(marker = decoded, files = files, folders = folders, listedFolders = listedFolders + decoded.startsDone)
 }
 
 private fun CloudItem.toTreeResumedFile(): InternxtFile = with(InternxtProvider) { toResumedFile() }
