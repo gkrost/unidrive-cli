@@ -36,7 +36,7 @@ internal object StateDbSchemaCheck {
      * registered here: a schema-4 file marks a pending upload by the id `local:<uuid>`, and NULL would read every
      * pending row as a cloud row. Whichever of #978 and #982 merges second wires the real column to this entry.
      */
-    internal val fallbacks = ConcurrentHashMap<String, String>(mapOf("pending_upload" to "remote_id GLOB 'local:*'"))
+    internal val fallbacks = ConcurrentHashMap<String, String>(mapOf("pending_upload" to PendingUploadKeys.SCHEMA4_FALLBACK_SQL))
 
     /** Test seam: table -> columns a later build adds, expected on top of this build's own bootstrap. */
     internal val expectedExtra = ConcurrentHashMap<String, Set<String>>()

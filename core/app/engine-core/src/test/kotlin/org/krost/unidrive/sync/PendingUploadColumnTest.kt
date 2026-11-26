@@ -384,6 +384,17 @@ class PendingUploadColumnTest {
         assertTrue("incoming remote_id=cloud-2" in rekeyWarning("/a.txt", "cloud-2", "cloud-1"))
     }
 
+    @Test
+    fun `a read-only open of a schema 4 file reads a local-prefixed cloud key as a cloud row`() {
+        writeSchema4File()
+        StateDatabase(file, readOnly = true).also { it.initialize() }.use {
+            assertEquals(listOf("/pending.txt"), it.pendingUploadPaths())
+            assertEquals("local:report.txt", it.getEntry("/report.txt")?.remoteId)
+            assertNull(it.getEntry("/pending.txt")?.remoteId)
+        }
+        assertFalse("pending_upload" in columns(), "the read-only open did not migrate")
+    }
+
     private inline fun <T> StateDatabase.use(body: (StateDatabase) -> T): T =
         try {
             body(this)

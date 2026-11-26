@@ -266,7 +266,7 @@ class StateDatabaseOpenCommitTest {
     @Test
     fun `a v4 file with a pending local row read by a build with the pending_upload column shows it as pending`() {
         val file = seededWithPendingRow()
-        assertEquals("remote_id GLOB 'local:*'", StateDbSchemaCheck.fallbacks["pending_upload"], "#982 keeps this registration")
+        assertEquals(PendingUploadKeys.SCHEMA4_FALLBACK_SQL, StateDbSchemaCheck.fallbacks["pending_upload"], "#982 keeps this registration")
         StateDbSchemaCheck.expectedExtra["sync_entries"] = setOf("pending_upload")
         try {
             withObserver(file) { obs ->
