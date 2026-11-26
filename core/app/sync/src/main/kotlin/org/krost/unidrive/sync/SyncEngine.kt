@@ -2827,10 +2827,7 @@ open class SyncEngine(
                 }
 
                 consumerJob.join()
-                // executorJob.join() is implicit at coroutineScope exit, but be
-                // explicit: scope-exit will wait for it anyway. The consumer
-                // closed executorChannel above so the executor's `for` loop
-                // exits cleanly once it drains in-flight items.
+                // Explicit although scope-exit waits too: the consumer closed executorChannel, so the executor drains and exits.
                 executorJob.join()
             }
         } catch (e: CancellationException) {
@@ -2839,7 +2836,6 @@ open class SyncEngine(
             if (authFailure.get() == null) throw e
         }
         authFailure.get()?.let { throw it }
-
         withdrawals.removeFinished(buffer, executedPaths, { db.getEntry(it) != null }) { Files.deleteIfExists(placeholder.resolveLocal(it)) }
 
         if (allComplete) {

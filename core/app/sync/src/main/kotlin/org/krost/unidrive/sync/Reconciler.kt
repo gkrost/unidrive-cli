@@ -498,6 +498,9 @@ class Reconciler(
         return sorted
     }
 
+    /** archive#115: the real-local path of the remote [path] under the XDG alias context of [stable]. */
+    fun remoteToLocal(path: String, stable: Set<String>): String = buildAliasContext(emptyMap(), stable).remoteToLocal(path)
+
     /**
      * Streaming reconciliation entry point — per-page slice.
      *
@@ -520,12 +523,6 @@ class Reconciler(
      * [finalizeStreaming] ([resolveLocalOnly]): a page that does not mention
      * a path says nothing about its remote state.
      */
-    /** archive#115: the real-local path of the remote [path] under the XDG alias context of [stableRemoteTopLevelNames]. */
-    fun remoteToLocal(
-        path: String,
-        stableRemoteTopLevelNames: Set<String>,
-    ): String = buildAliasContext(emptyMap(), stableRemoteTopLevelNames).remoteToLocal(path)
-
     fun resolveSlice(
         pageRemote: Map<String, CloudItem>,
         localChanges: Map<String, ChangeState>,
@@ -1002,12 +999,7 @@ class Reconciler(
 
     private fun buildAliasContext(
         remoteTopLevelMap: Map<String, CloudItem>,
-        // archive#115 streaming fix: when non-null, use this pre-computed stable set of
-        // top-level remote folder names instead of deriving it from remoteTopLevelMap.
-        // This lets resolveSlice() alias against the FULL set of canonical names known
-        // across ALL pages, not only the names present in the current page — avoiding
-        // the bug where a page carrying only children (no top-level entry) produces an
-        // empty alias context and emits CreateRemoteFolder for the locale alias tree.
+        // archive#115: when non-null, the stable set of ALL top-level names across pages, used instead of remoteTopLevelMap's.
         stableRemoteTopLevelNames: Set<String>? = null,
     ): AliasContext {
         val topLevelNames = stableRemoteTopLevelNames
