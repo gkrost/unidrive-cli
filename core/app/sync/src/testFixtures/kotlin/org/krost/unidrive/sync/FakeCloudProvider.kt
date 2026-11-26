@@ -169,11 +169,15 @@ class FakeCloudProvider : CloudProvider {
     // for a process that dies mid-pass: none of the engine's catch clauses (they take Exception) runs for it.
     var beforeDownload: ((remotePath: String) -> Unit)? = null
 
+    // A download of a path in here waits for its gate before it writes anything (cancellable, unlike beforeDownload).
+    val downloadGates: MutableMap<String, kotlinx.coroutines.CompletableDeferred<Unit>> = java.util.concurrent.ConcurrentHashMap()
+
     override suspend fun download(
         remotePath: String,
         destination: Path,
     ): Long {
         beforeDownload?.invoke(remotePath)
+        downloadGates[remotePath]?.await()
         if (authFailOnDownload) throw AuthenticationException("Token expired")
         if (remotePath in permanentDownloadFailurePaths) {
             throw org.krost.unidrive.PermanentDownloadFailureException(
@@ -241,6 +245,7 @@ class FakeCloudProvider : CloudProvider {
         targetMtimeMillis: Long?,
     ): DownloadReceipt {
         beforeDownload?.invoke(remotePath)
+        downloadGates[remotePath]?.await()
         if (authFailOnDownload) throw AuthenticationException("Token expired")
         if (remotePath in permanentDownloadFailurePaths) {
             throw org.krost.unidrive.PermanentDownloadFailureException(
