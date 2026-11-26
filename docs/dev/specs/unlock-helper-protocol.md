@@ -159,7 +159,7 @@ password the account rejects (`bad_credentials`, `account_changed`, `account_unv
 one is stored; a failure that says nothing about the password (no network) is tried again at the next check. The password
 is never logged; the log line names the outcome only.
 
-A daemon of an Internxt profile with `vault.enc` advertises `vault-internxt-password:v1` (contract level 16).
+A daemon of an Internxt profile with `vault.enc` advertises `vault-internxt-password:v1` (contract level 17).
 
 ## Out of scope here
 

@@ -688,14 +688,15 @@ internal fun setVaultXtraPassphrase(
 // ── vault seal-credentials ───────────────────────────────────────────────────
 
 /**
- * gkrost/unidrive-cli#797 (P3): turns the vault-key seal of the Internxt mnemonic (credentials.json) on or off. `on`
+ * gkrost/unidrive-cli#797 (P3): turns the vault-key seal of the credential files on or off (the Internxt mnemonic in
+ * credentials.json, the OneDrive and Dropbox OAuth tokens in token.json, and their pending sign-ins). `on`
  * creates the seal key in the vault on first use; `off` keeps it, so files sealed earlier can still be read. Each
  * file is re-sealed (or, after `off`, rewritten platform-only) the next time a process that has unlocked the vault
  * reads it.
  */
 @Command(
     name = "seal-credentials",
-    description = ["Seal the Internxt credentials under a key kept in the vault (on), or keep only the platform protection (off)"],
+    description = ["Seal the credential files under a key kept in the vault (on), or keep only the platform protection (off)"],
     mixinStandardHelpOptions = true,
 )
 class VaultSealCredentialsCommand : java.util.concurrent.Callable<Int> {
@@ -738,7 +739,8 @@ class VaultSealCredentialsCommand : java.util.concurrent.Callable<Int> {
         }
         println(
             if (enabled) {
-                "Credential sealing is on: each Internxt credentials.json is sealed the next time an unlocked unidrive reads it. " +
+                "Credential sealing is on: each credential file (Internxt credentials.json, OneDrive and Dropbox token.json) " +
+                    "is sealed the next time an unlocked unidrive reads it. " +
                     "A running daemon picks this up at its next vault.unlock or restart."
             } else {
                 "Credential sealing is off: sealed credentials are rewritten with the platform protection only " +

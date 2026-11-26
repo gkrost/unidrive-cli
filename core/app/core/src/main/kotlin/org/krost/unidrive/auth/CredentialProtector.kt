@@ -26,3 +26,17 @@ public open class CredentialProtectionException(message: String, cause: Throwabl
 
 /** The credential is sealed under the vault key and this process holds no key: neither missing nor corrupt. */
 public class CredentialLockedException(message: String) : CredentialProtectionException(message)
+
+/**
+ * The owner-only file itself, as a protector: no platform layer, the value is written as it is (gkrost/unidrive-cli#797).
+ * [KeyedCredentialProtector] seals over it where the host has no default platform store for a provider (OneDrive and
+ * Dropbox on Linux): unsealed the file holds what a store without a protector wrote, sealed only the marker and the
+ * AES-GCM ciphertext.
+ */
+public object OwnerOnlyFileProtector : CredentialProtector {
+    override fun protect(id: String, plaintext: String): String = plaintext
+
+    override fun decode(id: String, stored: String): CredentialData = CredentialData(stored, true)
+
+    override fun delete(id: String) = Unit
+}

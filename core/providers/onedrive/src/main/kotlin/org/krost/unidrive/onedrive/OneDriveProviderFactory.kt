@@ -9,10 +9,12 @@ import org.krost.unidrive.CompleteAuthResult
 import org.krost.unidrive.CredentialHealth
 import org.krost.unidrive.ProviderFactory
 import org.krost.unidrive.ProviderMetadata
+import org.krost.unidrive.auth.CredentialLockedException
 import org.krost.unidrive.auth.CredentialProtector
 import org.krost.unidrive.auth.CredentialProtectors
 import org.krost.unidrive.auth.CredentialStore
 import org.krost.unidrive.auth.JwtExtractor
+import org.krost.unidrive.auth.KeyedCredentialProtector
 import org.krost.unidrive.onedrive.model.Drive
 import org.krost.unidrive.onedrive.model.Token
 import java.nio.file.Files
@@ -23,11 +25,12 @@ import java.time.Instant
  * [credentialProtector] keeps token.json (and the pending device flow) protected at rest. The default is the host's
  * native store where every host has one (Windows DPAPI, the macOS Keychain); on Linux it is none, the owner-only file
  * (see [CredentialProtectors.atRestDefaultOrNull]). A token file written before is read as it is and rewritten
- * protected the first time it is loaded.
+ * protected the first time it is loaded. Over either sits the vault-key seal (gkrost/unidrive-cli#797,
+ * [CredentialProtectors.sealableAtRestDefault]), which changes nothing until `vault seal-credentials on`.
  */
 @Suppress("TooManyFunctions") // the interface's bare + properties overload pairs, and the device flow's own guarded steps; none of them hides another
 open class OneDriveProviderFactory(
-    private val credentialProtector: CredentialProtector? = CredentialProtectors.atRestDefaultOrNull(),
+    private val credentialProtector: CredentialProtector? = CredentialProtectors.sealableAtRestDefault(),
 ) : ProviderFactory {
     override val id = "onedrive"
 
@@ -58,6 +61,8 @@ open class OneDriveProviderFactory(
                 parts += "token expires in ${minutes}m"
             }
             "onedrive (${parts.joinToString(", ")})"
+        } catch (e: CredentialLockedException) {
+            "onedrive (token locked: ${e.message})"
         } catch (_: Exception) {
             "onedrive (token unreadable)"
         }
@@ -111,6 +116,9 @@ open class OneDriveProviderFactory(
         profileDir: Path,
     ): Boolean = Files.exists(profileDir.resolve("token.json"))
 
+    // gkrost/unidrive-cli#797: a token.json sealed under the vault key keeps the profile locked until vault.unlock.
+    override fun needsCredentialSeal(profileDir: Path): Boolean = KeyedCredentialProtector.isSealed(profileDir.resolve("token.json"))
+
     override fun checkCredentialHealth(
         properties: Map<String, String?>,
         profileDir: Path,
@@ -146,6 +154,9 @@ open class OneDriveProviderFactory(
                     }
                 }
             }
+        } catch (e: CredentialLockedException) {
+            // Locked (#797): neither signed out nor unparseable; the message names the file and vault.unlock.
+            CredentialHealth.Warning(e.message ?: "token.json is sealed; unlock the vault")
         } catch (_: Exception) {
             CredentialHealth.Warning("token.json exists but could not be parsed")
         }
@@ -185,7 +196,8 @@ open class OneDriveProviderFactory(
             )
         val handle = OneDriveDeviceFlowRegistry.put(state)
         try {
-            pendingFlowStore(profileDir).save(
+            // A new flow replaces a pending one, even one sealed under a key this process lacks (#797).
+            pendingFlowStore(profileDir).saveReplacingSealed(
                 PendingDeviceFlow(handle, state.deviceCode, state.expiresAtMillis, config.authEndpoint, state.intervalSeconds),
             )
         } catch (e: java.io.IOException) {
@@ -284,7 +296,7 @@ open class OneDriveProviderFactory(
                     return refusal
                 }
                 try {
-                    oauth.saveToken(outcome.token)
+                    oauth.saveToken(outcome.token, signIn = true)
                 } catch (e: Exception) {
                     finishFlow(profileDir, continuationHandle)
                     oauth.close()

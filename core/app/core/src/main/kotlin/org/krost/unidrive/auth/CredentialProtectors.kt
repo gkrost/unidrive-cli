@@ -48,6 +48,25 @@ object CredentialProtectors {
         }
     }
 
+    /**
+     * gkrost/unidrive-cli#797: the protector of the OAuth token files and the pending sign-ins (OneDrive, Dropbox): the
+     * vault-key seal ([KeyedCredentialProtector]) over [atRestDefaultOrNull], or over the owner-only file itself where
+     * that is null. Without a seal key in the process (or with sealing off) it writes exactly what the platform
+     * default wrote before.
+     */
+    fun sealableAtRestDefault(): CredentialProtector =
+        sealableAtRestDefault(
+            System.getProperty("os.name"),
+            System.getProperty("java.vm.name").orEmpty(),
+            System.getProperty("java.vendor").orEmpty(),
+        )
+
+    internal fun sealableAtRestDefault(
+        osName: String,
+        vmName: String = "",
+        vendor: String = "",
+    ): CredentialProtector = KeyedCredentialProtector(atRestDefaultOrNull(osName, vmName, vendor) ?: OwnerOnlyFileProtector)
+
     internal fun forPlatform(
         osName: String,
         vmName: String = "",

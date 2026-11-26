@@ -14,3 +14,29 @@
 {"ok":true,"recorded":true,"operation_id":"host:00000000-0000-0000-0000-00000000b001","request_id":"00000000-0000-0000-0000-00000000b001"}
 {"verb":"history.report","request_id":"00000000-0000-0000-0000-00000000b001","source":"windows-host","operation":"journal_replay","path":"/docs/other.txt","result":"success","started_at_ms":1700000000000,"finished_at_ms":1700000000500,"bytes":42}
 {"ok":false,"error":"idempotency_conflict","request_id":"00000000-0000-0000-0000-00000000b001"}
+{"verb":"history.report","request_id":"00000000-0000-0000-0000-00000000b002","source":"windows-host","operation":"remove_gone","path":"/docs/a.txt","result":"success","finished_at_ms":1700000000500,"count":150,"first_paths":["/docs/a.txt","/docs/b c.txt"]}
+{"ok":true,"recorded":true,"operation_id":"host:00000000-0000-0000-0000-00000000b002","request_id":"00000000-0000-0000-0000-00000000b002"}
+{"verb":"history.report","request_id":"00000000-0000-0000-0000-00000000b002","source":"windows-host","operation":"remove_gone","path":"/docs/a.txt","result":"success","finished_at_ms":1700000000500,"count":150,"first_paths":["/docs/a.txt","/docs/b c.txt"]}
+{"ok":true,"recorded":true,"operation_id":"host:00000000-0000-0000-0000-00000000b002","request_id":"00000000-0000-0000-0000-00000000b002"}
+{"verb":"history.report","request_id":"00000000-0000-0000-0000-00000000b002","source":"windows-host","operation":"remove_gone","path":"/docs/a.txt","result":"success","finished_at_ms":1700000000500,"count":151,"first_paths":["/docs/a.txt","/docs/b c.txt"]}
+{"ok":false,"error":"idempotency_conflict","request_id":"00000000-0000-0000-0000-00000000b002"}
+{"verb":"history.report","request_id":"00000000-0000-0000-0000-00000000b002","source":"windows-host","operation":"remove_gone","path":"/docs/a.txt","result":"success","finished_at_ms":1700000000500,"count":150,"first_paths":["/docs/a.txt","/docs/other.txt"]}
+{"ok":false,"error":"idempotency_conflict","request_id":"00000000-0000-0000-0000-00000000b002"}
+{"verb":"history.report","request_id":"00000000-0000-0000-0000-00000000b002","source":"windows-host","operation":"remove_gone","path":"/docs/a.txt","result":"success","finished_at_ms":1700000000500,"count":0}
+{"ok":false,"error":"invalid_request"}
+{"verb":"history.report","request_id":"00000000-0000-0000-0000-00000000b002","source":"windows-host","operation":"remove_gone","path":"/docs/a.txt","result":"success","finished_at_ms":1700000000500,"count":"5"}
+{"ok":false,"error":"invalid_request"}
+{"verb":"history.report","request_id":"00000000-0000-0000-0000-00000000b002","source":"windows-host","operation":"remove_gone","path":"/docs/a.txt","result":"success","finished_at_ms":1700000000500,"count":1.5}
+{"ok":false,"error":"invalid_request"}
+{"verb":"history.report","request_id":"00000000-0000-0000-0000-00000000b002","source":"windows-host","operation":"remove_gone","path":"/docs/a.txt","result":"success","finished_at_ms":1700000000500,"first_paths":[]}
+{"ok":false,"error":"invalid_request"}
+{"verb":"history.report","request_id":"00000000-0000-0000-0000-00000000b002","source":"windows-host","operation":"remove_gone","path":"/docs/a.txt","result":"success","finished_at_ms":1700000000500,"first_paths":"/docs/a.txt"}
+{"ok":false,"error":"invalid_request"}
+{"verb":"history.report","request_id":"00000000-0000-0000-0000-00000000b002","source":"windows-host","operation":"remove_gone","path":"/docs/a.txt","result":"success","finished_at_ms":1700000000500,"first_paths":["docs/a.txt"]}
+{"ok":false,"error":"invalid_request"}
+{"verb":"history.report","request_id":"00000000-0000-0000-0000-00000000b002","source":"windows-host","operation":"remove_gone","path":"/docs/a.txt","result":"success","finished_at_ms":1700000000500,"first_paths":["/docs/a.txt",7]}
+{"ok":false,"error":"invalid_request"}
+{"verb":"history.report","request_id":"00000000-0000-0000-0000-00000000b002","source":"windows-host","operation":"remove_gone","path":"/docs/a.txt","result":"success","finished_at_ms":1700000000500,"count":1,"first_paths":["/a","/b"]}
+{"ok":false,"error":"invalid_request"}
+{"verb":"history.report","request_id":"00000000-0000-0000-0000-00000000b002","source":"windows-host","operation":"remove_gone","path":"/docs/a.txt","result":"success","finished_at_ms":1700000000500,"first_paths":["/1","/2","/3","/4","/5","/6","/7","/8","/9","/10","/11"]}
+{"ok":false,"error":"invalid_request"}

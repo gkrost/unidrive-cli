@@ -92,6 +92,23 @@ class CredentialSealVaultTest {
     }
 
     @Test
+    fun `a profile whose OAuth token file is sealed needs the vault`() {
+        for (type in listOf("onedrive", "dropbox")) {
+            val profileDir = Files.createDirectories(dir.resolve(type))
+            Files.writeString(profileDir.resolve("token.json"), KeyedCredentialProtector.PREFIX + "c2VhbGVk")
+            val profile = ProfileInfo(type, type, dir, RawProvider(type = type, client_id = "app-key"))
+            assertTrue(main().profileNeedsVaultedFields(profile), "$type: a sealed token.json keeps the profile locked until vault.unlock")
+        }
+    }
+
+    @Test
+    fun `seal-credentials names the OAuth token files it seals`() {
+        vault.init(pass.toCharArray())
+        val out = stdoutOf { run("vault", "seal-credentials", "on", "--passphrase-stdin", stdin = "$pass\n") }
+        assertTrue(out.contains("token.json") && out.contains("credentials.json"), out)
+    }
+
+    @Test
     fun `a profile whose credentials file is not sealed does not need the vault`() {
         val profileDir = Files.createDirectories(dir.resolve("ix"))
         Files.writeString(profileDir.resolve("credentials.json"), "unidrive-dpapi-v1:AAAA")

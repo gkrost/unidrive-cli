@@ -68,6 +68,9 @@ private suspend fun <T> providerStep(
         call()
     } catch (e: kotlinx.coroutines.CancellationException) {
         throw e
+    } catch (e: CredentialProtectionException) {
+        // A sealed pending sign-in in a locked process (#797) names its file and vault.unlock; the message is ours, no response.
+        throw LifecycleError("credential_protection_unavailable", e.message ?: "unlock the vault or the native credential store and retry", e)
     } catch (e: Exception) {
         throw unreachableRefusal(e) ?: LifecycleError(token, "the sign-in could not be $what: ${e.javaClass.simpleName}", e)
     }
