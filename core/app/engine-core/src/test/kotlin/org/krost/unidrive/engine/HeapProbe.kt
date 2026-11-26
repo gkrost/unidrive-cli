@@ -144,7 +144,7 @@ private class PagedProvider(
         val offset = cursor?.toIntOrNull() ?: scanContext?.resumeMarker?.toIntOrNull() ?: 0
         if (cursor == null && scanContext?.resumeMarker != null) {
             resumedFrom = offset
-            resumedCount = scanContext.resumedItems.size
+            resumedCount = scanContext.resumedItems.count()
         }
         val end = minOf(offset + pageSize, total)
         val newItems =
@@ -163,7 +163,7 @@ private class PagedProvider(
             }
         scanContext?.persistPage?.invoke(newItems, end.toString())
         interruptAt?.let { if (end >= it) throw ProviderException("probe interrupted after staging $end items") }
-        val page = if (cursor == null) scanContext?.resumedItems.orEmpty() + newItems else newItems
+        val page = if (cursor == null) (scanContext?.resumedItems ?: emptyList()).toList() + newItems else newItems
         return DeltaPage(items = page, cursor = end.toString(), hasMore = end < total)
     }
 

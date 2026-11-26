@@ -12,6 +12,7 @@ import org.krost.unidrive.sync.EnumerationTracker
 import org.krost.unidrive.sync.PathNormalizer
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.sync.stagedRowsSnapshot
 import org.slf4j.Logger
 import java.time.Instant
 import java.util.HexFormat
@@ -789,18 +790,13 @@ class RemoteGather(
         // slice is cleared. A throw mid-scan leaves both the slice and the
         // checkpoint intact so the next launch can pick up from there.
         val activeScan = db.getActiveScan(staleThreshold = java.time.Duration.ofHours(SCAN_CHECKPOINT_STALE_HOURS))
-        val resumedItems: List<CloudItem> =
-            if (activeScan != null) db.loadStagedItems(activeScan.scanId) else emptyList()
         val scanId =
             activeScan?.scanId
                 ?: db.beginScan(initialMarker = null)
+        val resumedItems: Iterable<CloudItem> =
+            if (activeScan != null) db.stagedRowsSnapshot(scanId) else emptyList()
         if (activeScan != null) {
-            log.info(
-                "Resuming Internxt-style scan id={} marker={} ({} previously-staged items)",
-                scanId,
-                activeScan.marker,
-                resumedItems.size,
-            )
+            log.info("Resuming Internxt-style scan id={} marker={}", scanId, activeScan.marker)
         }
         val scanContext =
             org.krost.unidrive.ScanContext(
