@@ -24,6 +24,19 @@ internal class NameSpellings(private val store: NameSpellingStore? = null) {
     // named, how many claims hold it right now, and whether a verb has already succeeded with it.
     private val seen = ConcurrentHashMap<String, Spelling>()
 
+    // gkrost/unidrive-cli#948: the NFC paths of files whose earlier decomposed spelling the NFC arrival in flight may replace
+    // ([NfcSpellingWins]), and the records that swap put aside until its verb commits or fails.
+    private val permits = ConcurrentHashMap.newKeySet<String>()
+    private val swapped = ConcurrentHashMap<String, Spelling>()
+
+    fun permit(nfcPath: String) {
+        permits.add(nfcPath)
+    }
+
+    fun endPermit(nfcPath: String) {
+        permits.remove(nfcPath)
+    }
+
     private class Spelling(val raw: String) {
         // The claims that hold this record: one per active claim of the same spelling. An increment/decrement
         // pair per claim; a record with no claims and nothing committed is removed again.
@@ -99,7 +112,19 @@ internal class NameSpellings(private val store: NameSpellingStore? = null) {
                         }
                     else ->
                         if (known.raw != raw) {
-                            isClash = true
+                            // The permitted NFC arrival takes the record over for the length of its verb.
+                            if (raw == nfc && nfc in permits) {
+                                val fresh = Spelling(raw)
+                                if (seen.replace(nfc, known, fresh)) {
+                                    fresh.claims.incrementAndGet()
+                                    swapped[nfc] = known
+                                    claimed += nfc to raw
+                                } else {
+                                    raced = true
+                                }
+                            } else {
+                                isClash = true
+                            }
                         } else {
                             known.claims.incrementAndGet()
                             claimed += nfc to known.raw
@@ -117,7 +142,12 @@ internal class NameSpellings(private val store: NameSpellingStore? = null) {
 
     /** Persists a succeeded verb's claim: the record is marked owned by the success and the store is written. */
     fun commit(claim: List<Pair<String, String>>) {
+        val replaced = claim.filter { (nfc, _) -> swapped.remove(nfc) != null }
         val persisted = store ?: return
+        for ((nfc, _) in replaced) {
+            persisted.forgetUnder(nfc)
+            persisted.adoptNfc(nfc)
+        }
         for ((nfc, raw) in claim) {
             val s = seen[nfc]
             if (s != null && s.raw == raw) {
@@ -136,6 +166,11 @@ internal class NameSpellings(private val store: NameSpellingStore? = null) {
         for ((nfc, raw) in claim) {
             val s = seen[nfc] ?: continue
             if (s.raw != raw) continue
+            val old = swapped.remove(nfc)
+            if (old != null) {
+                seen.replace(nfc, s, old)
+                continue
+            }
             if (s.claims.decrementAndGet() <= 0 && !s.committed) seen.remove(nfc, s)
         }
     }
@@ -181,6 +216,9 @@ interface NameSpellingStore {
      */
     fun load(): Map<String, String>
 
+    /** gkrost/unidrive-cli#948: the row at [nfcPath] is written by the NFC spelling now: it stops addressing its cloud item by a decomposed name. */
+    fun adoptNfc(nfcPath: String) {}
+
     /**
      * gkrost/unidrive-cli#948: the spelling of the name at [nfcPath] that the state already holds although no verb recorded
      * it: the item spelled in NFC that holds the name of a twin pair the cloud listing brought in (its decomposed twin sits
@@ -209,12 +247,21 @@ class StateDbNameSpellingStore(private val db: StateDatabase) : NameSpellingStor
     override fun known(nfcPath: String): String? {
         val row = db.getEntry(nfcPath) ?: return null
         if (row.remotePath != null && row.remotePath != nfcPath) return null
+        // The twin sits in the folder of the name, under its decorated name: the folder's rows, not the table, are looked at.
         val name = nfcPath.substringAfterLast('/')
         val twinned =
-            db.rowsWithRemotePath().any { (path, remotePath, _) ->
-                path != nfcPath && PathNormalizer.nfc(remotePath) == nfcPath && DuplicateNames.isDecorationOf(path.substringAfterLast('/'), name)
+            db.listDirectChildren(nfcPath.substringBeforeLast('/', "")).any { twin ->
+                twin.path != nfcPath &&
+                    twin.remotePath?.let { PathNormalizer.nfc(it) == nfcPath } == true &&
+                    DuplicateNames.isDecorationOf(twin.path.substringAfterLast('/'), name)
             }
         return nfcPath.takeIf { twinned }
+    }
+
+    override fun adoptNfc(nfcPath: String) {
+        val row = db.getEntry(nfcPath) ?: return
+        val remote = row.remotePath ?: return
+        if (!row.isFolder && remote != nfcPath && PathNormalizer.nfc(remote) == nfcPath) db.upsertEntry(row.copy(remotePath = null), keepMarks = true)
     }
 
     override fun record(

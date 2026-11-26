@@ -838,6 +838,8 @@ internal class HydrationTestEnv(
 
         fun remoteIdOf(path: String): String? = db.getEntry(path)?.remoteId
 
+        fun remotePathOf(path: String): String? = db.getEntry(path)?.remotePath
+
         fun remoteHashOf(path: String): String? = db.getEntry(path)?.remoteHash
 
         // A file created/edited through the mount but not yet uploaded: remoteId

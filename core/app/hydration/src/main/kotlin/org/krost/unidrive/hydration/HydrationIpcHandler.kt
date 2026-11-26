@@ -571,7 +571,7 @@ class HydrationIpcHandler(
         // what a status UI's list asks for, not a mount.
         if (verb != VIEW_PAGE) mountConnections.add(connectionId)
         return try {
-            nfcWins.refusal(verb, request.string("path")) ?: dispatch(connectionId, verb, request)
+            nfcWins.around(verb, request.string("path")) { dispatch(connectionId, verb, request) }
         } catch (_: InvalidLogicalPath) {
             reply(ok = false, error = HydrationError.INVALID_PATH_TOKEN)
         }
