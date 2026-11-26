@@ -65,10 +65,6 @@ class OneDriveListingDownloadUrlTest {
     private var singleArrived: CompletableDeferred<Unit>? = null
     private var pauseSingle: CompletableDeferred<Unit>? = null
 
-    // Fake Graph latencies (real milliseconds): how long a `$batch` and a single `GET /items/{id}` take to answer.
-    private var batchDelayMs = 0L
-    private var singleDelayMs = 0L
-
     @AfterTest
     fun cleanup() {
         dir.toFile().deleteRecursively()
@@ -116,7 +112,6 @@ class OneDriveListingDownloadUrlTest {
                     batchArrived?.complete(Unit)
                     try {
                         pauseBatch?.await()
-                        if (batchDelayMs > 0) delay(batchDelayMs)
                     } finally {
                         batchFlying.decrementAndGet()
                     }
@@ -152,7 +147,6 @@ class OneDriveListingDownloadUrlTest {
                     singleArrived?.complete(Unit)
                     pauseSingle?.await()
                 }
-                if (singleDelayMs > 0) delay(singleDelayMs)
                 respond(item(id, dl = "https://cdn.example/$id-live", hash = liveHash(id)), HttpStatusCode.OK, json)
             }
             url.startsWith("https://cdn.example/") -> {
@@ -370,23 +364,42 @@ class OneDriveListingDownloadUrlTest {
             g.close()
         }
     }
+    // The scenarios below run on virtual time and gates, never on wall-clock margins. A download that waits on a batch parks
+    // in `withTimeoutOrNull`, which on the test scheduler jumps virtual time; one that never waits leaves the scheduler at 0.
+    // The batch is held on a gate the test releases only after the download has finished, so "the download completed
+    // while the batch was still pending" is an ordering fact, not a duration.
+    private fun virtual(
+        g: GraphApiService,
+        p: OneDriveProvider,
+        body: suspend kotlinx.coroutines.test.TestScope.() -> Unit,
+    ) = runTest {
+        try {
+            body()
+        } finally {
+            pauseBatch?.complete(Unit)
+            p.close()
+            g.close()
+        }
+    }
 
     @Test
     fun `a pin of delta-only files never waits on a slow batch for a download URL`() {
-        batchDelayMs = 400
-        singleDelayMs = 100
+        val arrived = CompletableDeferred<Unit>()
+        batchArrived = arrived
+        pauseBatch = CompletableDeferred() // the batch is slower than the whole pin
         val files = ids(20)
         val g = api(engine(delta = files.map { item(it, dl = null) }))
         val p = OneDriveProvider(cfg, graphApi = g)
-        realTime(g, p) {
+        virtual(g, p) {
             g.getDelta()
-            var slowestMs = 0L
             for (id in files) {
-                val started = System.nanoTime()
                 p.downloadByIdWithHash(id, "/$id.bin", dir.resolve("$id.out"))
-                slowestMs = maxOf(slowestMs, (System.nanoTime() - started) / 1_000_000)
+                if (id == "id-2") arrived.await() // the second download started the batch of the other 18
             }
-            assertTrue(slowestMs < 250, "no download took the batch's 400 ms; the slowest took $slowestMs ms")
+
+            assertTrue(batchSizes.isEmpty(), "the batch is still pending: all 20 downloads finished without its answer")
+            assertEquals(0L, testScheduler.currentTime, "no download parked on the batch (virtual ms)")
+            assertEquals(20, byId.get(), "every download read its own URL")
             assertEquals(20, content.get())
         }
     }
@@ -398,29 +411,36 @@ class OneDriveListingDownloadUrlTest {
         pauseBatch = CompletableDeferred() // the batch hangs for the whole test
         val g = api(engine(delta = ids(4).map { item(it, dl = null) }))
         val p = OneDriveProvider(cfg, graphApi = g)
-        realTime(g, p) {
+        virtual(g, p) {
             g.getDelta()
             p.downloadByIdWithHash("id-1", "/id-1.bin", dir.resolve("1.out"))
             p.downloadByIdWithHash("id-2", "/id-2.bin", dir.resolve("2.out"))
             arrived.await() // the batch of [id-3, id-4] is in flight and hung
-            val started = System.nanoTime()
-            p.downloadByIdWithHash("id-3", "/id-3.bin", dir.resolve("3.out"))
-            val tookMs = (System.nanoTime() - started) / 1_000_000
-            assertTrue(tookMs < 300, "the download asked Graph directly instead of waiting on the hung batch: $tookMs ms")
+            val receipt = p.downloadByIdWithHash("id-3", "/id-3.bin", dir.resolve("3.out"))
+
+            assertEquals("quickxor:QXid-3|4", receipt.contentId)
+            assertTrue(batchSizes.isEmpty(), "the download finished while the batch was still pending")
+            assertEquals(0L, testScheduler.currentTime, "the download never parked on the batch (virtual ms)")
+            assertEquals(3, byId.get(), "id-1, id-2 and id-3 read Graph themselves")
         }
     }
 
     @Test
     fun `read-ahead still batches while a download reads its own URL directly`() {
-        batchDelayMs = 300
+        val arrived = CompletableDeferred<Unit>()
+        val gate = CompletableDeferred<Unit>()
+        batchArrived = arrived
+        pauseBatch = gate
         val files = ids(22)
         val g = api(engine(delta = files.map { item(it, dl = null) }))
         val p = OneDriveProvider(cfg, graphApi = g)
-        realTime(g, p) {
+        virtual(g, p) {
             g.getDelta()
             p.downloadByIdWithHash("id-1", "/id-1.bin", dir.resolve("1.out"))
             p.downloadByIdWithHash("id-2", "/id-2.bin", dir.resolve("2.out"))
-            delay(600) // the batch answers
+            arrived.await()
+            gate.complete(Unit) // the batch answers
+            settle(g)
             val before = byId.get()
             for (id in files.drop(2).take(15)) p.downloadByIdWithHash(id, "/$id.bin", dir.resolve("$id.out"))
             assertEquals(listOf(20), batchSizes.toList(), "one batch of 20 read the folder ahead")
@@ -436,14 +456,14 @@ class OneDriveListingDownloadUrlTest {
         pauseBatch = gate
         val g = api(engine(delta = ids(4).map { item(it, dl = null) }))
         val p = OneDriveProvider(cfg, graphApi = g)
-        realTime(g, p) {
+        virtual(g, p) {
             g.getDelta()
             p.downloadByIdWithHash("id-1", "/id-1.bin", dir.resolve("1.out"))
             p.downloadByIdWithHash("id-2", "/id-2.bin", dir.resolve("2.out"))
             arrived.await()
             p.downloadByIdWithHash("id-3", "/id-3.bin", dir.resolve("3.out"))
             gate.complete(Unit)
-            delay(100)
+            settle(g)
             p.downloadByIdWithHash("id-3", "/id-3.bin", dir.resolve("3b.out")) // the direct read's entry serves it
             p.downloadByIdWithHash("id-4", "/id-4.bin", dir.resolve("4.out")) // the batch's entry serves it
 
