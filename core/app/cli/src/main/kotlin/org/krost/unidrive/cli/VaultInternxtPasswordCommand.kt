@@ -39,6 +39,21 @@ private fun requireStdinWhenJson(
     if (json && !given) throw LifecycleError(token, "--json never prompts: give $flag", exitCode = 78)
 }
 
+/** The e-mail to store: standard input when asked for (a blank line is a refusal naming the flag, never the stored one), else the option, else the stored one. */
+internal fun resolveEmail(
+    emailStdin: Boolean,
+    email: String?,
+    stored: String?,
+    readLine: () -> String,
+): String {
+    if (emailStdin) {
+        return readLine().trim().takeIf { it.isNotEmpty() }
+            ?: throw LifecycleError("missing_email", "--email-stdin read an empty line from standard input")
+    }
+    return (email ?: stored)?.trim()?.takeIf { it.isNotEmpty() }
+        ?: throw LifecycleError("missing_email", "no e-mail: give --email or --email-stdin, or sign in once with 'auth login'")
+}
+
 private fun vaultPassphrase(
     stdin: Boolean,
     json: Boolean,
@@ -125,9 +140,7 @@ class VaultInternxtPasswordSetCommand : Callable<Int> {
             // One line each, in this order: vault passphrase, e-mail, password.
             val passphrase = vaultPassphrase(passphraseStdin, json)
             try {
-                val account =
-                    (if (emailStdin) readStdinLine() else email ?: AccountName.read(target.profileDir))?.trim()?.takeIf { it.isNotEmpty() }
-                        ?: throw LifecycleError("missing_email", "no e-mail: give --email or --email-stdin, or sign in once with 'auth login'")
+                val account = resolveEmail(emailStdin, email, AccountName.read(target.profileDir), ::readStdinLine)
                 val password = if (passwordStdin) readStdinLine() else readPassphrase("Internxt password: ").let { String(it).also { _ -> it.fill('\u0000') } }
                 if (password.isEmpty()) throw LifecycleError("empty_password", "no password on standard input")
                 val request = daemonRequest(VaultRpcHandler.INTERNXT_PASSWORD_SET, passphrase, mapOf("email" to account, "password" to password))

@@ -6,6 +6,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import org.krost.unidrive.auth.CredentialSeal
 import org.krost.unidrive.auth.KeyedCredentialProtector
+import org.krost.unidrive.sync.ConfigSecretSeal
+import org.krost.unidrive.sync.ConfigSecrets
 import org.krost.unidrive.sync.Vault
 import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
@@ -210,15 +212,22 @@ class JsonNeverPromptsTest {
     }
 
     private fun sealedConfig() {
-        Files.writeString(
-            dir.resolve("config.toml"),
-            Files.readString(dir.resolve("config.toml")) + "password = \"${KeyedCredentialProtector.PREFIX}c2VhbGVk\"\n",
-        )
-        Vault(dir.resolve("vault.enc")).write(
-            vaultPass.toCharArray(),
-            mapOf(CREDENTIAL_SEAL_SECTION to mapOf("key" to java.util.Base64.getEncoder().encodeToString(ByteArray(32) { 7 }), "enabled" to "true")),
-        )
+        val configPath = dir.resolve("config.toml")
+        val section = mapOf("key" to java.util.Base64.getEncoder().encodeToString(ByteArray(32) { 7 }), "enabled" to "true")
+        Vault(dir.resolve("vault.enc")).write(vaultPass.toCharArray(), mapOf(CREDENTIAL_SEAL_SECTION to section))
+        CredentialSeal.install(credentialSealFrom(mapOf(CREDENTIAL_SEAL_SECTION to section)))
+        val sealed = ConfigSecrets.protectText(Files.readString(configPath) + "password = \"synthetic-secret\"\n", configPath, ConfigSecretSeal.defaultProtector())
+        assertTrue(sealed.contains(KeyedCredentialProtector.PREFIX), "the fixture really is sealed")
+        Files.writeString(configPath, sealed)
         CredentialSeal.clear()
+    }
+
+    @Test
+    fun `an empty email-stdin line names the flag and keeps the human-mode exit code`() {
+        val e = assertFailsWith<LifecycleError> { resolveEmail(emailStdin = true, email = null, stored = "kept@example.org") { "  " } }
+        assertEquals("missing_email", e.token)
+        assertTrue(e.message!!.contains("--email-stdin"), e.message)
+        assertEquals(1, e.exitCode)
     }
 
     private fun envMain() =
@@ -229,7 +238,7 @@ class JsonNeverPromptsTest {
     @Test
     fun `a sealed config value opens the vault before it decodes in the lifecycle profile resolution`() {
         sealedConfig()
-        runCatching { resolveProfileTarget(envMain(), null) }
+        resolveProfileTarget(envMain(), null)
         assertTrue(CredentialSeal.current() != null, "the vault was opened and its seal key installed before the decode")
         CredentialSeal.clear()
     }
@@ -238,7 +247,8 @@ class JsonNeverPromptsTest {
     fun `a sealed config value opens the vault before it decodes in the credential health check`() {
         sealedConfig()
         val main = envMain()
-        runCatching { main.checkCredentialHealth(main.resolveCurrentProfile(), dir) }
+        main.checkCredentialHealth(main.resolveCurrentProfile(), dir)
+        assertEquals(0, consoleReads)
         assertTrue(CredentialSeal.current() != null, "the vault was opened and its seal key installed before the decode")
         CredentialSeal.clear()
     }
