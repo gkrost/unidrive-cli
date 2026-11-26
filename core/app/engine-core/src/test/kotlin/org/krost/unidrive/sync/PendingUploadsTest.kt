@@ -32,7 +32,7 @@ class PendingUploadsTest {
 
     private fun put(
         path: String,
-        remoteId: String = "local:$path",
+        remoteId: String? = null,
     ) = db.upsertEntry(
         SyncEntry(
             path = path,

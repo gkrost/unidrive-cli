@@ -119,7 +119,7 @@ internal class RenameRollForward(
                         val landedId = oldRow?.remoteId
                         when {
                             oldRow == null || newRow != null -> Unit // the row followed; the copy's move below settles the rest
-                            landedId != null && !landedId.startsWith("local:") ->
+                            landedId != null ->
                                 mount.renameRemote(intent.oldPath, intent.newPath)
                             else -> {
                                 log.warn(

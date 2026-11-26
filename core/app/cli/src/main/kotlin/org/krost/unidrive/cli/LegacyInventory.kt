@@ -4,6 +4,7 @@ import org.krost.unidrive.HashAlgorithm
 import org.krost.unidrive.io.engineKey
 import org.krost.unidrive.sync.HashVerifier
 import org.krost.unidrive.sync.PathNormalizer
+import org.krost.unidrive.sync.PendingUploadKeys
 import org.krost.unidrive.sync.ProcessLock
 import org.krost.unidrive.sync.Reconciler
 import org.krost.unidrive.sync.StateDatabase
@@ -238,7 +239,8 @@ internal object LegacyInventory {
         val lastErrorAt: String?,
         val downloadQuarantined: Boolean,
     ) {
-        val isLocal: Boolean get() = remoteId.startsWith("local:")
+        // Never reached the cloud: the minted key's shape (a file before schema 5), or the `pending_upload` column (readRows).
+        var isLocal: Boolean = PendingUploadKeys.isMinted(remoteId)
         val alive: Boolean get() = status == "EXISTS"
     }
 
@@ -405,7 +407,7 @@ internal object LegacyInventory {
         fun col(name: String) = if (name in columns) name else "NULL AS $name"
         val sql =
             "SELECT remote_id, path, is_folder, is_hydrated, status, remote_hash, " +
-                listOf("local_hash", "cache_backed", "upload_refused", "last_error_at", "download_quarantined")
+                listOf("local_hash", "cache_backed", "upload_refused", "last_error_at", "download_quarantined", "pending_upload")
                     .joinToString(", ") { col(it) } +
                 " FROM sync_entries"
         val out = mutableListOf<Row>()
@@ -413,6 +415,7 @@ internal object LegacyInventory {
             st.executeQuery().use { rs ->
                 while (rs.next()) {
                     val cacheBacked = rs.getInt("cache_backed").let { if (rs.wasNull()) null else it == 1 }
+                    val pendingColumn = rs.getInt("pending_upload").let { if (rs.wasNull()) null else it == 1 }
                     out +=
                         Row(
                             remoteId = rs.getString("remote_id"),
@@ -426,7 +429,7 @@ internal object LegacyInventory {
                             uploadRefused = rs.getString("upload_refused"),
                             lastErrorAt = rs.getString("last_error_at"),
                             downloadQuarantined = rs.getInt("download_quarantined") == 1,
-                        )
+                        ).also { row -> if (pendingColumn != null) row.isLocal = pendingColumn }
                 }
             }
         }

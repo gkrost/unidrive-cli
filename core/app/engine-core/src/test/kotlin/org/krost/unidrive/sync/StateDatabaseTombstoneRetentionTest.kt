@@ -151,7 +151,7 @@ class StateDatabaseTombstoneRetentionTest {
 
     @Test
     fun `a tombstone that still carries a pending upload, an unsynced edit or a pending local change is kept`() {
-        tombstone("/pending-upload.txt", remoteId = "local:abc")
+        tombstone("/pending-upload.txt", remoteId = null)
         sql("UPDATE sync_entries SET is_hydrated = 1 WHERE path = '/pending-upload.txt'")
         tombstone("/edited.txt")
         sql("UPDATE sync_entries SET edit_base = 'v1' WHERE path = '/edited.txt'")

@@ -3619,14 +3619,10 @@ open class SyncEngine(
         val isFolder = oldEntry?.isFolder ?: false
         val result =
             try {
-                if (!action.remoteId.startsWith("local:")) {
-                    // archive#402: aim the move at the twin the row tracks, not at whichever
-                    // same-named sibling getMetadata's path lookup finds first.
-                    provider.moveById(action.remoteId, remoteFrom, remoteTo)
-                } else {
-                    if (refuseCollidedPath(action)) return
-                    provider.move(remoteFrom, remoteTo)
-                }
+                // archive#402: aim the move at the twin the row tracks, not at whichever
+                // same-named sibling getMetadata's path lookup finds first. [action.remoteId] is a cloud id: a
+                // pending row has none and is never planned for a remote move (gkrost/unidrive-cli#845).
+                provider.moveById(action.remoteId, remoteFrom, remoteTo)
             } catch (e: Exception) {
                 auditLog?.emit(
                     action = "Move",
@@ -4055,7 +4051,7 @@ open class SyncEngine(
         var auditResult = "success"
         if (priorEntry?.isFolder == true && folderHoldsUnprovenRemoteContent(remotePath)) return false
         try {
-            if (remoteId != null && !remoteId.startsWith("local:")) {
+            if (remoteId != null) {
                 // archive#402: the row's real cloud uuid addresses the twin the engine
                 // actually tracks; path resolution would pick the first of any
                 // same-named siblings and could trash the wrong one. The row's kind

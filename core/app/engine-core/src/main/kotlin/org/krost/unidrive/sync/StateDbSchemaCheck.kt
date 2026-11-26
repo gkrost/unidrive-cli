@@ -13,6 +13,13 @@ import java.util.concurrent.ConcurrentHashMap
 internal object StateDbSchemaCheck {
     private const val MISSING_SHOWN = 3
 
+    /**
+     * The oldest stamp a read-only open reads (owner decision 2026-11-26, "read what it can"). A newer build's file of
+     * stamp 4 or later is read through the NULL and [fallbacks] views below, not refused for being older than the
+     * build: raising [StateDatabase.SCHEMA_VERSION] (#982: 5) must not make this refuse every file it still reads.
+     */
+    const val OLDEST_READABLE_SCHEMA = 4
+
     /** The tables of a schema with their columns, and its views. */
     private class Shape(
         val tables: Map<String, Set<String>>,
@@ -22,10 +29,41 @@ internal object StateDbSchemaCheck {
     // This build's own bootstrap, read once per process and connector: it does not change while the process runs.
     private val references = ConcurrentHashMap<StateDatabaseConnector, Shape>()
 
+    /**
+     * Column -> the SQL a read-only open selects in its place while the file lacks it. A column that only adds detail
+     * is absent as NULL (no entry). A column that changes what existing rows MEAN needs an entry that derives the
+     * value from what the older file has. `pending_upload` (gkrost/unidrive-cli#744-3, #982: schema 5) must stay
+     * registered here: a schema-4 file marks a pending upload by the id `local:<uuid>`, and NULL would read every
+     * pending row as a cloud row. Whichever of #978 and #982 merges second wires the real column to this entry.
+     */
+    internal val fallbacks = ConcurrentHashMap<String, String>(mapOf("pending_upload" to "remote_id GLOB 'local:*'"))
+
+    /** Test seam: table -> columns a later build adds, expected on top of this build's own bootstrap. */
+    internal val expectedExtra = ConcurrentHashMap<String, Set<String>>()
+
+    /** This build's own tables with their columns (bootstrapped in memory once per process), plus the [expectedExtra] seam. */
+    fun referenceTables(dbPath: Path): Map<String, Set<String>> =
+        referenceShape(dbPath, JdbcStateDatabaseConnector).tables.toMutableMap().also { t -> expectedExtra.forEach { (k, v) -> t[k] = t[k].orEmpty() + v } }
+
     /** Rows [c]'s INSERT/UPDATE/DELETE statements changed since it opened; 0 when it only read. A failed probe reads as "changed". */
     fun changedRows(c: Connection): Long =
         runCatching { c.createStatement().use { st -> st.executeQuery("SELECT total_changes()").use { rs -> if (rs.next()) rs.getLong(1) else 1L } } }
             .getOrDefault(1L)
+
+    /** SQLite's schema cookie of [c]: it moves on every DDL (`ALTER TABLE`, `CREATE`, `DROP`), which `total_changes()` never counts. Null when the probe fails. */
+    fun schemaCookie(c: Connection): Long? =
+        runCatching { c.createStatement().use { st -> st.executeQuery("PRAGMA schema_version").use { rs -> if (rs.next()) rs.getLong(1) else null } } }
+            .getOrNull()
+
+    /** Whether [c] changed the file since it opened at schema cookie [opened]: a row written, or a DDL run. A failed probe reads as "changed". */
+    fun changedSince(
+        c: Connection,
+        opened: Long?,
+    ): Boolean {
+        if (changedRows(c) > 0) return true
+        val now = schemaCookie(c)
+        return opened == null || now == null || now != opened
+    }
 
     private fun names(
         c: Connection,
@@ -52,9 +90,21 @@ internal object StateDbSchemaCheck {
             }
         }
 
+    // A column the file lacks is read (NULL or its fallback) or refuses the open: see [StateDbColumnClasses].
+    private fun classify(
+        table: String,
+        absent: Set<String>,
+        missing: MutableList<String>,
+        gaps: MutableMap<String, List<String>>,
+    ) {
+        val (readable, refused) = absent.partition { fallbacks.containsKey(it) || "$table.$it" in StateDbColumnClasses.additiveNull }
+        missing += refused.map { "missing column $table.$it" }
+        if (readable.isNotEmpty()) gaps[table] = readable
+    }
+
     /**
      * Admits the read-only connection [c] of the file at [dbPath], stamped [recorded], or throws [IllegalStateException]
-     * with the way out. A table missing columns is shadowed, for this connection only, by a TEMP view that selects NULL
+     * with the way out. A table missing readable columns (see [StateDbColumnClasses]) is shadowed, for this connection only, by a TEMP view that selects NULL
      * in their place and keeps `rowid` (and `alive_entries` is shadowed with it), so every query by name keeps working: the gap is found
      * once here, never by catching "no such column" later. The temp schema is not the file: nothing is written to it.
      */
@@ -66,14 +116,20 @@ internal object StateDbSchemaCheck {
     ) {
         val missing = mutableListOf<String>()
         val gaps = mutableMapOf<String, List<String>>()
-        if (recorded < StateDatabase.SCHEMA_VERSION) {
-            missing += "schema $recorded, this build needs ${StateDatabase.SCHEMA_VERSION}"
+        if (recorded < OLDEST_READABLE_SCHEMA) {
+            missing += "schema $recorded, the oldest this build reads is $OLDEST_READABLE_SCHEMA"
         } else {
             val expected = referenceShape(dbPath, connector)
             val actual = shape(c)
-            for ((table, columns) in expected.tables) {
+            val tables = expected.tables.toMutableMap()
+            expectedExtra.forEach { (table, columns) -> tables[table] = tables[table].orEmpty() + columns }
+            for ((table, columns) in tables) {
                 val have = actual.tables[table]
-                if (have == null) missing += "missing table $table" else if (!have.containsAll(columns)) gaps[table] = (columns - have).toList()
+                if (have == null) {
+                    missing += "missing table $table"
+                } else {
+                    classify(table, columns - have, missing, gaps)
+                }
             }
             missing += (expected.views - actual.views).map { "missing view $it" }
         }
@@ -84,7 +140,7 @@ internal object StateDbSchemaCheck {
         if (gaps.isEmpty()) return
         c.createStatement().use { st ->
             for ((table, absent) in gaps) {
-                st.execute("CREATE TEMP VIEW $table AS SELECT rowid AS rowid, *, ${absent.joinToString(", ") { "NULL AS $it" }} FROM main.$table")
+                st.execute("CREATE TEMP VIEW $table AS SELECT rowid AS rowid, *, ${absent.joinToString(", ") { "${fallbacks[it] ?: "NULL"} AS $it" }} FROM main.$table")
             }
             if ("sync_entries" in gaps) st.execute("CREATE TEMP VIEW alive_entries AS SELECT * FROM temp.sync_entries WHERE status='EXISTS'")
         }

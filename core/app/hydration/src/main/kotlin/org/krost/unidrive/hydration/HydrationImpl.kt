@@ -4046,7 +4046,7 @@ class HydrationImpl(
             val child = PathNormalizer.nfc(newFolder) + if (oldFolder == "/") keyNfc else keyNfc.removePrefix(PathNormalizer.nfc(oldFolder))
             val row = stateDb.getEntry(child) ?: continue
             // Only an attempt that failed can have left a ghost: a child that never failed is not probed.
-            if (row.isFolder || row.lastErrorAt == null || row.remoteId?.startsWith("local:") == false) continue
+            if (row.isFolder || row.lastErrorAt == null || row.remoteId != null) continue
             val ghost = try {
                 mount.ghostItemOrNull(child)
             } catch (e: CancellationException) {
@@ -4056,7 +4056,7 @@ class HydrationImpl(
                 continue
             }
             if (ghost == null || ghost.isFolder) continue
-            stateDb.getEntry(child)?.takeIf { it.remoteId == null || it.remoteId?.startsWith("local:") == true }?.let { current ->
+            stateDb.getEntry(child)?.takeIf { it.remoteId == null }?.let { current ->
                 stateDb.upsertEntry(
                     current.copy(
                         remoteId = ghost.id,

@@ -72,7 +72,7 @@ internal object DuplicateSets {
 
     /** The row as a member of a set, or null for a row that cannot be a twin: no cloud id yet, or another local name. */
     private fun memberOrNull(row: SyncEntry): Member? {
-        val id = row.remoteId?.takeUnless { it.startsWith("local:") } ?: return null
+        val id = row.remoteId ?: return null
         val name = cloudName(row)
         val local = row.path.substringAfterLast('/')
         if (local != name && !DuplicateNames.isDecorationOf(local, name)) return null
