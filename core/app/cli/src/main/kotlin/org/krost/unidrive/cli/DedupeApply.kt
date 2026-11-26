@@ -132,7 +132,7 @@ internal class DedupeApplyReport(
 }
 
 /** A mode refusal exits 78 like every mode refusal ([Main.MODE_REFUSAL_EXIT]); every other refusal 1. */
-internal fun dedupeExitCode(e: LifecycleError): Int = if (e.token == "mirror_profile" || e.token == "mode_missing") 78 else 1
+internal fun dedupeExitCode(e: LifecycleError): Int = if (e.token == "mirror_profile" || e.token == "mode_missing") 78 else e.exitCode
 
 /**
  * `dedupe --apply`: moves the members the [keepText] rule does not keep to the provider's trash, by their ids, through

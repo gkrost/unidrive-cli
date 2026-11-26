@@ -12,6 +12,7 @@ import org.krost.unidrive.sync.EnumerationTracker
 import org.krost.unidrive.sync.PathNormalizer
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.sync.stagedRowsSnapshot
 import org.slf4j.Logger
 import java.time.Instant
 import java.util.HexFormat
@@ -789,18 +790,13 @@ class RemoteGather(
         // slice is cleared. A throw mid-scan leaves both the slice and the
         // checkpoint intact so the next launch can pick up from there.
         val activeScan = db.getActiveScan(staleThreshold = java.time.Duration.ofHours(SCAN_CHECKPOINT_STALE_HOURS))
-        val resumedItems: List<CloudItem> =
-            if (activeScan != null) db.loadStagedItems(activeScan.scanId) else emptyList()
         val scanId =
             activeScan?.scanId
                 ?: db.beginScan(initialMarker = null)
+        val resumedItems: Iterable<CloudItem> =
+            if (activeScan != null) db.stagedRowsSnapshot(scanId) else emptyList()
         if (activeScan != null) {
-            log.info(
-                "Resuming Internxt-style scan id={} marker={} ({} previously-staged items)",
-                scanId,
-                activeScan.marker,
-                resumedItems.size,
-            )
+            log.info("Resuming Internxt-style scan id={} marker={}", scanId, activeScan.marker)
         }
         val scanContext =
             org.krost.unidrive.ScanContext(
@@ -1620,13 +1616,13 @@ class RemoteGather(
         return ownSpelling ?: existing.remotePath?.let { r -> staleSpellingCleared(r, item, twinKey) }
     }
 
-    // archive#491: the rows of a collision address their item under its own spelling: a twin under the canonical path as the
-    // provider spells it, the item that holds the name under its spelling when that is not the key's. Null otherwise.
+    // archive#491: a collision's rows, and (gkrost/unidrive-cli#948) every file spelled apart from its NFC key, address their
+    // item under its own spelling: a twin as the provider spells it, any other under its spelling. Null otherwise.
     private fun ownSpellingOf(
         path: String,
         item: CloudItem,
         twinKey: Boolean,
-    ): String? = if (twinKey || isCollided(path)) cloudPathOf(item).takeIf { it != item.path } else null
+    ): String? = if (twinKey || isCollided(path) || !item.isFolder) cloudPathOf(item).takeIf { it != item.path } else null
 
     // archive#491: a row's remote path that is the provider's spelling of a name it no longer spells that way (the item was
     // renamed to the NFC form in the cloud) goes: a twin's back to the canonical path, any other row's to its path.

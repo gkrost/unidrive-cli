@@ -18,7 +18,10 @@ package org.krost.unidrive
  * Only the cloud-identity fields (id, parentId, name, isFolder, size, modified,
  * hash) are reliable — the `path` field is a placeholder that the provider
  * must overwrite when it rebuilds the folder graph from staged + freshly-
- * fetched pages. Empty list on a fresh scan.
+ * fetched pages. Empty on a fresh scan. It is read from the staging chunk by chunk ([stagedRowsOf]) and can be iterated
+ * more than once, each pass reading the staging again: a provider keeps only what it needs of a row and does not collect
+ * it into a list of items. The engine bounds it to the rows staged when the pass began: rows [persistPage] stores later
+ * are never in it, however late a provider reads it.
  *
  * [persistPage] is invoked from the provider's pagination loop once per
  * successfully-fetched page, in single-page-at-a-time fashion. Implementations
@@ -76,7 +79,7 @@ package org.krost.unidrive
  */
 data class ScanContext(
     val resumeMarker: String?,
-    val resumedItems: List<CloudItem>,
+    val resumedItems: Iterable<CloudItem>,
     val persistPage: suspend (items: List<CloudItem>, marker: String) -> Unit,
     val scopeRoots: List<String> = emptyList(),
     val creatableRoots: Set<String> = emptySet(),

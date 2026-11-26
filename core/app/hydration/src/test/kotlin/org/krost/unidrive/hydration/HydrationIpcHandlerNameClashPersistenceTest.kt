@@ -49,7 +49,7 @@ class HydrationIpcHandlerNameClashPersistenceTest {
 
         val reply = r.call(r.handlerAfterRestart(), "open_write", "path" to "/$nfd", "cache_path" to json(cache.toString()))
 
-        assertEquals("""{"ok":false,"error":"name_clash"}""", reply.trim())
+        assertNameClash(reply.trim())
         assertEquals(uploadsBefore, r.env.syncEngine.uploadAttempts(), "nothing was queued for the twin after the restart")
     }
 
@@ -59,7 +59,7 @@ class HydrationIpcHandlerNameClashPersistenceTest {
         val first = HydrationIpcHandler(r.env.hydration, spellingsStore = r.env.stateDb.nameSpellingStore())
         assertTrue(r.call(first, "create", "path" to "/$nfd").contains("\"ok\":true"))
 
-        assertEquals("""{"ok":false,"error":"name_clash"}""", r.call(r.handlerAfterRestart(), "create", "path" to "/$nfc").trim())
+        assertNameClash(r.call(r.handlerAfterRestart(), "create", "path" to "/$nfc").trim())
     }
 
     @Test
