@@ -305,8 +305,8 @@ class InternxtAncestorRowsTest {
 
         val resume = assertNotNull(cursorResumeOf(marker, rows))
 
-        assertEquals(rows, resume.rows)
-        assertEquals(emptyList(), resume.ancestors)
+        assertEquals(rows, resume.rows.toList())
+        assertEquals(emptyList(), resume.ancestors.toList())
     }
 
     @Test
