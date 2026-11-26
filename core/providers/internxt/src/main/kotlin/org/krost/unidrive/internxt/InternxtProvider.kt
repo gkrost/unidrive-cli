@@ -17,6 +17,8 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.krost.unidrive.*
+import org.krost.unidrive.http.ResumableStaging
+import org.krost.unidrive.http.ResumeIdentity
 import org.krost.unidrive.internxt.model.FolderContentResponse
 import org.krost.unidrive.internxt.model.InternxtCredentials
 import org.krost.unidrive.internxt.model.InternxtFile
@@ -676,6 +678,15 @@ class InternxtProvider(
         remotePath: String,
         destination: Path,
         targetMtimeMillis: Long? = null,
+    ): DownloadReceipt =
+        // #845: the partial a broken transfer leaves is deleted when retrying cannot use it, and kept otherwise.
+        ResumableStaging.cleanupOnFailure(destination) { downloadWithFileUuidKeepingPartial(fileUuid, remotePath, destination, targetMtimeMillis) }
+
+    private suspend fun downloadWithFileUuidKeepingPartial(
+        fileUuid: String,
+        remotePath: String,
+        destination: Path,
+        targetMtimeMillis: Long?,
     ): DownloadReceipt {
         val hinted = api.fileHints.get(fileUuid)
             ?: return downloadStoredObject(currentFileMeta(fileUuid, remotePath), remotePath, destination, targetMtimeMillis)
@@ -728,6 +739,33 @@ class InternxtProvider(
             throw e
         }
 
+    // archive#485: an empty file has no bucket entry; its download is an empty file at the destination.
+    private suspend fun writeEmptyDownload(
+        destination: Path,
+        targetMtimeMillis: Long?,
+    ): DownloadReceipt {
+        withContext(Dispatchers.IO) {
+            destination.parent?.let { Files.createDirectories(it) }
+            Files.newOutputStream(
+                destination,
+                java.nio.file.StandardOpenOption.CREATE,
+                java.nio.file.StandardOpenOption.TRUNCATE_EXISTING,
+                java.nio.file.StandardOpenOption.WRITE,
+            ).close()
+            targetMtimeMillis?.let {
+                Files.setLastModifiedTime(destination, java.nio.file.attribute.FileTime.fromMillis(it))
+            }
+        }
+        val sha256 = HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest())
+        return DownloadReceipt(
+            bytesWritten = 0L,
+            plaintextSha256 = sha256,
+            stagedSize = Files.size(destination),
+            stagedMtimeMillis = Files.getLastModifiedTime(destination).toMillis(),
+            mtimeAppliedBeforePlacement = false,
+        )
+    }
+
     @Suppress("ThrowsCount") // The baseline entry predates the streamed receipt parameters and return type.
     private suspend fun downloadStoredObject(
         fileMeta: InternxtFile,
@@ -738,28 +776,7 @@ class InternxtProvider(
         // archive#485: an empty file is a drive entry with size 0 and no fileId (no bucket entry exists for it): there is nothing
         // to fetch or decrypt. A size of 0 WITH a fileId is the older "size unknown" shape and still goes to the bridge.
         // A null size is unknown, not empty: with no fileId either there is nothing to read, so it fails below.
-        if (fileMeta.fileId == null && fileMeta.size?.toLongOrNull() == 0L) {
-            withContext(Dispatchers.IO) {
-                destination.parent?.let { Files.createDirectories(it) }
-                Files.newOutputStream(
-                    destination,
-                    java.nio.file.StandardOpenOption.CREATE,
-                    java.nio.file.StandardOpenOption.TRUNCATE_EXISTING,
-                    java.nio.file.StandardOpenOption.WRITE,
-                ).close()
-                targetMtimeMillis?.let {
-                    Files.setLastModifiedTime(destination, java.nio.file.attribute.FileTime.fromMillis(it))
-                }
-            }
-            val sha256 = HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest())
-            return DownloadReceipt(
-                bytesWritten = 0L,
-                plaintextSha256 = sha256,
-                stagedSize = Files.size(destination),
-                stagedMtimeMillis = Files.getLastModifiedTime(destination).toMillis(),
-                mtimeAppliedBeforePlacement = false,
-            ).naming(fileMeta)
-        }
+        if (fileMeta.fileId == null && fileMeta.size?.toLongOrNull() == 0L) return writeEmptyDownload(destination, targetMtimeMillis).naming(fileMeta)
         val bucket = fileMeta.bucket ?: throw ProviderException("File has no bucket: $remotePath")
         val fileId = fileMeta.fileId ?: throw ProviderException("File has no fileId: $remotePath")
 
@@ -865,6 +882,7 @@ class InternxtProvider(
                             expectedShardHash = checkable,
                             targetMtimeMillis = targetMtimeMillis,
                             onProgress = traceProgress,
+                            resume = expected?.takeIf { it > 0L }?.let { ResumeIdentity(fileId, "index=${bridgeInfo.index}|hash=${usableShards.first().hash}", it) },
                         )
                     }
                 }

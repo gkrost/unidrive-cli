@@ -33,7 +33,6 @@ import org.krost.unidrive.http.UploadWatchdogException
 import org.krost.unidrive.http.UploadWatchdogLimits
 import org.krost.unidrive.http.HtmlInsteadOfContentException
 import org.krost.unidrive.http.assertNotHtml
-import org.krost.unidrive.http.writeStagedDownload
 import org.krost.unidrive.http.parseRetryAfterHeader
 import org.krost.unidrive.http.throttleWaitMs
 import org.krost.unidrive.http.progressTrackingFileRangeBody
@@ -467,7 +466,7 @@ class GraphApiService(
     suspend fun downloadFile(
         itemId: String,
         destPath: Path,
-    ): Long = downloadFileReading(itemId, destPath).bytes
+    ): Long = downloadFileResumable(itemId, destPath).bytes
 
     // An item OneDrive flagged as malicious is never fetched: the refusal is permanent (the row is quarantined, not retried)
     // and says the cloud refuses the content, not that the file is gone. Graph marks such an item with the `malware`
@@ -503,6 +502,23 @@ class GraphApiService(
         cause = cause,
     )
 
+    // archive#329: a 401/403 on the pre-authenticated URL is re-resolved once; this is what the second one means. Returns when
+    // the first one still is to be re-resolved, throws otherwise.
+    private fun refuseExpiredUrl(
+        outcome: DownloadOutcome.ExpiredUrl,
+        itemId: String,
+        alreadyReresolved: Boolean,
+    ) {
+        if (outcome.statusCode == HttpStatusCode.Forbidden.value && isMalwareDetected(outcome.body)) throw malwareRefusal(itemId)
+        if (!alreadyReresolved) return
+        // Only a 401 is an authentication failure. A 403 that persists on a fresh URL is an access refusal (before
+        // archive#329 it surfaced as the generic download failure): keep that, so it cannot latch the stale-auth UX (archive#157).
+        if (outcome.statusCode == HttpStatusCode.Forbidden.value) {
+            throw GraphApiException("Download failed: ${HttpStatusCode.Forbidden} - ${outcome.body}", outcome.statusCode)
+        }
+        throw AuthenticationException("Authentication failed (${outcome.statusCode}) on a re-resolved download URL for item $itemId")
+    }
+
     /** What a download brought: the bytes written, and the item metadata those bytes were read by. */
     data class DownloadedFile(val bytes: Long, val item: DriveItem)
 
@@ -537,6 +553,8 @@ class GraphApiService(
         // auth: re-resolve the item once for a fresh URL before treating it as an
         // authentication failure. Bounded to a single re-resolve (no loop).
         var authUrlReresolved = false
+        // #845: a Range request the server answered unusably is not repeated; the next attempt asks for the whole object.
+        var rangeRefused = false
         // The token a 401 refused, until the replay that answers it takes it (#215): a forced refresh is for that
         // replay alone, so a throttle of the replayed request does not make the next attempt rotate again.
         var sentToken: String? = null
@@ -548,9 +566,11 @@ class GraphApiService(
                 rejectedToken = null
                 val bearer = if (authNeeded) tokenProvider(rejected != null, rejected) else null
                 if (bearer != null) sentToken = bearer
+                val resumeFrom = if (rangeRefused) 0L else oneDriveResumeOffset(item, itemId, destPath)
                 val statement =
                     httpClient.prepareGet(url) {
                         if (bearer != null) bearerAuth(bearer)
+                        if (resumeFrom > 0L) header(HttpHeaders.Range, "bytes=$resumeFrom-")
                         // Ktor counts the request timeout up to the end of the `execute` block, so the client's flat
                         // 10 minute cap cut every download that needs longer, steady transfer or not. Sized from the
                         // declared size like an upload (the larger of that floor and the time at the minimum throughput).
@@ -583,12 +603,8 @@ class GraphApiService(
                         assertNotHtml(response, contextMsg = "Download itemId=$itemId")
                         throttleBudget.recordSuccess()
                         val written =
-                            writeStagedDownload(
-                                response.bodyAsChannel(),
-                                destPath,
-                                response.contentLength(),
-                                "download itemId=$itemId",
-                            )
+                            writeOneDriveBody(response, destPath, item, itemId, resumeFrom)
+                                ?: return@execute DownloadOutcome.RangeRefused.also { rangeRefused = true }
                         downloadedBytes = written
                         DownloadOutcome.Done
                     }
@@ -601,6 +617,7 @@ class GraphApiService(
                         source.held?.let { downloadUrls.putBack(it) }
                         return DownloadedFile(downloadedBytes, item)
                     }
+                    DownloadOutcome.RangeRefused -> continue
                     DownloadOutcome.RetryAuth -> {
                         log.info("Got 401 on download itemId={} — forcing token refresh and retrying once", itemId)
                         authRefreshed = true
@@ -612,24 +629,7 @@ class GraphApiService(
                         // expired — not an account-auth problem. Re-resolve the item once
                         // for a fresh URL (mirrors the HTML re-resolve arm below); only a
                         // 401/403 on the fresh URL is surfaced as an authentication failure.
-                        if (outcome.statusCode == HttpStatusCode.Forbidden.value && isMalwareDetected(outcome.body)) {
-                            throw malwareRefusal(itemId)
-                        }
-                        if (authUrlReresolved) {
-                            // Only a 401 is an authentication failure. A 403 that persists on a
-                            // fresh URL is an access refusal (before archive#329 it surfaced as the
-                            // generic download failure): keep that, so it cannot latch the
-                            // stale-auth UX (archive#157).
-                            if (outcome.statusCode == HttpStatusCode.Forbidden.value) {
-                                throw GraphApiException(
-                                    "Download failed: ${HttpStatusCode.Forbidden} - ${outcome.body}",
-                                    outcome.statusCode,
-                                )
-                            }
-                            throw AuthenticationException(
-                                "Authentication failed (${outcome.statusCode}) on a re-resolved download URL for item $itemId",
-                            )
-                        }
+                        refuseExpiredUrl(outcome, itemId, authUrlReresolved)
                         authUrlReresolved = true
                         log.warn(
                             "Got {} on the pre-authenticated download URL itemId={} — re-resolving for a fresh URL and retrying once",
@@ -1750,6 +1750,9 @@ class GraphApiService(
         data object Done : DownloadOutcome()
 
         data object RetryAuth : DownloadOutcome()
+
+        // #845: the answer to a Range request was not usable (a 206 for another range); ask again without Range.
+        data object RangeRefused : DownloadOutcome()
 
         // archive#329: the pre-authenticated downloadUrl's tempauth token expired (401/403 on
         // an authNeeded == false request). Carries the status for the failure surface.

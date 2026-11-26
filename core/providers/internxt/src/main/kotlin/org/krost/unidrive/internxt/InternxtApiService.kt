@@ -1412,34 +1412,13 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
         }
 
     /**
-     * Refuses a body that was cut off. Ktor's readAvailable answers -1 for a channel the engine closed with a failure (a
-     * connection reset in the middle of the body), exactly as for a clean end; the failure is only in closedCause and is
-     * rethrown as what it is. A host that closes the connection cleanly (no reset) before the announced length arrived
-     * leaves no closedCause either, so the shortfall against the response's own Content-Length is the same dropped
-     * transfer. Both are retryable IOExceptions: neither is taken for a shorter stored object (which the caller
-     * quarantines) nor, with no declared size, published truncated.
-     */
-    private fun requireBodyEnded(
-        channel: ByteReadChannel,
-        announcedLength: Long?,
-        contentEncoding: String?,
-        ciphertextBytes: Long,
-        destination: Path,
-    ) {
-        channel.closedCause?.let { throw it }
-        if (announcedLength != null && contentEncoding == null && ciphertextBytes != announcedLength) {
-            throw java.io.IOException(
-                "Connection to the storage host ended after $ciphertextBytes of $announcedLength bytes for ${destination.fileName}",
-            )
-        }
-    }
-
-    /**
      * Streams encrypted bytes through [cipher] to [destination], hashing plaintext before atomic publication.
      * [expectedShardHash] has no default: null publishes the content without the ciphertext check, so each caller states
      * it (the provider passes null only under `allow_unverified_shard_hash`).
+     *
+     * [resume] (#845), when given, keeps the plaintext of a broken transfer next to [destination] and asks for the rest with
+     * `Range: bytes=N-` the next time; see [receiveShardBody]. [cipher] is always the cipher at the start of the object.
      */
-    @Suppress("ThrowsCount") // The baseline entry predates target mtime and the streamed content receipt.
     internal suspend fun downloadFileStreaming(
         downloadUrl: String,
         cipher: javax.crypto.Cipher,
@@ -1448,6 +1427,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
         expectedShardHash: ShardHashExpectation.Checkable?,
         targetMtimeMillis: Long? = null,
         onProgress: ((Long) -> Unit)? = null,
+        resume: org.krost.unidrive.http.ResumeIdentity? = null,
     ): InternxtDownloadedContent {
         // The content is AES-CTR with no MAC, so a shard fetched over plain http can be altered on the way unseen
         // (the recorded hash is the only check, and it too comes from a response that is not ours to trust blindly).
@@ -1460,128 +1440,35 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
         }
         bridgeBudget.awaitSlot()
         try {
-            val downloaded =
-                httpClient.prepareGet(downloadUrl) {
-                    // archive#1065: the client's flat 600 s cap would cut a big file however steadily it moves.
-                    timeout { requestTimeoutMillis = downloadRequestTimeoutMs(expectedSize) }
-                }.execute { response ->
-                    if (!response.status.isSuccess()) {
-                        // #262: a throttling storage host's Retry-After reaches the shard-commit retry and the bridge budget.
-                        // The presigned URL's error body is not quoted (it can echo the signed request).
-                        throw InternxtApiException(
-                            "Download failed: ${response.status}",
-                            response.status.value,
-                            retryAfterMs = parseRetryAfterHeader(response.headers[HttpHeaders.RetryAfter], responseDateHeader = response.headers[HttpHeaders.Date]),
-                            responseReceived = true,
-                        )
-                    }
-
-                    assertNotHtml(response, contextMsg = "Download (encrypted) -> ${destination.fileName}")
-                    // archive#536: the shard's Content-Length already says when the stored object is shorter
-                    // than the size the drive reports (a multipart upload another client truncated) —
-                    // refuse before reading a single byte instead of pulling 285 MiB that cannot
-                    // succeed. archive#940: the same for a longer one; the stream cipher keeps the length, so
-                    // the post-download guard would refuse it after the whole transfer too. An absent
-                    // header (chunked) or an unknown declared size (0) stays with that post-download
-                    // completeness guard, as before.
-                    val announcedLength = response.headers[HttpHeaders.ContentLength]?.toLongOrNull()
-                    announcedLength?.let { contentLength ->
-                        if (expectedSize != null && expectedSize > 0 && contentLength != expectedSize) {
-                            val comparison = if (contentLength < expectedSize) "shorter" else "longer"
-                            throw RemoteIncompleteDownloadException(
-                                "Stored object for ${destination.fileName} is $comparison than the size the drive reports: " +
-                                    "$contentLength of $expectedSize bytes",
-                                storedBytes = contentLength,
-                                declaredBytes = expectedSize,
+            var from = resume?.let { org.krost.unidrive.http.ResumableStaging.keptOffset(destination, it) } ?: 0L
+            while (true) {
+                val plan = ShardBodyPlan(destination, cipher, expectedSize, expectedShardHash, targetMtimeMillis, onProgress, resume, from)
+                val downloaded =
+                    httpClient.prepareGet(downloadUrl) {
+                        // archive#1065: the client's flat 600 s cap would cut a big file however steadily it moves.
+                        timeout { requestTimeoutMillis = downloadRequestTimeoutMs(expectedSize) }
+                        if (from > 0L) header(HttpHeaders.Range, "bytes=$from-")
+                    }.execute { response ->
+                        if (!response.status.isSuccess()) {
+                            // #262: a throttling storage host's Retry-After reaches the shard-commit retry and the bridge budget.
+                            // The presigned URL's error body is not quoted (it can echo the signed request).
+                            throw InternxtApiException(
+                                "Download failed: ${response.status}",
+                                response.status.value,
+                                retryAfterMs = parseRetryAfterHeader(response.headers[HttpHeaders.RetryAfter], responseDateHeader = response.headers[HttpHeaders.Date]),
+                                responseReceived = true,
                             )
                         }
+                        assertNotHtml(response, contextMsg = "Download (encrypted) -> ${destination.fileName}")
+                        receiveShardBody(response, plan)
                     }
-                    val channel: ByteReadChannel = response.body()
-                    var written = 0L
-                    var ciphertextBytes = 0L
-                    val ciphertextDigest = java.security.MessageDigest.getInstance("SHA-256")
-                    val plaintextDigest = java.security.MessageDigest.getInstance("SHA-256")
-                    val result = withContext(Dispatchers.IO) {
-                        Files.createDirectories(destination.parent)
-                        // archive#529: a name near the 255-byte component limit cannot take the suffix — stage short.
-                        val tmpPath = destination.parent.resolve(
-                            org.krost.unidrive.io.stagingSiblingName(destination.fileName.toString(), ".unidrive-tmp"),
-                        )
-                        try {
-                            Files.newOutputStream(tmpPath, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING).use { out ->
-                                val buf = ByteArray(256 * 1024)
-                                // One output buffer for the whole body: the allocating update made a new array per read
-                                // (about 4,000 per GiB). AES-CTR gives as many bytes as it takes; the size is asked anyway.
-                                val plain = ByteArray(cipher.getOutputSize(buf.size))
-                                while (!channel.isClosedForRead) {
-                                    val n = channel.readAvailable(buf)
-                                    if (n <= 0) break
-                                    ciphertextBytes += n
-                                    onProgress?.invoke(ciphertextBytes)
-                                    ciphertextDigest.update(buf, 0, n)
-                                    val m = cipher.update(buf, 0, n, plain, 0)
-                                    if (m > 0) {
-                                        out.write(plain, 0, m)
-                                        plaintextDigest.update(plain, 0, m)
-                                        written += m
-                                    }
-                                }
-                                requireBodyEnded(channel, announcedLength, response.headers[HttpHeaders.ContentEncoding], ciphertextBytes, destination)
-                                // A stream whose length differs from the declared size (it ended short or ran long, with
-                                // no Content-Length to refuse it up front) is refused while it is still staged: the move
-                                // below would otherwise replace the previous local copy with the wrong bytes. Before the
-                                // hash check: a short stream cannot match the recorded hash, and its length is the
-                                // truthful reason.
-                                if (expectedSize != null && expectedSize > 0 && ciphertextBytes != expectedSize) {
-                                    throw RemoteIncompleteDownloadException(
-                                        "Incomplete download of ${destination.fileName}: got $ciphertextBytes of $expectedSize bytes",
-                                        storedBytes = ciphertextBytes,
-                                        declaredBytes = expectedSize,
-                                    )
-                                }
-                                // archive#295: the stream cipher is malleable, so the ciphertext is checked against
-                                // the hash the network recorded before a single plaintext byte is published.
-                                // archive#940: the algorithm follows the recorded shape (the caller parsed it), and a
-                                // refusal names it: the old SHA-256-only comparison reported every official
-                                // client's RIPEMD-160(SHA-256) hash as a "SHA-256 mismatch".
-                                expectedShardHash?.let { expected ->
-                                    if (!expected.matches(ciphertextDigest.digest())) {
-                                        throw RemoteContentRefusedDownloadException(
-                                            "Internxt shard ${expected.algorithm} mismatch for ${destination.fileName}; refusing unverified content",
-                                            reason = "${expected.algorithm} mismatch",
-                                        )
-                                    }
-                                }
-                                val finalBlock = cipher.doFinal()
-                                if (finalBlock != null && finalBlock.isNotEmpty()) {
-                                    out.write(finalBlock)
-                                    plaintextDigest.update(finalBlock)
-                                    written += finalBlock.size
-                                }
-                            }
-                            targetMtimeMillis?.let {
-                                Files.setLastModifiedTime(tmpPath, java.nio.file.attribute.FileTime.fromMillis(it))
-                            }
-                            val stagedSize = Files.size(tmpPath)
-                            val stagedMtimeMillis = Files.getLastModifiedTime(tmpPath).toMillis()
-                            val plaintextSha256 = HexFormat.of().formatHex(plaintextDigest.digest())
-                            Files.move(tmpPath, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-                            InternxtDownloadedContent(
-                                written,
-                                plaintextSha256,
-                                stagedSize,
-                                stagedMtimeMillis,
-                                mtimeAppliedBeforePlacement = targetMtimeMillis != null,
-                            )
-                        } catch (e: Exception) {
-                            Files.deleteIfExists(tmpPath)
-                            throw e
-                        }
-                    }
-                    result
+                if (downloaded != null) {
+                    bridgeBudget.recordSuccess()
+                    return downloaded
                 }
-            bridgeBudget.recordSuccess()
-            return downloaded
+                // The answer to the Range request was not usable: ask again for the whole shard (no cipher byte was used).
+                from = 0L
+            }
         } catch (e: InternxtApiException) {
             if (e.statusCode == 429 || e.statusCode == 503) bridgeBudget.recordThrottle(e.retryAfterMs ?: 0L)
             throw e

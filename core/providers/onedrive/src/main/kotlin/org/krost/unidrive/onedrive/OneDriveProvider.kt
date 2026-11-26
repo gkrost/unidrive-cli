@@ -271,14 +271,14 @@ class OneDriveProvider(
         if (remoteId.isBlank() || remoteId.startsWith("local:")) return downloadReading(remotePath, destination)
         return permanentIfGone(remotePath) {
             try {
-                graphApi.downloadFileReading(remoteId, destination)
+                graphApi.downloadFileResumable(remoteId, destination)
             } catch (e: GraphApiException) {
                 if (e.statusCode != 404) throw e
                 log.info(
                     "OneDrive download of '{}' by id got 404 (drifted id or stale download URL); re-resolving the item by path once",
                     remotePath,
                 )
-                graphApi.downloadFileReading(itemAt(remotePath).id, destination)
+                graphApi.downloadFileResumable(itemAt(remotePath).id, destination)
             }
         }
     }
@@ -289,7 +289,7 @@ class OneDriveProvider(
         destination: Path,
     ): GraphApiService.DownloadedFile =
         try {
-            graphApi.downloadFileReading(remoteId, destination)
+            graphApi.downloadFileResumable(remoteId, destination)
         } catch (e: GraphApiException) {
             if (e.isItemNotFound()) {
                 throw PermanentDownloadFailureException(
@@ -306,7 +306,7 @@ class OneDriveProvider(
     ): GraphApiService.DownloadedFile {
         val item = itemAt(remotePath)
         return try {
-            graphApi.downloadFileReading(item.id, destination)
+            graphApi.downloadFileResumable(item.id, destination)
         } catch (e: GraphApiException) {
             // A 404 on the content GET means the pre-resolved download URL went
             // stale (the CDN URL expired) and/or the cached remoteId drifted off
@@ -321,7 +321,7 @@ class OneDriveProvider(
                 remotePath,
             )
             val fresh = itemAt(remotePath)
-            graphApi.downloadFileReading(fresh.id, destination)
+            graphApi.downloadFileResumable(fresh.id, destination)
         }
     }
 
