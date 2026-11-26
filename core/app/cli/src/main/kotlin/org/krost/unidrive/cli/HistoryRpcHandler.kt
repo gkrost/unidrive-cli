@@ -437,6 +437,9 @@ internal class HistoryRpcHandler(
                 // Only a row a host reported has them (gkrost/unidrive-cli#848): an engine row carries neither member.
                 row.source?.let { put("source", JsonPrimitive(it)) }
                 row.operation?.let { put("operation", JsonPrimitive(it)) }
+                // A coalesced row's count and sample paths (gkrost/unidrive-cli#954): data as reported, present only when reported.
+                row.reportCount?.let { put("count", JsonPrimitive(it)) }
+                row.reportFirstPaths?.let { paths -> put("first_paths", JsonArray(paths.map { JsonPrimitive(it) })) }
             }
 
         private fun Long?.orNull(): JsonElement = this?.let { JsonPrimitive(it) } ?: JsonNull

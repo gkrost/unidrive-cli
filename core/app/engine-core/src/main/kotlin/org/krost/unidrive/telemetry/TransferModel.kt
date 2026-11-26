@@ -84,4 +84,11 @@ data class TransferRow(
     val source: String? = null,
     /** What the reporting host did (a short token); null with [source]. */
     val operation: String? = null,
+    /** How many items a reported row stands for (gkrost/unidrive-cli#954, `history.report` `count`); null when not reported. */
+    val reportCount: Int? = null,
+    /** A sample of up to [MAX_REPORT_FIRST_PATHS] of those items' paths, stored as reported (not sanitised); null when not reported. */
+    val reportFirstPaths: List<String>? = null,
 )
+
+/** The most paths a `history.report` row carries in `first_paths` (gkrost/unidrive-cli#954). */
+const val MAX_REPORT_FIRST_PATHS = 10

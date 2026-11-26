@@ -443,7 +443,7 @@ internal fun daemonCapabilitiesJson(
     (
         profileMode.capabilities + NOTIFICATIONS_STATUS_CAPABILITY +
             (if (hydration) listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY, HYDRATION_STAT_CAPABILITY, CANCEL_READ_CAPABILITY, HANDLE_STATUS_CAPABILITY, HYDRATION_LOCATE_CAPABILITY, SUBSCRIBE_REPLAY_CAPABILITY, LIST_COMPLETE_CAPABILITY, RMDIR_DISCARD_LOCAL_CAPABILITY, OPEN_READ_ETAG_CAPABILITY, RMDIR_NOT_EMPTY_REASON_CAPABILITY, LIST_CHANGED_BY_CAPABILITY, SWEEP_PROGRESS_CAPABILITY) else emptyList()) +
-            (if (historyOpen) listOf(HISTORY_ORDER_CAPABILITY, HISTORY_RETRY_CAPABILITY, HISTORY_REPORT_CAPABILITY) else emptyList()) +
+            (if (historyOpen) listOf(HISTORY_ORDER_CAPABILITY, HISTORY_RETRY_CAPABILITY, HISTORY_REPORT_CAPABILITY, HISTORY_REPORT_COUNT_CAPABILITY) else emptyList()) +
             (if (uploadIgnore) listOf(IGNORE_EXPLAIN_BATCH_CAPABILITY) else emptyList()) +
             (if (viewNamespaces.isEmpty()) emptyList() else listOf("views", "view_page")) +
             (if (shareCapable) listOf(SHARE_CREATE_CAPABILITY) else emptyList()) +
@@ -459,6 +459,9 @@ internal const val HISTORY_RETRY_CAPABILITY = "history.retry.v1"
 
 /** The `daemon.status` capability that says the daemon answers `history.report` (gkrost/unidrive-cli#848). */
 internal const val HISTORY_REPORT_CAPABILITY = "history.report.v1"
+
+/** The `daemon.status` capability that says `history.report` takes `count` and `first_paths` and `history.list` echoes them (gkrost/unidrive-cli#954). */
+internal const val HISTORY_REPORT_COUNT_CAPABILITY = "history.report.count:v1"
 
 /**
  * The `daemon.status` capability that says the daemon answers `vault.unlock` and `vault.lock`

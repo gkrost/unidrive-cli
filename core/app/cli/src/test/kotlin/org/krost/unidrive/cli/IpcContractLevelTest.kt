@@ -162,6 +162,9 @@ class IpcContractLevelTest {
                 // presence.enroll stores the anchor, user-presence:v1 is listed once one exists, and daemon.status carries
                 // `presence` (the policy and whether an anchor is enrolled).
                 setOf("verb:presence.challenge", "verb:presence.enroll", "capability:user-presence:v1", "field:daemon.status.presence"),
+                // 16 (gkrost/unidrive-cli#954): history.report takes an optional `count` and `first_paths` (a row that stands for
+                // many items), stored as data and echoed by history.list; the capability names them.
+                setOf("capability:history.report.count:v1"),
             )
     }
 }

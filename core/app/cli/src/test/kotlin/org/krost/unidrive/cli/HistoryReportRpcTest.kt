@@ -5,6 +5,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -71,7 +72,7 @@ class HistoryReportRpcTest {
             )
         override.forEach { (k, v) -> if (v == REMOVE) members.remove(k) else members[k] = v }
         return members.entries.joinToString(",", "{", "}") { (k, v) ->
-            "\"$k\":" + (if (v is String) JsonPrimitive(v).toString() else v.toString())
+            "\"$k\":" + (if (v is String && !v.startsWith("[")) JsonPrimitive(v).toString() else v.toString())
         }
     }
 
@@ -157,6 +158,126 @@ class HistoryReportRpcTest {
 
         assertEquals("unknown_source", reply.getValue("error").jsonPrimitive.content)
         assertEquals(0, listRows(h).size)
+    }
+
+    // A coalesced row: one report that stands for many items (gkrost/unidrive-cli#954).
+    private val coalesced = arrayOf("count" to 150, "first_paths" to """["/a.txt","/Eigene Dateien/b c.txt"]""")
+
+    @Test
+    fun `count and first_paths are stored as data and listed unchanged`() {
+        val h = open()
+
+        val reply = obj(runBlocking { h.report(report(REQ, *coalesced)) })
+
+        assertTrue(reply.getValue("ok").jsonPrimitive.boolean, reply.toString())
+        val row = listRows(h).single()
+        assertEquals(150, row.getValue("count").jsonPrimitive.int)
+        assertEquals(
+            listOf("/a.txt", "/Eigene Dateien/b c.txt"),
+            row.getValue("first_paths").jsonArray.map { it.jsonPrimitive.content },
+        )
+    }
+
+    @Test
+    fun `first_paths do not pass through the error sanitizer`() {
+        val h = open()
+        val folder = "/Users/someone/Documents/Projects/report.txt"
+
+        runBlocking { h.report(report(REQ, "count" to 1, "first_paths" to "[\"$folder\"]")) }
+
+        assertEquals(folder, listRows(h).single().getValue("first_paths").jsonArray.single().jsonPrimitive.content)
+    }
+
+    @Test
+    fun `a row reported without count and first_paths lists neither member`() {
+        val h = open()
+
+        runBlocking { h.report(report()) }
+
+        val row = listRows(h).single()
+        assertFalse("count" in row)
+        assertFalse("first_paths" in row)
+    }
+
+    @Test
+    fun `a resend of a coalesced report replays and adds no second row`() {
+        val h = open()
+        val first = runBlocking { h.report(report(REQ, *coalesced)) }
+
+        val second = runBlocking { h.report(report(REQ, *coalesced)) }
+
+        assertEquals(first, second)
+        assertEquals(1, listRows(h).size)
+    }
+
+    @Test
+    fun `the same request id with another count is idempotency_conflict and changes nothing`() {
+        val h = open()
+        runBlocking { h.report(report(REQ, *coalesced)) }
+
+        val reply = obj(runBlocking { h.report(report(REQ, "count" to 151, "first_paths" to coalesced[1].second)) })
+
+        assertEquals("idempotency_conflict", reply.getValue("error").jsonPrimitive.content)
+        assertEquals(150, listRows(h).single().getValue("count").jsonPrimitive.int)
+    }
+
+    @Test
+    fun `the same request id with other first_paths is idempotency_conflict and changes nothing`() {
+        val h = open()
+        runBlocking { h.report(report(REQ, *coalesced)) }
+
+        val reply = obj(runBlocking { h.report(report(REQ, "count" to 150, "first_paths" to """["/a.txt","/other.txt"]""")) })
+
+        assertEquals("idempotency_conflict", reply.getValue("error").jsonPrimitive.content)
+        assertEquals(2, listRows(h).single().getValue("first_paths").jsonArray.size)
+    }
+
+    @Test
+    fun `the same request id gaining a count is idempotency_conflict`() {
+        val h = open()
+        runBlocking { h.report(report()) }
+
+        val reply = obj(runBlocking { h.report(report(REQ, "count" to 2)) })
+
+        assertEquals("idempotency_conflict", reply.getValue("error").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `an invalid count or first_paths is invalid_request, like an invalid path, and writes nothing`() {
+        val h = open()
+        val tooMany = (1..11).joinToString(",", "[", "]") { "\"/f$it.txt\"" }
+        val bad =
+            listOf(
+                "count zero" to report(REQ, "count" to 0),
+                "count negative" to report(REQ, "count" to -3),
+                "count a string" to report(REQ, "count" to "5"),
+                "count a fraction" to report(REQ, "count" to 1.5),
+                "count beyond an int" to report(REQ, "count" to 3_000_000_000L),
+                "first_paths not an array" to report(REQ, "first_paths" to "\"/a.txt\""),
+                "first_paths empty" to report(REQ, "first_paths" to "[]"),
+                "first_paths with 11 entries" to report(REQ, "count" to 50, "first_paths" to tooMany),
+                "first_paths with a relative path" to report(REQ, "first_paths" to """["a.txt"]"""),
+                "first_paths with a control character" to report(REQ, "first_paths" to """["/a\u0001.txt"]"""),
+                "first_paths with a non-string" to report(REQ, "first_paths" to """["/a.txt",1]"""),
+                "first_paths with a null" to report(REQ, "first_paths" to """[null]"""),
+                "first_paths longer than count" to report(REQ, "count" to 1, "first_paths" to """["/a.txt","/b.txt"]"""),
+            )
+        for ((label, request) in bad) {
+            val reply = obj(runBlocking { h.report(request) })
+            assertEquals("invalid_request", reply["error"]?.jsonPrimitive?.content, "$label: $reply")
+        }
+        assertEquals(0, listRows(h).size)
+    }
+
+    @Test
+    fun `ten first_paths are accepted`() {
+        val h = open()
+        val ten = (1..10).joinToString(",", "[", "]") { "\"/f$it.txt\"" }
+
+        val reply = obj(runBlocking { h.report(report(REQ, "count" to 10, "first_paths" to ten)) })
+
+        assertTrue(reply.getValue("ok").jsonPrimitive.boolean, reply.toString())
+        assertEquals(10, listRows(h).single().getValue("first_paths").jsonArray.size)
     }
 
     @Test

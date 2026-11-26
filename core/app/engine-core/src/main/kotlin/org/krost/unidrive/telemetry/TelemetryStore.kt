@@ -174,7 +174,7 @@ internal class TelemetryStore private constructor(
         inTransaction { c ->
             val inserted = c.prepareStatement(INSERT_HOST_REPORT).use { ps ->
                 TransferRowCodec.bind(ps, row)
-                ps.setString(22, errorFingerprint)
+                ps.setString(24, errorFingerprint)
                 ps.executeUpdate() == 1
             }
             if (inserted) return@inTransaction HostReportWrite.RECORDED
@@ -490,17 +490,18 @@ internal class TelemetryStore private constructor(
 
         /** Columns the transfers table gained after its first shape (see [addMissingTransferColumns]). */
         private val ADDED_TRANSFER_COLUMNS =
-            listOf("max_attempts" to "INTEGER", "next_try_at_ms" to "INTEGER", "source" to "TEXT", "operation" to "TEXT", "report_error_fingerprint" to "TEXT")
+            listOf("max_attempts" to "INTEGER", "next_try_at_ms" to "INTEGER", "source" to "TEXT", "operation" to "TEXT", "report_error_fingerprint" to "TEXT",
+                "report_count" to "INTEGER", "report_first_paths" to "TEXT")
 
         private const val COLUMNS =
             "operation_id, profile, direction, path, queued_at, started_at, finished_at, queue_wait_ms, transfer_ms, " +
-                "bytes_total, bytes_done, result, error_class, error_message, attempts, old_hash, new_hash, max_attempts, next_try_at_ms, source, operation"
+                "bytes_total, bytes_done, result, error_class, error_message, attempts, old_hash, new_hash, max_attempts, next_try_at_ms, source, operation, report_count, report_first_paths"
         private val INSERT_HOST_REPORT =
-            "INSERT INTO transfers($COLUMNS, report_error_fingerprint) VALUES (${List(22) { "?" }.joinToString(",")}) " +
+            "INSERT INTO transfers($COLUMNS, report_error_fingerprint) VALUES (${List(24) { "?" }.joinToString(",")}) " +
                 "ON CONFLICT(operation_id) DO NOTHING"
 
         private val UPSERT =
-            "INSERT INTO transfers($COLUMNS) VALUES (${List(21) { "?" }.joinToString(",")}) " +
+            "INSERT INTO transfers($COLUMNS) VALUES (${List(23) { "?" }.joinToString(",")}) " +
                 "ON CONFLICT(operation_id) DO UPDATE SET " +
                 COLUMNS.split(", ").drop(1).joinToString(", ") { "$it = excluded.$it" }
 
@@ -557,6 +558,9 @@ internal object TransferRowCodec {
         ps.setObject(19, r.nextTryAtMs)
         ps.setString(20, r.source)
         ps.setString(21, r.operation)
+        ps.setObject(22, r.reportCount)
+        // Paths carry no control character (history.report refuses them), so a newline is an unambiguous separator.
+        ps.setString(23, r.reportFirstPaths?.joinToString("\n"))
     }
 
     fun read(rs: ResultSet): TransferRow {
@@ -583,6 +587,8 @@ internal object TransferRowCodec {
             nextTryAtMs = long("next_try_at_ms"),
             source = rs.getString("source"),
             operation = rs.getString("operation"),
+            reportCount = long("report_count")?.toInt(),
+            reportFirstPaths = rs.getString("report_first_paths")?.split('\n'),
         )
     }
 }

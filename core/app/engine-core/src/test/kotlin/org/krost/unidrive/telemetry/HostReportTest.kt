@@ -33,6 +33,8 @@ class HostReportTest {
         result: TransferResult = TransferResult.SUCCESS,
         errorClass: String? = null,
         errorMessage: String? = null,
+        count: Int? = null,
+        firstPaths: List<String>? = null,
     ) = HostReport(
         operationId = id,
         source = "windows-host",
@@ -44,6 +46,8 @@ class HostReportTest {
         bytes = 42,
         errorClass = errorClass,
         errorMessage = errorMessage,
+        count = count,
+        firstPaths = firstPaths,
     )
 
     @BeforeTest
@@ -83,6 +87,31 @@ class HostReportTest {
         assertEquals(HostReportWrite.REPLAYED, history.recordHostReport(report()))
 
         assertEquals(1, history.rows().size)
+    }
+
+    @Test
+    fun `a count and first_paths are stored as data and survive a reopen unsanitised`() {
+        val paths = listOf("/Users/someone/Documents/a.txt", "/Eigene Dateien/b c.txt")
+        val first = open()
+        first.recordHostReport(report(count = 150, firstPaths = paths))
+        first.close()
+
+        val row = open().rows().single()
+
+        assertEquals(150, row.reportCount)
+        assertEquals(paths, row.reportFirstPaths)
+    }
+
+    @Test
+    fun `a report with another count or other first_paths is a conflict, not a replay`() {
+        val history = open()
+        assertEquals(HostReportWrite.RECORDED, history.recordHostReport(report(count = 5, firstPaths = listOf("/a"))))
+
+        assertEquals(HostReportWrite.REPLAYED, history.recordHostReport(report(count = 5, firstPaths = listOf("/a"))))
+        assertEquals(HostReportWrite.CONFLICT, history.recordHostReport(report(count = 6, firstPaths = listOf("/a"))))
+        assertEquals(HostReportWrite.CONFLICT, history.recordHostReport(report(count = 5, firstPaths = listOf("/b"))))
+        assertEquals(HostReportWrite.CONFLICT, history.recordHostReport(report(count = 5)))
+        assertEquals(HostReportWrite.CONFLICT, history.recordHostReport(report()))
     }
 
     @Test
