@@ -435,6 +435,7 @@ class HydrationImpl(
         // gkrost/unidrive-cli#391: a cache copy the enumeration's reap removes (a delete seen in the cloud, a gone folder) leaves the
         // running total at once; before, it stayed in `cache.bytes` until the next walk, up to EVICTION_RECONCILE_INTERVAL_MS later.
         mount.onReapedCacheCopy { path -> forgetCacheFile(path) }
+        mount.onEnumeratedPaths(ParentBackOffers(this)::onListed) // gkrost/unidrive-cli#951
         pause.onResume { recoveryUploadScope.launch { offerFailedPendingUploadsAgain() } } // test drive 2 E3
     }
 

@@ -386,6 +386,11 @@ class MountEngine private constructor(
         wiring.enumeration.reapGuards.onCacheCopyDropped = listener
     }
 
+    /** gkrost/unidrive-cli#951: [listener] is told the paths each enumeration changed in state.db ([RemoteEnumeration.ReapGuards.onPathsChanged]). */
+    fun onEnumeratedPaths(listener: (paths: Set<String>) -> Unit) {
+        wiring.enumeration.reapGuards.onPathsChanged = listener
+    }
+
     /** One pass of the content-id backfill; see [ContentIdBackfill]. */
     internal suspend fun backfillContentIdsOnce(): ContentIdBackfill.Outcome = contentIds.pass()
 

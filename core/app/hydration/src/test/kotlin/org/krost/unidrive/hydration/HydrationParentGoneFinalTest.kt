@@ -75,14 +75,23 @@ class HydrationParentGoneFinalTest {
         if (scope is TestScope) scope.runCurrent()
         assertNull(provider.remote["/dir/new.txt"], "precondition: the upload was refused")
         assertTrue(db.uploadRefusal("/dir/new.txt")?.endsWith("|parent_gone: /dir") == true, "precondition: the refusal is on the row")
-        provider.seedFolder("/dir")
         return hydration
+    }
+
+    // The folder is back in the cloud. Nothing has listed it yet.
+    private fun Env.folderBack() = provider.seedFolder("/dir")
+
+    // A complete listing: the folder as the provider has it now.
+    // [reset]: a full listing, which is what reaps a folder the provider no longer has.
+    private suspend fun Env.listing(reset: Boolean = false) {
+        assertTrue(mount.enumerateRemoteIntoState(reset = reset).ok, "the listing ran")
     }
 
     @Test
     fun `a parent_gone refusal is not offered again by a backoff round`() = runTest {
         val env = env()
         env.refusedParentGone(this, retryDelays = listOf(60_000L, 120_000L))
+        env.folderBack()
 
         advanceTimeBy(24 * 60 * 60 * 1000L)
         advanceUntilIdle()
@@ -96,6 +105,7 @@ class HydrationParentGoneFinalTest {
     fun `a parent_gone refusal is not offered again by a resume`() = runTest {
         val env = env()
         env.refusedParentGone(this, retryDelays = emptyList())
+        env.folderBack()
 
         env.mount.pause.pause("test", auto = false)
         env.mount.pause.resume()
@@ -109,6 +119,7 @@ class HydrationParentGoneFinalTest {
     fun `a parent_gone refusal survives a daemon restart and is not replayed`() = runTest {
         val env = env()
         env.refusedParentGone(this, retryDelays = emptyList())
+        env.folderBack()
         env.stop()
 
         env.start() // the state.db is read from its file by a new engine
@@ -125,11 +136,82 @@ class HydrationParentGoneFinalTest {
     fun `a client retry still sends a parent_gone row once the parent is back`() = runTest {
         val env = env()
         val hydration = env.refusedParentGone(this, retryDelays = emptyList())
+        env.folderBack()
 
         hydration.openForWrite("conn", "h2", "/dir/new.txt", env.mount.resolveCachePath("/dir/new.txt"))
         advanceUntilIdle()
 
         assertEquals("only copy", env.provider.remote["/dir/new.txt"]?.let { String(it) })
+        env.stop()
+    }
+
+    @Test
+    fun `a parent seen alive again in a listing offers its refused rows once and they upload`() = runTest {
+        val env = env()
+        env.refusedParentGone(this, retryDelays = emptyList())
+        env.listing(reset = true) // the folder is still gone in this listing: nothing to offer
+        advanceUntilIdle()
+        assertNull(env.provider.remote["/dir/new.txt"], "a listing without the folder offers nothing")
+
+        env.folderBack()
+        env.listing() // the listing sees the folder alive again
+        advanceUntilIdle()
+
+        assertEquals("only copy", env.provider.remote["/dir/new.txt"]?.let { String(it) })
+        assertEquals(2, env.provider.uploadAttempts.get(), "the refusal and one offer")
+        env.listing()
+        advanceUntilIdle()
+        assertEquals(2, env.provider.uploadAttempts.get(), "the same folder listed again offers nothing more")
+        env.stop()
+    }
+
+    @Test
+    fun `without a listing nothing is offered however long it takes, and a listing is what offers it`() = runTest {
+        val env = env()
+        env.refusedParentGone(this, retryDelays = listOf(60_000L, 120_000L))
+        env.stop()
+        env.start() // a restart
+        env.listing(reset = true) // its listing sees the folder gone
+        val restarted = HydrationImpl(env.engine, env.db, recoveryUploadScope = this, exhaustedRetryDelaysMs = listOf(60_000L))
+        restarted.replayPendingUploads()
+        env.folderBack()
+
+        advanceTimeBy(24 * 60 * 60 * 1000L)
+        env.mount.pause.pause("test", auto = false)
+        env.mount.pause.resume()
+        advanceUntilIdle()
+        assertNull(env.provider.remote["/dir/new.txt"], "no timer, resume or start offers it")
+        assertEquals(1, env.provider.uploadAttempts.get(), "only the first refusal reached the provider")
+
+        env.listing()
+        advanceUntilIdle()
+        assertEquals("only copy", env.provider.remote["/dir/new.txt"]?.let { String(it) }, "the listing is the trigger")
+        env.stop()
+    }
+
+    @Test
+    fun `a parent seen alive but gone again by upload time is refused again with no second offer`() = runTest {
+        val env = env()
+        env.refusedParentGone(this, retryDelays = emptyList())
+        env.listing(reset = true)
+        env.folderBack()
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        env.provider.uploadGate = gate
+        env.listing() // seen alive: the offer is queued and waits at the provider
+        runCurrent()
+        env.provider.items.remove("/dir") // gone again before the bytes are sent
+        gate.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(2, env.provider.uploadAttempts.get(), "the refusal and the one offer")
+        assertNull(env.provider.remote["/dir/new.txt"])
+        assertTrue(env.db.uploadRefusal("/dir/new.txt")?.endsWith("|parent_gone: /dir") == true, "refused again, and final")
+        env.folderBack() // not listed: no offer
+        env.mount.pause.pause("test", auto = false)
+        env.mount.pause.resume()
+        advanceTimeBy(24 * 60 * 60 * 1000L)
+        advanceUntilIdle()
+        assertEquals(2, env.provider.uploadAttempts.get(), "no second offer")
         env.stop()
     }
 }
