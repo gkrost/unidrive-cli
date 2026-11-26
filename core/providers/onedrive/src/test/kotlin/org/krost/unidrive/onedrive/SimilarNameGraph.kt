@@ -320,6 +320,7 @@ class SimilarNameGraph(
                 val newName = Regex("^\\{\"name\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"").find(body)?.groupValues?.get(1)?.let { unescape(it) }
                 if (newName != null && newName != node.name) {
                     val parent = node.parent!!
+                    if (foldsAsDuplicate && (exact(parent, newName) != null || similar(parent, newName) != null)) return nameExists()
                     if (similar(parent, newName) != null || exact(parent, newName) != null) return similarName()
                     parent.children.remove(node.name)
                     node.name = newName

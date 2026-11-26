@@ -35,7 +35,7 @@ class OneDriveNameFoldTest {
             val variation = cp in 0xFE00..0xFE0F || cp in 0xE0100..0xE01EF
             if (!zeroWidth && !variation) kept.appendCodePoint(cp)
         }
-        return kept.toString().uppercase(Locale.ROOT).lowercase(Locale.ROOT)
+        return kept.toString().lowercase(Locale.ROOT).uppercase(Locale.ROOT).lowercase(Locale.ROOT)
     }
 
     @BeforeTest
@@ -159,6 +159,58 @@ class OneDriveNameFoldTest {
 
             assertEquals("STRASSE 1.txt", item.name)
             assertEquals("old", String(assertNotNull(graph.find("/fold/STRASSE.txt")).bytes), "the pre-existing item is untouched")
+            provider.close()
+        }
+
+    @Test
+    fun `a capital sharp S folds onto its sibling spelled SS or sharp s`() {
+        assertRefusedNamingSibling(existing = "STRASSE.txt", folded = "STRA\u1E9EE.txt")
+        assertRefusedNamingSibling(existing = "Straße.txt", folded = "STRA\u1E9EE.txt")
+    }
+
+    @Test
+    fun `a rename onto a folded name is refused naming the sibling, by path and by id`() =
+        runTest {
+            val graph = drive("STRASSE.txt", "draft.txt", "draft2.txt")
+            val provider = providerWith(graph)
+
+            val byPath = assertFailsWith<NameRefusedException> { provider.move("/fold/draft.txt", "/fold/Straße.txt") }
+            val byId = assertFailsWith<NameRefusedException> { provider.moveById(graph.find("/fold/draft2.txt")!!.id, "/fold/draft2.txt", "/fold/Straße.txt") }
+
+            assertEquals("STRASSE.txt", byPath.sibling)
+            assertEquals("STRASSE.txt", byId.sibling)
+            assertEquals(NameRefusedException.SIMILAR_NAME, byPath.reason)
+            assertNotNull(graph.find("/fold/draft.txt"), "the renamed item stays where it was")
+            provider.close()
+        }
+
+    @Test
+    fun `a rename onto an exact sibling name keeps the plain 409`() =
+        runTest {
+            val graph = drive("STRASSE.txt", "draft.txt")
+            val provider = providerWith(graph)
+
+            val refusal = assertFailsWith<GraphApiException> { provider.move("/fold/draft.txt", "/fold/STRASSE.txt") }
+
+            assertEquals(409, refusal.statusCode)
+            provider.close()
+        }
+
+    @Test
+    fun `a folder create beside a case-folded or NFKC-folded sibling lands under a server name, an exact one keeps the 409`() =
+        runTest {
+            val graph = drive()
+            graph.seed("/fold/report", isFolder = true)
+            graph.seed("/fold/STRASSE", isFolder = true)
+            val provider = providerWith(graph)
+
+            val upper = provider.createFolder("/fold/Report")
+            val sharp = provider.createFolder("/fold/Straße")
+            val exact = assertFailsWith<GraphApiException> { provider.createFolder("/fold/report") }
+
+            assertTrue(upper.nameOverridden && upper.path.startsWith("/fold/Report"), "landed under a server name: ${upper.path}")
+            assertTrue(sharp.nameOverridden && sharp.path.startsWith("/fold/Stra"), "landed under a server name: ${sharp.path}")
+            assertEquals(409, exact.statusCode)
             provider.close()
         }
 }

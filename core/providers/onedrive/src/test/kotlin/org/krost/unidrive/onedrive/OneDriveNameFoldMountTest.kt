@@ -47,7 +47,7 @@ class OneDriveNameFoldMountTest {
             val variation = cp in 0xFE00..0xFE0F || cp in 0xE0100..0xE01EF
             if (!zeroWidth && !variation) kept.appendCodePoint(cp)
         }
-        return kept.toString().uppercase(Locale.ROOT).lowercase(Locale.ROOT)
+        return kept.toString().lowercase(Locale.ROOT).uppercase(Locale.ROOT).lowercase(Locale.ROOT)
     }
 
     @BeforeTest

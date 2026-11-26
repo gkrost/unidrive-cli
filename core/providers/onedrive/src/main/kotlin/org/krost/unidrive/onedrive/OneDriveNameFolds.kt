@@ -12,7 +12,7 @@ import java.util.Locale
  * The fold key, from the folds measured against a OneDrive Personal profile (the golden-unicode-v2 smoke of
  * 2026-11-24, the table in the issue) and Graph's documented case-insensitive names:
  *  - NFKC (`U+FB01` ligature fi = `fi`);
- *  - case, by full case mapping both ways (`Straße` = `STRASSE`, `ς` = `Σ`, `Report` = `report`);
+ *  - case, by full case mapping down, up and down (`Straße` = `STRASSE` = `STRAẞE`, `ς` = `Σ`, `Report` = `report`);
  *  - zero-width and joiner code points U+200B..U+200D, U+2060, U+FEFF dropped;
  *  - emoji and other variation selectors U+FE00..U+FE0F and U+E0100..U+E01EF dropped (`U+2764` = `U+2764 U+FE0F`).
  *
@@ -26,7 +26,7 @@ internal object OneDriveNameFolds {
         Normalizer.normalize(name, Normalizer.Form.NFKC).codePoints().forEach { cp ->
             if (!ignorable(cp)) kept.appendCodePoint(cp)
         }
-        return kept.toString().uppercase(Locale.ROOT).lowercase(Locale.ROOT)
+        return kept.toString().lowercase(Locale.ROOT).uppercase(Locale.ROOT).lowercase(Locale.ROOT)
     }
 
     private fun ignorable(cp: Int): Boolean =
