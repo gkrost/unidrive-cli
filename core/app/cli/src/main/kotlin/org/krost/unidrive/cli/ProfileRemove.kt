@@ -74,8 +74,8 @@ internal object ProfileRemover {
         val vaultEntryRemoved: Boolean = false,
         /** Why the vault entry could not be dropped and how to drop it later; null when there was nothing to keep. */
         val vaultWarning: String? = null,
-        /** The hydration cache kept because it holds edits that never reached the cloud; null when it was deleted or there was none. */
-        val keptCachePath: Path? = null,
+        /** The hydration and ignore-rules caches kept (in that order) because the hydration cache holds edits that never reached the cloud; empty otherwise. */
+        val keptCaches: List<Path?> = emptyList(),
         /** True when a cache folder (hydration or ignore rules) was deleted. */
         val cachesRemoved: Boolean = false,
         /** The profile `[general] default_profile` names after the removal, when the removed one was the default. */
@@ -263,7 +263,7 @@ internal object ProfileRemover {
         var wasDefault = false
         var newDefault: String? = null
         var cachesRemoved = false
-        var keptCachePath: Path? = null
+        var keptCaches: List<Path?> = emptyList()
         var vaultDrop = VaultDrop(removed = false, kept = false, warning = null)
         try {
             // The look that may delete rows runs here, under the lock: no daemon can start between the check and the deletion.
@@ -291,9 +291,9 @@ internal object ProfileRemover {
                 vaultDrop.warning?.let { warnings += it }
 
                 // The IPC tokens and socket belong to a daemon that is gone: always removed, also with --keep-data.
-                val cacheResult = removeCaches(name, syncRoot, cacheHoldsEdits, warnings)
+                val cacheResult = removeCaches(name, syncRoot, cacheHoldsEdits, keepData, warnings)
                 cachesRemoved = cacheResult.removed
-                keptCachePath = cacheResult.kept
+                keptCaches = cacheResult.kept
                 tokensRemoved = removeIpcTokens(profileDir, warnings)
                 socketRemoved = removeSocket(socket, warnings)
 
@@ -316,10 +316,10 @@ internal object ProfileRemover {
             RemovalFacts(
                 name, removedMode, daemonStopped, wasDefault, if (wasDefault) newDefault else raw.general.default_profile,
                 RemovedFlags(stateRemoved, credentialsRemoved, tokensRemoved, socketRemoved, cachesRemoved),
-                KeptFlags(syncRoot, Files.isDirectory(profileDir), credentialsKept, keptCachePath),
+                KeptFlags(syncRoot, Files.isDirectory(profileDir), credentialsKept, keptCaches),
                 vaultDrop, warnings,
             ).toJson()
-        return Result(json, profileDir, profileDirGone, vaultDrop.removed, vaultDrop.warning, keptCachePath, cachesRemoved, newDefault.takeIf { wasDefault })
+        return Result(json, profileDir, profileDirGone, vaultDrop.removed, vaultDrop.warning, keptCaches, cachesRemoved, newDefault.takeIf { wasDefault })
     }
 }
 
@@ -335,7 +335,7 @@ private class KeptFlags(
     val syncRoot: String,
     val stateFolder: Boolean,
     val credentials: Boolean,
-    val hydrationCache: Path?,
+    val caches: List<Path?>,
 )
 
 /** What a removal did, as the one JSON object both forms report. */
@@ -382,7 +382,8 @@ private class RemovalFacts(
                     // Credentials held outside the profile folder (an OS secret store) are not touched.
                     put("secret_store", "not touched")
                     // Set when the hydration cache holds edits that never reached the cloud: it is kept at this path.
-                    put("hydration_cache", kept.hydrationCache?.toString())
+                    put("hydration_cache", kept.caches.getOrNull(0)?.toString())
+                    put("ignore_rules_cache", kept.caches.getOrNull(1)?.toString())
                 },
             )
             put("warnings", JsonArray(warnings.map { JsonPrimitive(it) }))
@@ -407,7 +408,7 @@ private fun cacheHoldsUnsentEdits(
 
 private class CacheResult(
     val removed: Boolean,
-    val kept: Path?,
+    val kept: List<Path?>,
 )
 
 /**
@@ -420,15 +421,19 @@ private fun removeCaches(
     name: String,
     syncRoot: String,
     holdsEdits: Boolean,
+    keepData: Boolean,
     warnings: MutableList<String>,
 ): CacheResult {
     val cacheRoot = ProfileRemoveHooks.cacheRoot()
     val hydration = SyncEngine.hydrationCacheRoot(cacheRoot, name)
     val rules = SyncEngine.ignoreRuleFilesRoot(cacheRoot, name)
-    if (holdsEdits) {
-        if (!Files.exists(hydration, LinkOption.NOFOLLOW_LINKS) && !Files.exists(rules, LinkOption.NOFOLLOW_LINKS)) return CacheResult(false, null)
-        warnings += "cache: kept $hydration, it holds edits that never reached the cloud"
-        return CacheResult(false, hydration)
+    if (holdsEdits || keepData) {
+        // Only folders that exist are reported. With --keep-data the kept state.db still points at the cache.
+        val kept = listOf(hydration, rules).map { dir -> dir.takeIf { Files.exists(it, LinkOption.NOFOLLOW_LINKS) } }
+        if (kept.all { it == null }) return CacheResult(false, emptyList())
+        val why = if (holdsEdits) "the hydration cache holds edits that never reached the cloud" else "--keep-data keeps the state.db that points at them"
+        warnings += "cache: kept ${kept.filterNotNull().joinToString(" and ")}, $why"
+        return CacheResult(false, kept)
     }
     var removed = false
     for (dir in listOf(hydration, rules)) {
@@ -437,7 +442,7 @@ private fun removeCaches(
         if (ProfilePurge.purge(dir, ProfilePurge.ProtectedRoot.of(syncRoot), local)) removed = true
         warnings += local.map { "cache: ${it.removePrefix("state: ")} (in $dir)" }
     }
-    return CacheResult(removed, null)
+    return CacheResult(removed, emptyList())
 }
 
 /** What became of the profile's vault entry: dropped, or kept with the reason and the way to drop it later. */

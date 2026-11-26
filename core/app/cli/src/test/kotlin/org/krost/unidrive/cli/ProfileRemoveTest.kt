@@ -1127,6 +1127,60 @@ class ProfileRemoveTest {
     }
 
     @Test
+    fun `a kept hydration cache keeps the ignore-rules cache too and prints both paths`() {
+        populate()
+        writeState("/a.txt" to false)
+        populateCaches()
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--force-pending"), stderr())
+
+        assertTrue(Files.exists(ignoreRulesDir.resolve(".unidriveignore")), "the ignore-rules cache stays too")
+        assertTrue(hydrationDir.toString() in stdout(), stdout())
+        assertTrue(ignoreRulesDir.toString() in stdout(), stdout())
+    }
+
+    @Test
+    fun `the json result names both kept cache paths`() {
+        populate()
+        writeState("/a.txt" to false)
+        populateCaches()
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--json", "--force-pending"), stderr())
+
+        val kept = json().getValue("kept").jsonObject
+        assertEquals(hydrationDir.toString(), kept.getValue("hydration_cache").jsonPrimitive.content)
+        assertEquals(ignoreRulesDir.toString(), kept.getValue("ignore_rules_cache").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `profile remove --keep-data keeps the hydration and ignore-rules caches`() {
+        populate()
+        populateCaches()
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--json", "--keep-data"), stderr())
+
+        assertTrue(Files.exists(hydrationDir.resolve("sub/file.bin")), "the hydration cache stays with the kept state")
+        assertTrue(Files.exists(ignoreRulesDir.resolve(".unidriveignore")), "the ignore-rules cache stays")
+        val kept = json().getValue("kept").jsonObject
+        assertEquals(hydrationDir.toString(), kept.getValue("hydration_cache").jsonPrimitive.content)
+        assertEquals(ignoreRulesDir.toString(), kept.getValue("ignore_rules_cache").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `a kept cache report names only folders that exist`() {
+        populate()
+        writeState("/a.txt" to false)
+        Files.createDirectories(ignoreRulesDir)
+        Files.writeString(ignoreRulesDir.resolve(".unidriveignore"), "*.tmp")
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--json", "--force-pending"), stderr())
+
+        val kept = json().getValue("kept").jsonObject
+        assertTrue(kept.getValue("hydration_cache") is kotlinx.serialization.json.JsonNull, "no hydration cache existed")
+        assertEquals(ignoreRulesDir.toString(), kept.getValue("ignore_rules_cache").jsonPrimitive.content)
+    }
+
+    @Test
     fun `removing the default profile with exactly one profile left makes that one the default`() {
         populate()
         assertEquals("gone", defaultProfile())
