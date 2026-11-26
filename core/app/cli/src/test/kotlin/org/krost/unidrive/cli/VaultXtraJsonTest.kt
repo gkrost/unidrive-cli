@@ -195,4 +195,16 @@ class VaultXtraJsonTest {
         assertEquals(1, run("vault", "xtra-clear", "--json", "--passphrase-stdin", stdin = ""))
         assertError("invalid_request")
     }
+
+    @Test
+    fun `vault forget --json is refused as an unknown option and changes nothing`() {
+        val data =
+            mapOf(
+                "work" to mapOf("password" to "p"),
+                XTRA_VAULT_ENTRY to mapOf(XTRA_VAULT_FIELD to "xtra-pass-456"),
+            )
+        vault.write(vaultPass.toCharArray(), data)
+        assertEquals(2, run("vault", "forget", "work", "--json", "--passphrase-stdin", stdin = "$vaultPass\n"))
+        assertEquals(data, vault.read(vaultPass.toCharArray()), "neither the profile nor the X-tra entry was touched")
+    }
 }

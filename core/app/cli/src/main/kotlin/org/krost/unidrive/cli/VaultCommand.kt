@@ -484,12 +484,8 @@ class VaultForgetCommand : java.util.concurrent.Callable<Int> {
     )
     var passphraseStdin: Boolean = false
 
-    @Option(names = ["--json"], description = ["Print the result (or the refusal, with a stable error token) as one JSON object; never prompts"])
-    var json: Boolean = false
-
     override fun call(): Int {
         val baseDir = vaultCmd.parent.configBaseDir()
-        if (json) return xtraClearJson(baseDir, passphraseStdin)
         val vault = Vault(baseDir.resolve("vault.enc"))
         if (!vault.exists()) {
             System.err.println("No vault found.")
