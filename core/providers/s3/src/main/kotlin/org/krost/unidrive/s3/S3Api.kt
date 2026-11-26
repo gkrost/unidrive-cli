@@ -185,6 +185,7 @@ class S3Api(
 
     /** The object at [key], or null when there is none. */
     suspend fun head(key: String): S3Object? {
+        S3Keys.requireAddressable(key)
         val response = send(HttpMethod.Head, key)
         if (response.status.value == 404) return null
         requireOk(response)
@@ -217,8 +218,9 @@ class S3Api(
     suspend fun get(
         key: String,
         destination: Path,
-    ): Long =
-        budget.retrying { corrected, retries ->
+    ): Long {
+        S3Keys.requireAddressable(key)
+        return budget.retrying { corrected, retries ->
             val statement =
                 httpClient.prepareRequest {
                     signed(HttpMethod.Get, key, emptyList(), emptyMap(), SigV4Signer.EMPTY_SHA256)
@@ -247,6 +249,7 @@ class S3Api(
                 }
             }
         }
+    }
 
     /**
      * PUTs [file] (or an empty body) to [key] with [meta]; [ifMatch] makes it conditional, [ifNoneMatch] makes it a create
@@ -260,6 +263,7 @@ class S3Api(
         ifNoneMatch: Boolean = false,
         contentMd5: ByteArray? = null,
     ): S3PutResult {
+        S3Keys.requireAddressable(key)
         val size = file?.let { Files.size(it) } ?: 0L
         // [contentMd5] is the MD5 of the bytes of [file] as they were read before this call: S3 answers 400 BadDigest, and stores
         // nothing, when what it received is not those bytes (the file changed since, or the body was damaged on the way).
@@ -290,6 +294,7 @@ class S3Api(
         key: String,
         meta: Map<String, String>,
     ): String {
+        S3Keys.requireAddressable(key)
         val response = send(HttpMethod.Post, key, listOf("uploads" to ""), meta.mapKeys { "x-amz-meta-${it.key}" })
         return xml(requireOk(response).bodyAsText()).text("UploadId") ?: throw ProviderException("S3 started a multipart upload without an id")
     }
@@ -304,6 +309,7 @@ class S3Api(
         length: Long,
         md5: ByteArray,
     ): String {
+        S3Keys.requireAddressable(key)
         val response =
             send(
                 HttpMethod.Put,
@@ -324,6 +330,8 @@ class S3Api(
         sourceKey: String,
         range: LongRange,
     ): String {
+        S3Keys.requireAddressable(key)
+        S3Keys.requireAddressable(sourceKey)
         val response =
             send(
                 HttpMethod.Put,
@@ -344,6 +352,7 @@ class S3Api(
         ifMatch: String? = null,
         ifNoneMatch: Boolean = false,
     ): String? {
+        S3Keys.requireAddressable(key)
         val body =
             parts.sortedBy { it.first }.joinToString("", "<CompleteMultipartUpload>", "</CompleteMultipartUpload>") { (n, etag) ->
                 "<Part><PartNumber>$n</PartNumber><ETag>\"$etag\"</ETag></Part>"
@@ -369,6 +378,7 @@ class S3Api(
         key: String,
         uploadId: String,
     ) {
+        S3Keys.requireAddressable(key)
         val response = send(HttpMethod.Delete, key, listOf("uploadId" to uriEncode(uploadId)))
         if (response.status.value != 404) requireOk(response)
     }
@@ -378,6 +388,7 @@ class S3Api(
         key: String,
         uploadId: String,
     ): List<S3Part>? {
+        S3Keys.requireAddressable(key)
         val parts = mutableListOf<S3Part>()
         var marker: String? = null
         do {
@@ -400,6 +411,8 @@ class S3Api(
         sourceKey: String,
         key: String,
     ): String? {
+        S3Keys.requireAddressable(sourceKey)
+        S3Keys.requireAddressable(key)
         val response = send(HttpMethod.Put, key, emptyList(), mapOf("x-amz-copy-source" to copySource(sourceKey), "x-amz-metadata-directive" to "COPY"))
         val root = xml(requireOk(response).bodyAsText())
         if (root.tagName == "Error") throw S3Exception("S3 copy of '$sourceKey' failed: ${root.text("Message")}", 200, root.text("Code") ?: "")
@@ -408,6 +421,7 @@ class S3Api(
 
     /** Deletes [key]; a key that is not there is deleted already. */
     suspend fun delete(key: String) {
+        S3Keys.requireAddressable(key)
         val response = send(HttpMethod.Delete, key)
         if (response.status.value != 404) requireOk(response)
     }
@@ -415,6 +429,7 @@ class S3Api(
     /** Deletes up to 1,000 keys in one call; returns the keys S3 could not delete. */
     suspend fun deleteMany(keys: List<String>): List<String> {
         require(keys.size <= MAX_BATCH_DELETE)
+        S3Keys.requireAddressable(keys)
         val body =
             keys.joinToString("", "<Delete><Quiet>true</Quiet>", "</Delete>") { "<Object><Key>${escapeXml(it)}</Key></Object>" }.toByteArray(Charsets.UTF_8)
         val response = send(HttpMethod.Post, null, listOf("delete" to ""), mapOf("Content-MD5" to md5Base64(body)), SigV4Signer.sha256Hex(body)) { body }
@@ -426,6 +441,7 @@ class S3Api(
         key: String,
         seconds: Long,
     ): String {
+        S3Keys.requireAddressable(key)
         val path = path(key)
         return base + path.removePrefix(basePath()) + "?" + signer.presignQuery(config.host, path, seconds).joinToString("&") { "${it.first}=${it.second}" }
     }
