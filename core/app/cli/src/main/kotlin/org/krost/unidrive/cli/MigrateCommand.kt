@@ -106,6 +106,7 @@ class MigrateInventoryCommand : Runnable {
             )
         when (val outcome = LegacyInventory.collect(inputs)) {
             is LegacyInventory.Outcome.Refused -> {
+                if (json) throw LifecycleError("inventory_refused", outcome.message)
                 System.err.println(outcome.message)
                 System.exit(1)
             }

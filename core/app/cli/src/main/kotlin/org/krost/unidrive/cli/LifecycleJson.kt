@@ -132,6 +132,8 @@ internal fun resolveProfileTarget(
     // issue#786: the config's secret fields are protected at rest; the sign-in flow needs the real values
     // (Dropbox's app key). The SECRET_PROPERTY_KEYS strip happens after decoding, so its three keys never
     // reach the flow either way.
+    // #859: a sealed value decodes only after the vault is open (a locked one refuses typed, exit 78).
+    if (rp.hasSealedSecretField()) main.openVaultForSealedConfig()
     val properties = main.rawProviderToProperties(ConfigSecrets.decode(rp, name, configPath)).filterKeys { it !in SECRET_PROPERTY_KEYS }
     return ProfileTarget(name, rp.type ?: name, baseDir.resolve(name), properties)
 }

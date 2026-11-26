@@ -29,8 +29,20 @@ private fun readStdinLine(): String {
     return bytes.toString(Charsets.UTF_8).removeSuffix("\r")
 }
 
-private fun vaultPassphrase(stdin: Boolean): CharArray =
-    if (stdin) readPassphraseStdin("--passphrase-stdin") else readPassphrase("Vault passphrase: ")
+/** #845: a `--json` run never opens a prompt; the secret must arrive on standard input. */
+private fun requireStdinWhenJson(
+    json: Boolean,
+    given: Boolean,
+    token: String,
+    flag: String,
+) {
+    if (json && !given) throw LifecycleError(token, "--json never prompts: give $flag", exitCode = 78)
+}
+
+private fun vaultPassphrase(
+    stdin: Boolean,
+    json: Boolean,
+): CharArray = if (stdin) readPassphraseStdin("--passphrase-stdin", json) else readPassphrase("Vault passphrase: ")
 
 /** The Internxt profile and its vault, or the refusal. */
 private fun internxtVaultTarget(
@@ -106,10 +118,12 @@ class VaultInternxtPasswordSetCommand : Callable<Int> {
     override fun call(): Int =
         reply(json) {
             if (email != null && emailStdin) throw LifecycleError("invalid_value", "give --email or --email-stdin, not both")
+            requireStdinWhenJson(json, passphraseStdin, "passphrase_stdin_required", "--passphrase-stdin")
+            requireStdinWhenJson(json, passwordStdin, "password_stdin_required", "--password-stdin")
             val main = vaultCmd.parent
             val (target, vault) = internxtVaultTarget(main, profile)
             // One line each, in this order: vault passphrase, e-mail, password.
-            val passphrase = vaultPassphrase(passphraseStdin)
+            val passphrase = vaultPassphrase(passphraseStdin, json)
             try {
                 val account =
                     (if (emailStdin) readStdinLine() else email ?: AccountName.read(target.profileDir))?.trim()?.takeIf { it.isNotEmpty() }
@@ -154,9 +168,10 @@ class VaultInternxtPasswordClearCommand : Callable<Int> {
 
     override fun call(): Int =
         reply(json) {
+            requireStdinWhenJson(json, passphraseStdin, "passphrase_stdin_required", "--passphrase-stdin")
             val main = vaultCmd.parent
             val (target, vault) = internxtVaultTarget(main, profile)
-            val passphrase = vaultPassphrase(passphraseStdin)
+            val passphrase = vaultPassphrase(passphraseStdin, json)
             try {
                 val request = daemonRequest(VaultRpcHandler.INTERNXT_PASSWORD_CLEAR, passphrase)
                 withProfileLockOrDaemon(
