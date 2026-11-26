@@ -167,7 +167,7 @@ internal fun deleteSemantics(providerType: String): String =
     }
 
 /** A hosting-contract refusal exits 78 like every mode refusal ([Main.MODE_REFUSAL_EXIT]); every other refusal 1. */
-private fun rmExitCode(e: LifecycleError): Int = if (e.token == "mirror_profile" || e.token == "mode_missing") 78 else 1
+private fun rmExitCode(e: LifecycleError): Int = if (e.token == "mirror_profile" || e.token == "mode_missing") 78 else e.exitCode
 
 /**
  * Deletes [RmRequest.rawPath] of the `-p` (else default) profile. Never exits the JVM: every refusal is a

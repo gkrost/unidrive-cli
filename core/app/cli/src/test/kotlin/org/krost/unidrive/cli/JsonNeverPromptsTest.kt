@@ -109,7 +109,7 @@ class JsonNeverPromptsTest {
                 .execute("-c", dir.toString(), "-p", "test", "trash", "list", "--remote", "--json")
         assertEquals(0, consoleReads, "a --json run never reads the console")
         assertEquals(0, stdinReads, "a --json run never reads stdin")
-        assertEquals(1, exit)
+        assertEquals(78, exit)
         val json = reply()
         assertEquals("false", json.str("ok"))
         assertEquals("vault_passphrase_required", json.str("error"))
@@ -151,5 +151,16 @@ class JsonNeverPromptsTest {
         assertEquals(1, exit)
         assertEquals("", out.toString(Charsets.UTF_8))
         assertTrue(err.toString(Charsets.UTF_8).contains("Error: boom"))
+    }
+
+    @Test
+    fun `the --json vault refusal exits 78 and prints exactly one JSON object`() {
+        val exit =
+            CommandLine(newMain())
+                .also { it.executionExceptionHandler = cliExecutionExceptionHandler }
+                .execute("-c", dir.toString(), "-p", "test", "trash", "list", "--remote", "--json")
+        assertEquals(78, exit, "the same code as the human-mode vault refusal")
+        assertEquals("vault_passphrase_required", reply().str("error"))
+        assertEquals(0, consoleReads)
     }
 }

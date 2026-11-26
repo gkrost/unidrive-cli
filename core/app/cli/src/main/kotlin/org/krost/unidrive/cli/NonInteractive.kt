@@ -29,7 +29,7 @@ internal fun Main.refuse(
     stderrLines: List<String> = listOf(message),
     exitCode: Int = 1,
 ): Nothing {
-    if (isNonInteractive) throw LifecycleError(token, message)
+    if (isNonInteractive) throw LifecycleError(token, message, exitCode = exitCode)
     stderrLines.forEach { System.err.println(it) }
     System.exit(exitCode)
     error("unreachable")

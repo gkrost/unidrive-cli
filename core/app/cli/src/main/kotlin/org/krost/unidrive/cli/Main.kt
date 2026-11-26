@@ -282,6 +282,7 @@ open class Main : Runnable {
                             "vault_passphrase_required",
                             "vault.enc exists but no passphrase is available (${resolution.detail}); set UNIDRIVE_VAULT_PASS, " +
                                 "a systemd credential named unidrive-vault-pass, or [general] unlock_helper",
+                            exitCode = MODE_REFUSAL_EXIT,
                         )
                     } else if (resolution.consoleWasPresent) {
                         System.err.println("Error: could not read passphrase.")
@@ -850,7 +851,7 @@ internal val cliExecutionExceptionHandler =
                     ?: unreachableRefusal(ex)
                     ?: LifecycleError("internal_error", "unexpected failure: ${ex.javaClass.simpleName}")
             emitJson(lifecycleErrorJson(refusal))
-            return@IExecutionExceptionHandler 1
+            return@IExecutionExceptionHandler refusal.exitCode
         }
         System.err.println("Error: ${ex.message ?: ex.javaClass.simpleName}")
         if (ex is ConfigValueException) MountCommand.EX_CONFIG else 1
