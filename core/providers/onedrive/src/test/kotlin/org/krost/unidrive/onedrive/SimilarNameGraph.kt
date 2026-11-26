@@ -31,6 +31,14 @@ import java.net.URLDecoder
 class SimilarNameGraph(
     private val ignored: Set<Int> = DEFAULT_IGNORED,
     private val pathLookupByKey: Boolean = true,
+    /** Replaces the ignored-code-points key: the comparison key a test wants the drive to judge siblings on. */
+    private val keyOf: ((String) -> String)? = null,
+    /**
+     * The shape measured for the case, NFKC, zero-width and variation-selector folds (cli#950): a sibling that folds
+     * onto the name is answered like a true duplicate ("Name already exists"), and `rename` lands the copy as
+     * "<existing sibling's base> 1.ext".
+     */
+    private val foldsAsDuplicate: Boolean = false,
 ) {
     class Node(
         val id: String,
@@ -53,7 +61,7 @@ class SimilarNameGraph(
         requests.filter { it.startsWith("$method ") && it.contains(contains) }
 
     fun key(name: String): String =
-        buildString { name.codePoints().filter { it !in ignored }.forEach { appendCodePoint(it) } }.lowercase()
+        keyOf?.invoke(name) ?: buildString { name.codePoints().filter { it !in ignored }.forEach { appendCodePoint(it) } }.lowercase()
 
     private fun newId(): String = "id-${++counter}"
 
@@ -220,14 +228,15 @@ class SimilarNameGraph(
     }
 
     private fun place(parent: Node, name: String, behavior: String): Place {
-        val dup = exact(parent, name)
+        val dup = exact(parent, name) ?: if (foldsAsDuplicate) similar(parent, name) else null
         if (dup != null) {
             return when (behavior) {
                 "replace" -> Place.Replace(dup)
                 "rename" -> {
-                    val dot = name.lastIndexOf('.')
-                    val base = if (dot > 0) name.substring(0, dot) else name
-                    val ext = if (dot > 0) name.substring(dot) else ""
+                    val src = if (foldsAsDuplicate) dup.name else name
+                    val dot = src.lastIndexOf('.')
+                    val base = if (dot > 0) src.substring(0, dot) else src
+                    val ext = if (dot > 0) src.substring(dot) else ""
                     Place.Create("$base 1$ext")
                 }
                 else -> Place.Refuse(similar = false)

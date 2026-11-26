@@ -513,7 +513,7 @@ class OneDriveProvider(
             if (e.isSimilarName()) {
                 landUnderServerName(e)
             } else if (e.isNameAlreadyExists()) {
-                identicalRemoteAt(remotePath, localPath, fileSize)?.let { return it }
+                graphApi.refuseFoldedName(remotePath, e) ?: identicalRemoteAt(remotePath, localPath, fileSize)?.let { return it }
                 completeIntoEmptyItem(remotePath, fileSize) { behavior, etag -> put(behavior, etag) }?.let { return it }
                 log.warn(
                     "UD-366: create-collision on '{}' — a different remote already exists at this path; " +
