@@ -836,7 +836,10 @@ internal fun readPassphrase(prompt: String): CharArray {
  * consumed (the same shape `auth login --password-stdin` reads). Empty input is a refusal naming
  * the flag, never a blank passphrase.
  */
-internal fun readPassphraseStdin(flag: String): CharArray {
+internal fun readPassphraseStdin(
+    flag: String,
+    json: Boolean = false,
+): CharArray {
     val bytes = java.io.ByteArrayOutputStream()
     while (true) {
         val b = System.`in`.read()
@@ -845,6 +848,7 @@ internal fun readPassphraseStdin(flag: String): CharArray {
     }
     val line = bytes.toString(Charsets.UTF_8).removeSuffix("\r")
     if (line.isEmpty()) {
+        if (json) throw LifecycleError("empty_passphrase", "$flag was given but standard input held no passphrase", exitCode = 78)
         System.err.println("Error: $flag was given but standard input held no passphrase.")
         kotlin.system.exitProcess(1)
     }

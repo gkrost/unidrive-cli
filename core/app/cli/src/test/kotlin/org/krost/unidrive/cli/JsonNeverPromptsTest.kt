@@ -4,6 +4,10 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
+import org.krost.unidrive.auth.CredentialSeal
+import org.krost.unidrive.auth.KeyedCredentialProtector
+import org.krost.unidrive.sync.ConfigSecretSeal
+import org.krost.unidrive.sync.ConfigSecrets
 import org.krost.unidrive.sync.Vault
 import org.krost.unidrive.testing.TestScratch
 import picocli.CommandLine
@@ -162,5 +166,90 @@ class JsonNeverPromptsTest {
         assertEquals(78, exit, "the same code as the human-mode vault refusal")
         assertEquals("vault_passphrase_required", reply().str("error"))
         assertEquals(0, consoleReads)
+    }
+
+    private fun runJson(vararg args: String): Int =
+        CommandLine(newMain())
+            .also { it.executionExceptionHandler = cliExecutionExceptionHandler }
+            .execute("-c", dir.toString(), *args)
+
+    @Test
+    fun `vault internxt-password-set with json and no passphrase-stdin refuses typed without prompting`() {
+        val exit = runJson("vault", "internxt-password-set", "--json")
+        assertEquals(78, exit)
+        assertEquals("passphrase_stdin_required", reply().str("error"))
+        assertEquals(0, consoleReads)
+    }
+
+    @Test
+    fun `vault internxt-password-set with json and no password-stdin refuses typed without prompting`() {
+        val exit = runJson("vault", "internxt-password-set", "--json", "--passphrase-stdin")
+        assertEquals(78, exit)
+        assertEquals("password_stdin_required", reply().str("error"))
+        assertEquals(0, consoleReads)
+    }
+
+    @Test
+    fun `vault internxt-password-clear with json and no passphrase-stdin refuses typed without prompting`() {
+        val exit = runJson("vault", "internxt-password-clear", "--json")
+        assertEquals(78, exit)
+        assertEquals("passphrase_stdin_required", reply().str("error"))
+        assertEquals(0, consoleReads)
+    }
+
+    @Test
+    fun `an empty passphrase stdin under json is a typed JSON refusal and not a process exit`() {
+        val e = assertFailsWith<LifecycleError> { readPassphraseStdin("--passphrase-stdin", json = true) }
+        assertEquals("empty_passphrase", e.token)
+        assertEquals(78, e.exitCode)
+    }
+
+    @Test
+    fun `a locked vault does not fail the credential health of a profile that needs no vaulted field`() {
+        val main = newMain().apply { nonInteractive = true }
+        main.checkCredentialHealth(main.resolveCurrentProfile(), dir)
+        assertEquals(0, consoleReads)
+    }
+
+    private fun sealedConfig() {
+        val configPath = dir.resolve("config.toml")
+        val section = mapOf("key" to java.util.Base64.getEncoder().encodeToString(ByteArray(32) { 7 }), "enabled" to "true")
+        Vault(dir.resolve("vault.enc")).write(vaultPass.toCharArray(), mapOf(CREDENTIAL_SEAL_SECTION to section))
+        CredentialSeal.install(credentialSealFrom(mapOf(CREDENTIAL_SEAL_SECTION to section)))
+        val sealed = ConfigSecrets.protectText(Files.readString(configPath) + "password = \"synthetic-secret\"\n", configPath, ConfigSecretSeal.defaultProtector())
+        assertTrue(sealed.contains(KeyedCredentialProtector.PREFIX), "the fixture really is sealed")
+        Files.writeString(configPath, sealed)
+        CredentialSeal.clear()
+    }
+
+    @Test
+    fun `an empty email-stdin line names the flag and keeps the human-mode exit code`() {
+        val e = assertFailsWith<LifecycleError> { resolveEmail(emailStdin = true, email = null, stored = "kept@example.org") { "  " } }
+        assertEquals("missing_email", e.token)
+        assertTrue(e.message!!.contains("--email-stdin"), e.message)
+        assertEquals(1, e.exitCode)
+    }
+
+    private fun envMain() =
+        newMain().apply {
+            passphraseSourcesFactory = { PassphraseSources(env = { if (it == "UNIDRIVE_VAULT_PASS") vaultPass else null }, consolePresent = { false }, consoleRead = { null }) }
+        }
+
+    @Test
+    fun `a sealed config value opens the vault before it decodes in the lifecycle profile resolution`() {
+        sealedConfig()
+        resolveProfileTarget(envMain(), null)
+        assertTrue(CredentialSeal.current() != null, "the vault was opened and its seal key installed before the decode")
+        CredentialSeal.clear()
+    }
+
+    @Test
+    fun `a sealed config value opens the vault before it decodes in the credential health check`() {
+        sealedConfig()
+        val main = envMain()
+        main.checkCredentialHealth(main.resolveCurrentProfile(), dir)
+        assertEquals(0, consoleReads)
+        assertTrue(CredentialSeal.current() != null, "the vault was opened and its seal key installed before the decode")
+        CredentialSeal.clear()
     }
 }

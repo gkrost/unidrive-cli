@@ -319,12 +319,19 @@ open class Main : Runnable {
     }
 
 
+    /** Opens the vault (installing its seal key) before a sealed config value is decoded outside [mergeVaultCreds]. */
+    internal fun openVaultForSealedConfig() {
+        loadVaultData()
+    }
+
     private fun mergeVaultCreds(profile: ProfileInfo): RawProvider? {
         // issue#786: config secret fields are protected at rest; decode before anything — including the
         // vault fallback below — reads them. An undecodable protected value throws naming the field and
         // is never silently replaced by the vault's copy.
+        // #859: a value sealed under the vault key decodes only once the vault is open and its key installed.
+        val vaultData = loadVaultData()
         val rp = ConfigSecrets.decode(profile.rawProvider, profile.name, baseConfigDir.resolve("config.toml"))
-        val vaultCreds = loadVaultData()[profile.name] ?: return rp
+        val vaultCreds = vaultData[profile.name] ?: return rp
         if (rp == null) {
             return RawProvider(
                 access_key_id = vaultCreds["access_key_id"],
@@ -585,7 +592,7 @@ open class Main : Runnable {
         val rp =
             try {
                 ConfigSecrets.decode(
-                    if (useVault) mergeVaultCreds(profile) else profile.rawProvider,
+                    if (useVault && profileNeedsVaultedFields(profile)) mergeVaultCreds(profile) else profile.rawProvider,
                     profile.name,
                     baseConfigDir.resolve("config.toml"),
                 )

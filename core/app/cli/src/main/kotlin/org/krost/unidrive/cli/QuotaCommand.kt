@@ -163,11 +163,10 @@ class QuotaCommand : Runnable {
         }
         val cached = readCachedQuota(stateDb)
         if (cached == null) {
-            System.err.println(
+            val line =
                 "No running daemon and no cached quota for profile '$profileName'. " +
-                    "Run 'unidrive -p $profileName quota' once (online) to seed the cache.",
-            )
-            return 1
+                    "Run 'unidrive -p $profileName quota' once (online) to seed the cache."
+            throw LifecycleError("no_cached_quota", line)
         }
         val (quota, fetchedAt) = cached
         println(

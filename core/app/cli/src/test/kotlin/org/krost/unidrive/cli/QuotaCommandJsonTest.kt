@@ -85,11 +85,11 @@ class QuotaCommandJsonTest {
 
     @Test
     fun `quota --json with no daemon and no cache fails with the remedy`() {
-        val exitCode = runJson()
+        val e = kotlin.test.assertFailsWith<LifecycleError> { runJson() }
 
-        assertEquals(1, exitCode)
-        assertTrue(err.toString().contains("No running daemon"), "the error names the situation: $err")
-        assertTrue(err.toString().contains("to seed the cache"), "the error names the seeding command: $err")
+        assertEquals("no_cached_quota", e.token, "the refusal is one typed JSON object through the handler, not stderr prose")
+        assertTrue(e.message!!.contains("No running daemon"), "the error names the situation: ${e.message}")
+        assertTrue(e.message!!.contains("to seed the cache"), "the error names the seeding command: ${e.message}")
     }
 
     // Cross-platform read-only file: the POSIX view on Linux, the DOS attribute on Windows.

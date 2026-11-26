@@ -29,8 +29,35 @@ private fun readStdinLine(): String {
     return bytes.toString(Charsets.UTF_8).removeSuffix("\r")
 }
 
-private fun vaultPassphrase(stdin: Boolean): CharArray =
-    if (stdin) readPassphraseStdin("--passphrase-stdin") else readPassphrase("Vault passphrase: ")
+/** #845: a `--json` run never opens a prompt; the secret must arrive on standard input. */
+private fun requireStdinWhenJson(
+    json: Boolean,
+    given: Boolean,
+    token: String,
+    flag: String,
+) {
+    if (json && !given) throw LifecycleError(token, "--json never prompts: give $flag", exitCode = 78)
+}
+
+/** The e-mail to store: standard input when asked for (a blank line is a refusal naming the flag, never the stored one), else the option, else the stored one. */
+internal fun resolveEmail(
+    emailStdin: Boolean,
+    email: String?,
+    stored: String?,
+    readLine: () -> String,
+): String {
+    if (emailStdin) {
+        return readLine().trim().takeIf { it.isNotEmpty() }
+            ?: throw LifecycleError("missing_email", "--email-stdin read an empty line from standard input")
+    }
+    return (email ?: stored)?.trim()?.takeIf { it.isNotEmpty() }
+        ?: throw LifecycleError("missing_email", "no e-mail: give --email or --email-stdin, or sign in once with 'auth login'")
+}
+
+private fun vaultPassphrase(
+    stdin: Boolean,
+    json: Boolean,
+): CharArray = if (stdin) readPassphraseStdin("--passphrase-stdin", json) else readPassphrase("Vault passphrase: ")
 
 /** The Internxt profile and its vault, or the refusal. */
 private fun internxtVaultTarget(
@@ -106,14 +133,14 @@ class VaultInternxtPasswordSetCommand : Callable<Int> {
     override fun call(): Int =
         reply(json) {
             if (email != null && emailStdin) throw LifecycleError("invalid_value", "give --email or --email-stdin, not both")
+            requireStdinWhenJson(json, passphraseStdin, "passphrase_stdin_required", "--passphrase-stdin")
+            requireStdinWhenJson(json, passwordStdin, "password_stdin_required", "--password-stdin")
             val main = vaultCmd.parent
             val (target, vault) = internxtVaultTarget(main, profile)
             // One line each, in this order: vault passphrase, e-mail, password.
-            val passphrase = vaultPassphrase(passphraseStdin)
+            val passphrase = vaultPassphrase(passphraseStdin, json)
             try {
-                val account =
-                    (if (emailStdin) readStdinLine() else email ?: AccountName.read(target.profileDir))?.trim()?.takeIf { it.isNotEmpty() }
-                        ?: throw LifecycleError("missing_email", "no e-mail: give --email or --email-stdin, or sign in once with 'auth login'")
+                val account = resolveEmail(emailStdin, email, AccountName.read(target.profileDir), ::readStdinLine)
                 val password = if (passwordStdin) readStdinLine() else readPassphrase("Internxt password: ").let { String(it).also { _ -> it.fill('\u0000') } }
                 if (password.isEmpty()) throw LifecycleError("empty_password", "no password on standard input")
                 val request = daemonRequest(VaultRpcHandler.INTERNXT_PASSWORD_SET, passphrase, mapOf("email" to account, "password" to password))
@@ -154,9 +181,10 @@ class VaultInternxtPasswordClearCommand : Callable<Int> {
 
     override fun call(): Int =
         reply(json) {
+            requireStdinWhenJson(json, passphraseStdin, "passphrase_stdin_required", "--passphrase-stdin")
             val main = vaultCmd.parent
             val (target, vault) = internxtVaultTarget(main, profile)
-            val passphrase = vaultPassphrase(passphraseStdin)
+            val passphrase = vaultPassphrase(passphraseStdin, json)
             try {
                 val request = daemonRequest(VaultRpcHandler.INTERNXT_PASSWORD_CLEAR, passphrase)
                 withProfileLockOrDaemon(
