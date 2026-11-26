@@ -109,6 +109,14 @@ internal class StreamingReconcileBuffer {
     /** Remote id of the content last landed at [path] this gather, null when none (a local push lands none). */
     fun landedIdAt(path: String): String? = remoteContentIds[path]
 
+    /** The item [id] delivered at [path] was superseded by a later page: it no longer counts as landed content there. */
+    fun forgetLanded(
+        path: String,
+        id: String,
+    ) {
+        if (remoteContentIds[path] == id) remoteContentIds.remove(path)
+    }
+
     /** Union of paths that fired safe-now plus paths buffered as deferred. */
     fun touchedPaths(): Set<String> = safePaths + deferred.filterValues { it.isNotEmpty() }.keys
 
