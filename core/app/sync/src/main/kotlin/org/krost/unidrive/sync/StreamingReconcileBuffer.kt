@@ -117,6 +117,16 @@ internal class StreamingReconcileBuffer {
         if (remoteContentIds[path] == id) remoteContentIds.remove(path)
     }
 
+    /** The item [id] delivered at [path] was superseded by a later page: a conflict deferred for it no longer applies. */
+    fun forgetDeferred(
+        path: String,
+        id: String,
+    ) {
+        val atPath = deferred[path] ?: return
+        atPath.values.removeIf { it is SyncAction.Conflict && it.remoteItem?.id == id }
+        if (atPath.isEmpty()) deferred.remove(path)
+    }
+
     /** Union of paths that fired safe-now plus paths buffered as deferred. */
     fun touchedPaths(): Set<String> = safePaths + deferred.filterValues { it.isNotEmpty() }.keys
 
