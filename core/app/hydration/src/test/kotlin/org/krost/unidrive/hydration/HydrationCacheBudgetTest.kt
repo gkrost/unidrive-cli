@@ -506,6 +506,24 @@ class HydrationCacheBudgetTest {
             assertContentEquals(bytesOf(1), Files.readAllBytes(env.syncRoot.resolve("a.txt")), "the sync-root file is untouched")
         }
 
+    @Test
+    fun `the start sweep removes the resume partial and record a crashed download left beside its staging name`() =
+        runTest {
+            val env = freshEnv()
+            val cache = env.syncedAndRead("a.txt").getValue("a.txt")
+            val stale = "big.bin.hydrating-0b6c1f5e-4a3d-4f6e-9a57-2c1d8e3b7f90"
+            val leftovers = listOf(".part.unidrive-tmp", ".resume.unidrive-tmp", ".resume-new.unidrive-tmp").map { cache.resolveSibling(stale + it) }
+            for (f in leftovers) {
+                Files.write(f, bytesOf(1, 100))
+                age(f, 5)
+            }
+            val hydration = env.hydration(this, budget = 500)
+
+            hydration.sweepCache()
+
+            for (f in leftovers) assertFalse(Files.exists(f), "${f.fileName} is a crash leftover older than an hour")
+        }
+
     // archive#1071: the sweep matched any name that contains ".hydrating-" and asked no row, so the cache copy of a file
     // that never reached the cloud (its only copy) was deleted at the next start.
     @Test

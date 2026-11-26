@@ -95,7 +95,8 @@ internal class StagedDownload(
         return runCatching {
             Files.newDirectoryStream(path.parent) { p ->
                 val n = p.fileName.toString()
-                n.length > name.length && n.startsWith(name) && n.endsWith(HydrationStaging.PROVIDER_STAGING_SUFFIX)
+                n.length > name.length && n.startsWith(name) && n.endsWith(HydrationStaging.PROVIDER_STAGING_SUFFIX) &&
+                    !n.endsWith(".resume.unidrive-tmp") && !n.endsWith(".resume-new.unidrive-tmp")
             }.use { stream -> stream.maxByOrNull { sizeOrNull(it) ?: -1L } }
         }.getOrNull()
     }

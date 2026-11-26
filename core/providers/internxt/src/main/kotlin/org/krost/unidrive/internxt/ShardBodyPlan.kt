@@ -13,6 +13,7 @@ import org.krost.unidrive.RemoteIncompleteDownloadException
 import org.krost.unidrive.http.RangeAnswer
 import org.krost.unidrive.http.ResumableStaging
 import org.krost.unidrive.http.ResumeIdentity
+import org.krost.unidrive.io.withLocalIoRetry
 import java.io.IOException
 import java.io.OutputStream
 import java.nio.file.Files
@@ -158,7 +159,7 @@ private suspend fun stageShard(
             partial?.let { run.replay(it) }
             copyShardBody(channel, plan, run, sink)
             requireBodyEnded(channel, announcedLength, response.headers[HttpHeaders.ContentEncoding], run.ciphertextBytes - start, destination)
-            checkWholeShard(plan, run, destination)
+            checkWholeShard(plan, run, destination, partial, start)
             val finalBlock = plan.cipher.doFinal()
             if (finalBlock != null && finalBlock.isNotEmpty()) {
                 sink.write(finalBlock)
@@ -174,7 +175,9 @@ private suspend fun stageShard(
         val stagedSize = Files.size(tmpPath)
         val stagedMtimeMillis = Files.getLastModifiedTime(tmpPath).toMillis()
         val plaintextSha256 = HexFormat.of().formatHex(run.plaintextDigest.digest())
-        Files.move(tmpPath, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        withLocalIoRetry {
+            Files.move(tmpPath, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        }
         return InternxtDownloadedContent(run.written, plaintextSha256, stagedSize, stagedMtimeMillis, mtimeAppliedBeforePlacement = plan.targetMtimeMillis != null)
     } catch (e: PermanentDownloadFailureException) {
         dropStaged(partial, tmpPath)
@@ -225,10 +228,13 @@ private suspend fun copyShardBody(
 // single plaintext byte is published. archive#940: the algorithm follows the recorded shape (the caller parsed it), and a
 // refusal names it: the old SHA-256-only comparison reported every official client's RIPEMD-160(SHA-256) hash as a
 // "SHA-256 mismatch".
+@Suppress("ThrowsCount") // each refusal is its own typed failure
 private fun checkWholeShard(
     plan: ShardBodyPlan,
     run: ShardRun,
     destination: Path,
+    partial: ResumableStaging?,
+    resumedFrom: Long,
 ) {
     val expectedSize = plan.expectedSize
     if (expectedSize != null && expectedSize > 0 && run.ciphertextBytes != expectedSize) {
@@ -240,6 +246,12 @@ private fun checkWholeShard(
     }
     plan.expectedShardHash?.let { expected ->
         if (!expected.matches(run.ciphertextDigest.digest())) {
+            // A kept prefix that fails the whole-file hash is a damaged local file, not proof the remote is bad: drop it and let
+            // the retry fetch from byte 0 (a full download that fails stays a refusal).
+            if (partial != null && resumedFrom > 0L) {
+                partial.discard()
+                throw IOException("Internxt shard ${expected.algorithm} mismatch after resuming from byte ${resumedFrom}; the kept prefix is dropped, the retry starts from zero")
+            }
             throw RemoteContentRefusedDownloadException(
                 "Internxt shard ${expected.algorithm} mismatch for ${destination.fileName}; refusing unverified content",
                 reason = "${expected.algorithm} mismatch",
