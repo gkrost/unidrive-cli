@@ -57,6 +57,9 @@ class SimilarNameGraph(
     /** Every request the fake saw, as `METHOD path?query` (decoded). */
     val requests = mutableListOf<String>()
 
+    /** The next this many children listings are answered 400 (a listing that fails), then listings work again. */
+    var failedListings = 0
+
     fun requestsOf(method: String, contains: String = ""): List<String> =
         requests.filter { it.startsWith("$method ") && it.contains(contains) }
 
@@ -159,6 +162,7 @@ class SimilarNameGraph(
             (request.url.parameters["@microsoft.graph.conflictBehavior"]?.let { "?conflictBehavior=$it" } ?: "")
         if (request.url.host == "upload.example") return handleSession(request)
 
+        failedListing(request)?.let { return it }
         val method = request.method
         val path = rootPath(encoded)
         val suffix = suffixAfterPath(encoded)
@@ -181,6 +185,13 @@ class SimilarNameGraph(
             encoded.startsWith(drivePrefix + "items/") -> byIdRequest(request, encoded.removePrefix(drivePrefix + "items/"))
             else -> error(HttpStatusCode.BadRequest, "invalidRequest", "unhandled ${request.method} $decodedPath")
         }
+    }
+
+    private fun MockRequestHandleScope.failedListing(request: HttpRequestData): HttpResponseData? {
+        val listing = request.method == HttpMethod.Get && request.url.encodedPath.endsWith("/children")
+        if (!listing || failedListings == 0) return null
+        if (failedListings > 0) failedListings--
+        return error(HttpStatusCode.BadRequest, "invalidRequest", "listing failed")
     }
 
     private fun MockRequestHandleScope.delta(): HttpResponseData {

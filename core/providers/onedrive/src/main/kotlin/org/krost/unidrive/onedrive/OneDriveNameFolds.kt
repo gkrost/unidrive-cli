@@ -1,6 +1,7 @@
 package org.krost.unidrive.onedrive
 
 import org.krost.unidrive.NameRefusedException
+import org.krost.unidrive.ProviderException
 import java.text.Normalizer
 import java.util.Locale
 
@@ -58,19 +59,15 @@ private val foldLog = org.slf4j.LoggerFactory.getLogger(OneDriveNameFolds::class
  * `rename` would land it as "<sibling> 1.ext" with the original missing. The name is refused as `similar_name`,
  * naming the sibling the fold key matches ([OneDriveNameFolds.foldedSibling]) or none when the key does not know the
  * fold (WARN with the name and the listing's names). An exact-name sibling returns null: a true duplicate, which keeps
- * its own handling (keep-both), as does a listing that fails (nothing is known).
+ * its own handling (keep-both). A listing that fails after the 409 answers nothing: the create is failed with a
+ * retryable [ProviderException] naming the listing error, so the upload ladder asks again and the later listing
+ * decides; the keep-both copy is never made on an unknown answer (owner decision #950). After the ladder's attempts the
+ * row ends failed with that error.
  */
 internal suspend fun GraphApiService.refuseFoldedName(path: String, refused: GraphApiException): Nothing? {
     val parent = path.substringBeforeLast('/', "").ifEmpty { "/" }
     val name = path.substringAfterLast('/')
-    val names =
-        try {
-            listChildren(parent).mapNotNull { it.name }
-        } catch (_: GraphApiException) {
-            return null
-        } catch (_: java.io.IOException) {
-            return null
-        }
+    val names = listedNames(parent, path, refused)
     if (OneDriveNameFolds.hasExact(name, names)) return null
     val sibling = OneDriveNameFolds.foldedSibling(name, names)
     if (sibling == null) {
@@ -89,3 +86,21 @@ internal suspend fun GraphApiService.refuseFoldedName(path: String, refused: Gra
         requestId = refused.requestId,
     )
 }
+
+private suspend fun GraphApiService.listedNames(parent: String, path: String, refused: GraphApiException): List<String> =
+    try {
+        listChildren(parent).mapNotNull { it.name }
+    } catch (e: GraphApiException) {
+        throw listingFailed(path, refused, e)
+    } catch (e: java.io.IOException) {
+        throw listingFailed(path, refused, e)
+    }
+
+private fun listingFailed(path: String, refused: GraphApiException, listing: Exception): ProviderException =
+    ProviderException(
+        "OneDrive answered 409 nameAlreadyExists for '$path' and the folder listing that tells a duplicate from a folded name failed " +
+            "(${listing.message}); not keeping a copy, the upload is retried",
+        cause = listing,
+        requestId = refused.requestId,
+        httpStatus = (listing as? GraphApiException)?.statusCode?.takeIf { it > 0 },
+    )
