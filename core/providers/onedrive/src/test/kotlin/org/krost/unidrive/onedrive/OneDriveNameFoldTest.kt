@@ -132,6 +132,24 @@ class OneDriveNameFoldTest {
         }
 
     @Test
+    fun `a 409 with no exact-name sibling is refused as similar_name, never kept as a renamed copy`() =
+        runTest {
+            // A fold our key does not know: the drive ignores digits, the provider's key does not.
+            val graph = SimilarNameGraph(keyOf = { n -> n.filterNot { it.isDigit() }.lowercase() }, foldsAsDuplicate = true)
+            graph.seed("/fold", isFolder = true)
+            graph.seed("/fold/a.txt", bytes = "old".toByteArray())
+            val provider = providerWith(graph)
+
+            val refusal = assertFailsWith<NameRefusedException> { provider.upload(local(), "/fold/a7.txt", existingRemoteId = null) }
+
+            assertEquals(NameRefusedException.SIMILAR_NAME, refusal.reason)
+            assertNull(refusal.sibling, "no key-matched sibling to name")
+            assertEquals(listOf("a.txt"), graph.find("/fold")!!.children.keys.toList(), "no ' 1' copy")
+            assertTrue(graph.requests.none { it.contains("conflictBehavior=rename") }, "never retried as keep-both: ${graph.requests}")
+            provider.close()
+        }
+
+    @Test
     fun `a true duplicate of the exact name still keeps both`() =
         runTest {
             val graph = drive("STRASSE.txt")

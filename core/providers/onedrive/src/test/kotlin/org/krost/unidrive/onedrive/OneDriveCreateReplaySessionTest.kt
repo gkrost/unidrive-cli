@@ -101,6 +101,9 @@ class OneDriveCreateReplaySessionTest {
                             json(),
                         )
                     }
+                    // cli#950: the parent listing that tells a true duplicate from a fold: the exact name is there.
+                    request.method == HttpMethod.Get && request.url.encodedPath.endsWith("/children") ->
+                        respond("""{"value":[{"id":"existing-id","name":"big.bin","size":1,"file":{}}]}""", HttpStatusCode.OK, json())
                     else -> respond("{}", HttpStatusCode.OK, json())
                 }
             }
