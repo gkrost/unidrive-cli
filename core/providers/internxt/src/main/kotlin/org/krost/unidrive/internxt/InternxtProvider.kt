@@ -882,7 +882,7 @@ class InternxtProvider(
                             expectedShardHash = checkable,
                             targetMtimeMillis = targetMtimeMillis,
                             onProgress = traceProgress,
-                            resume = expected?.takeIf { it > 0L }?.let { ResumeIdentity(fileId, "index=${bridgeInfo.index}|hash=${usableShards.first().hash}", it) },
+                            resume = expected?.takeIf { it > 0L }?.let { ResumeIdentity(fileMeta.uuid, "object=$fileId|index=${bridgeInfo.index}|hash=${usableShards.first().hash}", it) },
                         )
                     }
                 }

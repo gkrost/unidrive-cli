@@ -379,6 +379,9 @@ class ResumableStaging private constructor(
                 throw e
             }
 
+        /** The identity a sidecar records, or null when it cannot be read as one (for the stale-partial sweep). */
+        fun recordedIdentity(sidecar: Path): ResumeIdentity? = runCatching { readSidecar(sidecar)?.first }.getOrNull()
+
         private fun readSidecar(sidecar: Path): Pair<ResumeIdentity, Long>? {
             val props = Properties()
             Files.newBufferedReader(sidecar, Charsets.UTF_8).use { props.load(it) }
