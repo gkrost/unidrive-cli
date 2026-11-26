@@ -838,6 +838,8 @@ internal class HydrationTestEnv(
 
         fun remoteIdOf(path: String): String? = db.getEntry(path)?.remoteId
 
+        fun remoteHashOf(path: String): String? = db.getEntry(path)?.remoteHash
+
         // A file created/edited through the mount but not yet uploaded: remoteId
         // null (local: synthetic), remoteSize 0, isHydrated true; the cache holds the
         // just-written bytes and is the only copy. The warm path must trust it.
