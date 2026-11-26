@@ -192,6 +192,33 @@ class PendingUploadColumnTest {
         Files.exists(file)
     }
 
+    @Test
+    fun `a freshly created state db has the same tables, columns and indexes as a migrated one`() {
+        fun names(s: java.sql.Statement, sql: String): List<String> =
+            s.executeQuery(sql).use { rs -> buildList { while (rs.next()) add(rs.getString(1)) } }
+
+        fun shape(f: Path): List<String> =
+            DriverManager.getConnection("jdbc:sqlite:$f").use { c ->
+                c.createStatement().use { s ->
+                    val tables = names(s, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+                    val columns =
+                        tables.flatMap { t ->
+                            names(s, "SELECT '$t.' || name || ' ' || type || ' ' || \"notnull\" || ' ' || ifnull(dflt_value,'') FROM pragma_table_info('$t') ORDER BY name")
+                        }
+                    tables + columns +
+                        names(s, "SELECT 'index ' || name || ' ' || ifnull(sql,'') FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+                }
+            }
+        val fresh = dir.resolve("fresh.db")
+        StateDatabase(fresh).also { it.initialize() }.close()
+        writeSchema4File()
+        StateDatabase(file).also { it.initialize() }.close()
+
+        assertEquals(shape(fresh), shape(file))
+        assertTrue(shape(fresh).any { it.equals("sync_entries.pending_upload integer 1 0", ignoreCase = true) }, "the column is NOT NULL DEFAULT 0 on a fresh file")
+        assertTrue(shape(fresh).any { it.startsWith("index idx_sync_entries_pending_upload") })
+    }
+
     private inline fun <T> StateDatabase.use(body: (StateDatabase) -> T): T =
         try {
             body(this)
