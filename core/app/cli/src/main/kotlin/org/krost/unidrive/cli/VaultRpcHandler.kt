@@ -107,9 +107,66 @@ internal class VaultRpcHandler(
         }
     }
 
-    suspend fun internxtPasswordSetVerb(jsonRequest: String): String = TODO("861")
+    /**
+     * `vault.internxt_password.set {passphrase, email, password}` (gkrost/unidrive-cli#861): stores the Internxt sign-in of
+     * the daemon's profile in vault.enc and in the daemon's in-memory vault data, so an expired session is signed in again
+     * with it without a second unlock. Refused while the vault is locked (`vault_locked`) and on a daemon whose profile is
+     * no Internxt profile (`login_not_supported`). The password is checked for shape only: a wrong one shows at the next
+     * sign-in, which then reports the session as needing a sign-in.
+     */
+    suspend fun internxtPasswordSetVerb(jsonRequest: String): String {
+        val body = jsonRequest.asJsonObjectOrNull()
+        val email = (body?.get("email") as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim()
+        val password = body?.get("password")
+        val refusal =
+            when {
+                email.isNullOrEmpty() -> MISSING_EMAIL
+                password == null -> MISSING_PASSWORD
+                password !is JsonPrimitive || !password.isString || password.content.isEmpty() -> INVALID_PASSWORD
+                else -> null
+            }
+        return rewriteVerb(body, refusal) { profile, data ->
+            withVaultInternxtPassword(data, profile, requireNotNull(email), (password as JsonPrimitive).content)
+        } ?: OK
+    }
 
-    suspend fun internxtPasswordClearVerb(jsonRequest: String): String = TODO("861")
+    /** `vault.internxt_password.clear {passphrase}` (gkrost/unidrive-cli#861): removes the entry; `removed` says whether there was one. */
+    suspend fun internxtPasswordClearVerb(jsonRequest: String): String {
+        var removed = false
+        return rewriteVerb(jsonRequest.asJsonObjectOrNull(), refusal = null) { profile, data ->
+            removed = internxtPasswordSection(profile) in data
+            withoutVaultInternxtPassword(data, profile)
+        } ?: """{"ok":true,"removed":$removed}"""
+    }
+
+    // One vault rewrite of the internxt_password verbs under the transition mutex: null when it was written, else the
+    // refusal line. [refusal] is the request's own refusal, answered after the passphrase and the vault are checked.
+    private suspend fun rewriteVerb(
+        body: kotlinx.serialization.json.JsonObject?,
+        refusal: String?,
+        change: (String, Map<String, Map<String, String>>) -> Map<String, Map<String, String>>,
+    ): String? {
+        val element = body?.get("passphrase") ?: return MISSING_PASSPHRASE
+        val passphrase = (element as? JsonPrimitive)?.takeIf { it.isString }?.content?.toCharArray() ?: return INVALID_PASSPHRASE
+        try {
+            val vault = this.vault ?: return VAULT_ABSENT
+            val profile = vault.internxtProfile ?: return NOT_INTERNXT
+            if (refusal != null) return refusal
+            val reply =
+                transition.withLock {
+                    if (vault.gate.locked) return@withLock VAULT_LOCKED
+                    when (vault.rewrite(passphrase) { data -> change(profile, data) }) {
+                        is VaultUnlockOutcome.Ok -> null
+                        VaultUnlockOutcome.BadPassphrase -> BAD_PASSPHRASE
+                        is VaultUnlockOutcome.Failed -> WRITE_FAILED
+                    }
+                }
+            if (reply == BAD_PASSPHRASE) delayFn(failureDelayMs)
+            return reply
+        } finally {
+            passphrase.fill('\u0000')
+        }
+    }
 
     companion object {
         /** The wrong-passphrase delay (the IPC handshake's failure delay, applied to the verb). */
@@ -122,5 +179,15 @@ internal class VaultRpcHandler(
         private const val BAD_PASSPHRASE = """{"ok":false,"error":"vault_bad_passphrase"}"""
         private const val UNLOCK_FAILED = """{"ok":false,"error":"vault_unlock_failed"}"""
         private const val VAULT_ABSENT = """{"ok":false,"error":"vault_absent"}"""
+
+        // gkrost/unidrive-cli#861: the vault.internxt_password verbs.
+        const val INTERNXT_PASSWORD_SET: String = "vault.internxt_password.set"
+        const val INTERNXT_PASSWORD_CLEAR: String = "vault.internxt_password.clear"
+        private const val VAULT_LOCKED = """{"ok":false,"error":"vault_locked","message":"the vault is locked; unlock it first"}"""
+        private const val NOT_INTERNXT = """{"ok":false,"error":"login_not_supported","message":"this daemon's profile is no Internxt profile"}"""
+        private const val MISSING_EMAIL = """{"ok":false,"error":"missing_email","message":"the request names no e-mail"}"""
+        private const val MISSING_PASSWORD = """{"ok":false,"error":"missing_password","message":"the request carries no password"}"""
+        private const val INVALID_PASSWORD = """{"ok":false,"error":"invalid_password","message":"the password must be a non-empty string"}"""
+        private const val WRITE_FAILED = """{"ok":false,"error":"vault_write_failed","message":"the vault could not be written; it was kept as it was"}"""
     }
 }

@@ -188,6 +188,9 @@ class DaemonRuntime(
      */
     internal var signInTarget: ProfileTarget? = null
 
+    /** gkrost/unidrive-cli#861: the engine's own sign-in with the vaulted Internxt password; `daemon run` sets it for an Internxt profile. */
+    internal var vaultRelogin: InternxtVaultRelogin? = null
+
     /** archive#813: when a sign-in through this daemon last loaded new credentials; a credential rejection before it is history. */
     @Volatile
     private var signedInAtMs: Long? = null
@@ -353,7 +356,7 @@ class DaemonRuntime(
                 }
             }
             try {
-                provider.authenticateAndLog()
+                authenticateOrRelogin(provider) // #861: an expired Internxt session signs in with the vaulted password
             } catch (e: Exception) {
                 System.err.println(
                     "unidrive daemon: authentication failed for profile " +
@@ -765,7 +768,7 @@ class DaemonRuntime(
                 val scopeRpc = registerScopeVerbs(server, engine.mountWiring.takeIf { mountMode }, scopeWriteGate, syncPaths, scopeConfig, cloud, { trash.contains(it) || backups.contains(it) || viewNamespaces.contains(it) }, { event -> runCatching { server.emit(serialiseHydrationEvent(event)) }; hydrationIpc?.dispatchEvent(event) }, serveScope, if (mountMode) ({ enumerateHandler.runGuarded(reset = false) }) else null)
                 // The history verbs' capabilities (gkrost/unidrive-cli#848) serve only where a history is open.
                 val capabilitiesJson =
-                    daemonCapabilitiesJson(profileMode, hydration != null, engine.uploadIgnore != null, viewNamespaces, shareCapable, historyOpen = transferHistory != null, vaultUnlockable = vault != null, scopeSettable = scopeRpc.isSettable)
+                    daemonCapabilitiesJson(profileMode, hydration != null, engine.uploadIgnore != null, viewNamespaces, shareCapable, historyOpen = transferHistory != null, vaultUnlockable = vault != null, scopeSettable = scopeRpc.isSettable, internxtPassword = vault?.internxtProfile != null)
 
                 // daemon.status verb (spec §4.3). protocol_version is the
                 // additive cross-repo handshake field (IPC_PROTOCOL_VERSION):
@@ -847,7 +850,7 @@ class DaemonRuntime(
                             .withRejection(rejectionAfterSignIn(mount.authRejectedAtMs, signedInAtMs), lastContactMs)
                     val credentialHealthJson = credentialReading.toJson(System.currentTimeMillis())
                     // auth (unidrive-cli#387): the same reading as a sign-in question, with the profile folder the check looked in.
-                    val authJson = authStatusOf(credentialReading.state, lockFile.parent).toJson().toString()
+                    val authJson = authStatusOf(credentialReading.state, lockFile.parent, totpRequired = vaultRelogin?.totpRequired == true).toJson().toString()
                     // quota (archive#655): the account's storage plan snapshot. Absent entirely for
                     // providers without an account quota (ProviderMetadata hasQuota=false —
                     // localfs probes machine storage). A client-connected status request is
@@ -1014,6 +1017,7 @@ class DaemonRuntime(
                 server.registerHandler(AuthLoginRpcHandler.BEGIN) { _, json -> signInHandler.begin(json) }
                 server.registerHandler(AuthLoginRpcHandler.COMPLETE) { _, json -> signInHandler.complete(json) }
                 server.registerHandler(AuthLoginRpcHandler.LOGIN) { _, json -> signInHandler.login(json) }
+                vaultRelogin?.let { r -> serveScope.launch { r.watch(credentialHealthTtlMs.coerceAtLeast(1_000), { sessionExpired(credentialHealth, mount) }, signInHandler::login) } } // #861
 
                 // auth.check (§4.12, archive#1240): the credential check goes through the daemon's own provider instance, the one that
                 // holds and refreshes the token, so a CLI check never races that refresh.
@@ -1185,6 +1189,32 @@ class DaemonRuntime(
         lock = null
     }
 
+    // gkrost/unidrive-cli#861: the start's authentication; an expired session (never a signed-out one) is signed in again
+    // with the vaulted password through the auth.login step before the start gives up, and a two-factor account says so.
+    private suspend fun authenticateOrRelogin(provider: CloudProvider) {
+        try {
+            provider.authenticateAndLog()
+        } catch (e: org.krost.unidrive.AuthRequiredException) {
+            val relogin = vaultRelogin ?: throw e
+            val target = signInTarget ?: throw e
+            val expired = credentialHealthCheck?.let { CredentialHealthMonitor.toReading(it(), 0L).state } == CredentialHealthMonitor.State.EXPIRED
+            if (!expired) throw e
+            when (relogin.attempt(AuthLoginRpcHandler(target, onSignedIn = {})::login)) {
+                InternxtVaultRelogin.Outcome.SIGNED_IN -> provider.authenticateAndLog()
+                InternxtVaultRelogin.Outcome.TOTP_REQUIRED -> throw org.krost.unidrive.AuthRequiredException("${e.message} (totp_required: the vaulted password needs a two-factor code)", e)
+                else -> throw e
+            }
+        }
+    }
+
+    // gkrost/unidrive-cli#861: the session needs a sign-in (the reading daemon.status reports as `expired`); a signed-out profile does not.
+    private fun sessionExpired(
+        credentialHealth: CredentialHealthMonitor,
+        mount: MountEngine,
+    ): Boolean =
+        credentialHealth.reading().withRejection(rejectionAfterSignIn(mount.authRejectedAtMs, signedInAtMs), mount.lastProviderContactAtMs).state ==
+            CredentialHealthMonitor.State.EXPIRED
+
     companion object {
         /** gkrost/unidrive-cli#72: the cleanup headroom of a stop (spec I7), on top of the upload drain. */
         const val SHUTDOWN_CLEANUP_MS: Long = 10_000
@@ -1210,7 +1240,7 @@ class DaemonRuntime(
         // on a breaking change and engine_version does not order dev builds. IpcContractLevelTest pins the IPC surface
         // of each level and fails when the surface changes without a raise. 8 (gkrost/unidrive-cli#851) shipped on main;
         // the history verbs (gkrost/unidrive-cli#848, merged here at their own 8) are the raise to 9 on top of it.
-        const val IPC_CONTRACT_LEVEL: Int = 15
+        const val IPC_CONTRACT_LEVEL: Int = 16
 
         /**
          * Whether a successful `hydration.subscribe` is followed by the one guarded enumerate: only for a

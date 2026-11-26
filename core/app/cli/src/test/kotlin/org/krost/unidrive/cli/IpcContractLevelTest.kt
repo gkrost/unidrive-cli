@@ -162,6 +162,10 @@ class IpcContractLevelTest {
                 // presence.enroll stores the anchor, user-presence:v1 is listed once one exists, and daemon.status carries
                 // `presence` (the policy and whether an anchor is enrolled).
                 setOf("verb:presence.challenge", "verb:presence.enroll", "capability:user-presence:v1", "field:daemon.status.presence"),
+                // 16 (gkrost/unidrive-cli#861): the vault keeps an Internxt profile's sign-in (vault.internxt_password.set /
+                // .clear, admin) and the engine signs an expired session in again with it; daemon.status `auth.reason` may say
+                // totp_required. The capability names it on an Internxt daemon whose vault.enc exists.
+                setOf("verb:vault.internxt_password.set", "verb:vault.internxt_password.clear", "capability:vault-internxt-password:v1"),
             )
     }
 }

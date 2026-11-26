@@ -26,6 +26,8 @@ import java.nio.file.Files
         VaultXtraSetCommand::class,
         VaultXtraClearCommand::class,
         VaultSealCredentialsCommand::class,
+        VaultInternxtPasswordSetCommand::class,
+        VaultInternxtPasswordClearCommand::class,
     ],
 )
 class VaultCommand : Runnable {
@@ -33,7 +35,7 @@ class VaultCommand : Runnable {
     lateinit var parent: Main
 
     override fun run() {
-        println("Usage: unidrive vault <init|encrypt|decrypt|change-passphrase|forget|xtra-set|xtra-clear|seal-credentials>")
+        println("Usage: unidrive vault <init|encrypt|decrypt|change-passphrase|forget|xtra-set|xtra-clear|seal-credentials|internxt-password-set|internxt-password-clear>")
     }
 }
 
@@ -306,6 +308,11 @@ internal fun decryptVault(
             listOfNotNull(
                 if (CREDENTIAL_SEAL_SECTION in reserved) "the credential seal key$sealWhy" else null,
                 if (XTRA_VAULT_ENTRY in reserved) "the X-tra passphrase (drop it with `unidrive vault xtra-clear`)" else null,
+                if (reserved.keys.any { it.startsWith(INTERNXT_PASSWORD_SECTION_PREFIX) }) {
+                    "the Internxt password (drop it with `unidrive vault internxt-password-clear`)"
+                } else {
+                    null
+                },
             ).joinToString(" and ")
         if (data.isEmpty()) {
             if (reserved.isEmpty()) {
@@ -525,8 +532,11 @@ internal fun forgetVaultEntry(
 ): Boolean {
     val data = vault.read(passphrase)
     // The seal key is never dropped here; the X-tra entry is, by `vault xtra-clear` (the `vault forget` command refuses both).
-    if (name == CREDENTIAL_SEAL_SECTION || name !in data) return false
-    vault.write(passphrase, data - name)
+    if (name == CREDENTIAL_SEAL_SECTION) return false
+    // A profile's entry goes with its vaulted Internxt sign-in (#861), also when that is all the vault holds for it.
+    val names = if (isReservedVaultSection(name)) setOf(name) else setOf(name, internxtPasswordSection(name))
+    if (names.none { it in data }) return false
+    vault.write(passphrase, data - names)
     return true
 }
 
@@ -741,7 +751,7 @@ class VaultSealCredentialsCommand : java.util.concurrent.Callable<Int> {
 
 // ── Shared helpers ───────────────────────────────────────────────────────────
 
-private fun readPassphrase(prompt: String): CharArray {
+internal fun readPassphrase(prompt: String): CharArray {
     val console = System.console()
     if (console == null) {
         System.err.println("Error: interactive terminal required.")
@@ -758,7 +768,7 @@ private fun readPassphrase(prompt: String): CharArray {
  * consumed (the same shape `auth login --password-stdin` reads). Empty input is a refusal naming
  * the flag, never a blank passphrase.
  */
-private fun readPassphraseStdin(flag: String): CharArray {
+internal fun readPassphraseStdin(flag: String): CharArray {
     val bytes = java.io.ByteArrayOutputStream()
     while (true) {
         val b = System.`in`.read()

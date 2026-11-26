@@ -21,10 +21,12 @@ private const val SEAL_KEY_FIELD = "key"
 private const val SEAL_ENABLED_FIELD = "enabled"
 
 /**
- * True for vault entries that are not a profile's credentials: the credential seal key (#797) and the X-tra passphrase
- * ([XTRA_VAULT_ENTRY], #796). `vault decrypt` keeps them out of config.toml and out of the orphans; `vault forget` refuses them.
+ * True for vault entries that are not a profile's credentials: the credential seal key (#797), the X-tra passphrase
+ * ([XTRA_VAULT_ENTRY], #796) and an Internxt profile's sign-in ([INTERNXT_PASSWORD_SECTION_PREFIX], #861). `vault decrypt`
+ * keeps them out of config.toml and out of the orphans; `vault forget` refuses them.
  */
-internal fun isReservedVaultSection(name: String): Boolean = name == CREDENTIAL_SEAL_SECTION || name == XTRA_VAULT_ENTRY
+internal fun isReservedVaultSection(name: String): Boolean =
+    name == CREDENTIAL_SEAL_SECTION || name == XTRA_VAULT_ENTRY || name.startsWith(INTERNXT_PASSWORD_SECTION_PREFIX)
 
 /**
  * The seal key [data] holds, or null when the vault has none (sealing was never turned on). A section that is present

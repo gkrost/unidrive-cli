@@ -244,6 +244,8 @@ class IpcAuth(
                 // The vault verbs (issue#796): vault.unlock carries the vault passphrase in its body
                 // and vault.lock drops the loaded vault data — owner-only (full scope) both.
                 listOf("vault.unlock", "vault.lock").forEach { put(it, VerbClass.ADMIN) }
+                // gkrost/unidrive-cli#861: the Internxt sign-in in the vault; both carry the vault passphrase, set the password.
+                listOf("vault.internxt_password.set", "vault.internxt_password.clear").forEach { put(it, VerbClass.ADMIN) }
                 // gkrost/unidrive-cli#860: scope.set rewrites the profile's sync_path and drops what leaves from this computer: owner-only.
                 put("scope.set", VerbClass.ADMIN)
                 // gkrost/unidrive-cli#798: presence.enroll carries the vault passphrase of a first enrollment and replaces the
