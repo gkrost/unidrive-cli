@@ -44,8 +44,14 @@ code. Request/reply byte shapes are pinned by the golden corpus under
   oldest event that is not an outcome is dropped and one
   `{"event":"lost","since_last":N}` sentinel precedes the next deliverable
   event. Outcomes (`completed`, and `failed` without `retry_scheduled:true`)
-  are never dropped: the queue holds them beyond 64 (up to 4096, then the
-  oldest goes), so a `lost` never hides how a transfer ended. Progress, state
+  are never dropped: the queue holds them beyond 64, so a `lost` never hides
+  how a transfer ended. A subscriber whose queue holds nothing but more than
+  512 outcomes reads nothing at all: the daemon **closes its connection**
+  (gkrost/unidrive-cli#845; no final line, the stream just ends) instead of
+  dropping an outcome. The client reconnects and subscribes again with
+  `since_seq` and `run_id` (section 4): the replay ring, not the closed queue,
+  supplies what it missed, and `replay:"gap"` says when the ring has moved
+  past it. Progress, state
   and `view.invalidated` events can still be lost. A client must treat `lost` as
   "resync your per-file state from `hydration.list`", or catch up with a
   `since_seq` subscribe (section 4, "Sequence numbers and replay").

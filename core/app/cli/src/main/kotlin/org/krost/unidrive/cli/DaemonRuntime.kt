@@ -629,7 +629,7 @@ class DaemonRuntime(
                     server.registerIdleExemptVerbs(HydrationIpcHandler.VERBS)
                     server.registerIdleHold { hydrationIpc?.holdsConnectionState(it) == true } // what a read-scope connection holds (#926)
                     server.registerCancelOnPeerGoneVerbs(HydrationIpcHandler.CANCEL_ON_PEER_GONE_VERBS) // gkrost/unidrive-cli#760
-                    hydrationIpc?.start(serveScope, server::writeToConnection)
+                    hydrationIpc?.apply { start(serveScope, server::writeToConnection); onSubscriberDisconnected(server::closeConnection) }
                     server.registerConnectionCloseListener { connId ->
                         hydrationIpc?.onSubscriberDisconnect(connId)
                     }
