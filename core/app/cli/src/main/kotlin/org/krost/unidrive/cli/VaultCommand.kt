@@ -303,7 +303,7 @@ internal fun decryptVault(
         val sealKept = all[CREDENTIAL_SEAL_SECTION] != null && (sealEnabled || anyCredentialsSealed(baseDir))
         val reserved = all.filterKeys { isReservedVaultSection(it) && (it != CREDENTIAL_SEAL_SECTION || sealKept) }
         val data = all.filterKeys { !isReservedVaultSection(it) }
-        val sealWhy = if (sealKept && !sealEnabled) " (sealing is off, but a credentials file is still sealed under it)" else ""
+        val sealWhy = if (sealKept && !sealEnabled) " (sealing is off, but a credentials file or config.toml field is still sealed under it)" else ""
         val keeps =
             listOfNotNull(
                 if (CREDENTIAL_SEAL_SECTION in reserved) "the credential seal key$sealWhy" else null,
@@ -747,6 +747,8 @@ class VaultSealCredentialsCommand : java.util.concurrent.Callable<Int> {
                     "the next time an unlocked unidrive reads them. A running daemon picks this up at its next vault.unlock or restart."
             },
         )
+        // #859: the provider secret fields of config.toml follow at the daemon's next start or vault.unlock.
+        println("The secret fields in config.toml (S3 keys, password, client_id, client_secret) follow at the daemon's next start or vault.unlock.")
         return 0
     }
 }

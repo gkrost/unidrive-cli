@@ -1,9 +1,9 @@
 package org.krost.unidrive.cli
 
 import org.krost.unidrive.auth.CredentialProtector
-import org.krost.unidrive.auth.CredentialProtectors
 import org.krost.unidrive.io.OwnerOnly
 import org.krost.unidrive.io.OwnerOnlyAtomicWrite
+import org.krost.unidrive.sync.ConfigSecretSeal
 import org.krost.unidrive.sync.ConfigSecrets
 import java.nio.channels.FileChannel
 import java.nio.file.FileAlreadyExistsException
@@ -46,7 +46,7 @@ internal object ConfigFileTransaction {
     fun writeAtomically(
         target: Path,
         text: String,
-        secretProtector: CredentialProtector? = CredentialProtectors.atRestDefaultOrNull(),
+        secretProtector: CredentialProtector? = ConfigSecretSeal.defaultProtector(),
     ) {
         target.parent?.let(Files::createDirectories)
         val written = ConfigSecrets.protectText(text, target, secretProtector)

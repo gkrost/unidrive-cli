@@ -2,6 +2,7 @@ package org.krost.unidrive.sync
 
 import org.krost.unidrive.auth.CredentialProtectionException
 import org.krost.unidrive.auth.CredentialProtector
+import org.krost.unidrive.auth.CredentialLockedException
 import org.krost.unidrive.auth.CredentialProtectors
 import java.nio.file.Path
 
@@ -54,7 +55,7 @@ object ConfigSecrets {
         rp: RawProvider?,
         profileName: String,
         configPath: Path,
-        protector: CredentialProtector? = CredentialProtectors.atRestDefaultOrNull(),
+        protector: CredentialProtector? = ConfigSecretSeal.defaultProtector(),
     ): RawProvider? {
         if (rp == null) return rp
         val id = identity(configPath)
@@ -73,6 +74,13 @@ object ConfigSecrets {
             val data =
                 try {
                     protector.decode(id, value)
+                } catch (_: ConfigSecretSeal.ForeignReference) {
+                    foreign(field)
+                } catch (_: CredentialLockedException) {
+                    // Sealed under the vault key and this process holds none (#797): locked, never missing or corrupt.
+                    throw CredentialLockedException(
+                        "the $field of profile '$profileName' in config.toml is sealed under the vault key; unlock the vault first (vault.unlock)",
+                    )
                 } catch (e: CredentialProtectionException) {
                     throw CredentialProtectionException(
                         "the $field of profile '$profileName' in config.toml could not be decrypted " +
@@ -81,8 +89,9 @@ object ConfigSecrets {
                     )
                 }
             if (data.protected) return data.plaintext
-            if (knownReference) foreign(field)
-            return value
+            // A platform-only value read with sealing on decodes as unprotected (so a migration re-seals it), but it decoded.
+            if (knownReference && data.plaintext == value) foreign(field)
+            return data.plaintext
         }
 
         return rp.copy(
@@ -240,7 +249,7 @@ object ConfigSecrets {
                     when {
                         existing == null -> now == original // not this protector's to touch; it must be untouched
                         existing.protected -> decodes?.protected == true && decodes.plaintext == existing.plaintext
-                        else -> decodes?.protected == true && decodes.plaintext == original
+                        else -> decodes?.protected == true && decodes.plaintext == existing.plaintext
                     }
                 require(ok) {
                     "the $field of profile '$profileName' is a plaintext spelling this protection cannot rewrite; " +
@@ -281,8 +290,9 @@ object ConfigSecrets {
                 return null
             }
         if (data.protected) return null
-        val reference = protector.protect(id, plain)
-        rewritten += Triple(profileName, field, plain)
+        // The decoded text, not the stored one: a re-seal (#797) rewrites a value another layer protected.
+        val reference = protector.protect(id, data.plaintext)
+        rewritten += Triple(profileName, field, data.plaintext)
         return "$lead$field = \"${escapeTomlValue(reference)}\""
     }
 

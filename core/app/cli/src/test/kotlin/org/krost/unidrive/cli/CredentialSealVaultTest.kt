@@ -199,6 +199,57 @@ class CredentialSealVaultTest {
     }
 
     @Test
+    fun `vault decrypt keeps a disabled seal key while a config secret field is still sealed (#859)`() {
+        Files.writeString(
+            dir.resolve("config.toml"),
+            "[general]\n\n[providers.s3a]\ntype = \"s3\"\nsecret_access_key = \"${KeyedCredentialProtector.PREFIX}c2VhbGVk\"\n",
+        )
+        vault.write(pass.toCharArray(), mapOf(CREDENTIAL_SEAL_SECTION to disabledSeal()))
+        val line = decryptVault(dir, pass.toCharArray()) { }
+        assertTrue(vault.exists(), "the sealed config field still needs the key")
+        assertTrue(line.contains("still sealed"), line)
+    }
+
+    @Test
+    fun `a profile whose config secret field is sealed needs the vault (#859)`() {
+        val rp = RawProvider(type = "s3", bucket = "b", access_key_id = "AKIA", secret_access_key = KeyedCredentialProtector.PREFIX + "c2VhbGVk")
+        val profile = ProfileInfo("s3a", "s3", dir, rp)
+        withEnvFreeS3 { assertTrue(main().profileNeedsVaultedFields(profile), "a sealed secret_access_key keeps the profile locked until vault.unlock") }
+    }
+
+    @Test
+    fun `a sealed config secret field read locked is a locked credential health (#859)`() {
+        Files.writeString(dir.resolve("config.toml"), "[providers.s3a]\ntype = \"s3\"\nbucket = \"b\"\naccess_key_id = \"AKIA\"\nsecret_access_key = \"x\"\n")
+        val rp = RawProvider(type = "s3", bucket = "b", access_key_id = "AKIA", secret_access_key = KeyedCredentialProtector.PREFIX + "c2VhbGVk")
+        val profile = ProfileInfo("s3a", "s3", dir, rp)
+
+        val health = main().checkCredentialHealth(profile, dir.resolve("s3a"), useVault = false)
+
+        assertIs<org.krost.unidrive.CredentialHealth.Warning>(health)
+        assertTrue(health.message.contains("secret_access_key") && health.message.contains("vault.unlock"), health.message)
+    }
+
+    @Test
+    fun `vault unlock seals the config secret fields (#859)`() {
+        Files.writeString(dir.resolve("config.toml"), "[providers.s3a]\ntype = \"s3\"\nbucket = \"b\"\naccess_key_id = \"AKIA\"\nsecret_access_key = \"s3-secret\"\n")
+        vault.init(pass.toCharArray())
+        assertEquals(0, run("vault", "seal-credentials", "on", "--passphrase-stdin", stdin = "$pass\n"))
+        CredentialSeal.clear()
+
+        assertTrue(main().daemonUnlockVault(pass.toCharArray()) is VaultUnlockOutcome.Ok)
+
+        val text = Files.readString(dir.resolve("config.toml"))
+        assertFalse(text.contains("s3-secret"), text)
+        assertTrue(text.contains(KeyedCredentialProtector.PREFIX), text)
+    }
+
+    private fun withEnvFreeS3(block: () -> Unit) {
+        // The S3 keys may also come from AWS_* in the environment; this test only holds when they do not.
+        org.junit.Assume.assumeTrue(System.getenv("AWS_SECRET_ACCESS_KEY") == null)
+        block()
+    }
+
+    @Test
     fun `vault decrypt and forget treat the X-tra entry and the seal key both as reserved`() {
         Files.writeString(dir.resolve("config.toml"), "[general]\n\n[providers.p1]\ntype = \"localfs\"\nmode = \"mirror\"\n")
         val seal = mapOf("key" to Base64.getEncoder().encodeToString(ByteArray(32) { 7 }), "enabled" to "true")

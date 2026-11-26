@@ -58,8 +58,12 @@ internal fun withCredentialSeal(
     return data + (CREDENTIAL_SEAL_SECTION to mapOf(SEAL_KEY_FIELD to key, SEAL_ENABLED_FIELD to enabled.toString()))
 }
 
-/** True when any profile directory under [baseDir] still holds a credential file sealed under the vault key. */
+/**
+ * True when any profile directory under [baseDir] still holds a credential file sealed under the vault key, or
+ * config.toml a provider secret field sealed under it (#859).
+ */
 internal fun anyCredentialsSealed(baseDir: Path): Boolean =
-    runCatching {
-        Files.newDirectoryStream(baseDir, Files::isDirectory).use { dirs -> dirs.any { dir -> ProviderRegistry.all().any { it.needsCredentialSeal(dir) } } }
-    }.getOrDefault(false)
+    org.krost.unidrive.sync.ConfigSecretSeal.holdsSealedField(baseDir.resolve("config.toml")) ||
+        runCatching {
+            Files.newDirectoryStream(baseDir, Files::isDirectory).use { dirs -> dirs.any { dir -> ProviderRegistry.all().any { it.needsCredentialSeal(dir) } } }
+        }.getOrDefault(false)

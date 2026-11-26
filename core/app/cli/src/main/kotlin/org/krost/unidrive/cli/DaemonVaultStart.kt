@@ -109,6 +109,9 @@ internal fun Main.daemonUnlockVault(passphrase: CharArray): VaultUnlockOutcome {
             installCredentialSeal(data)
             vaultDataCache = data
             daemonVaultLocked = false
+            // #859: with the seal key now in memory, config.toml's secret fields are (re)sealed, or rewritten
+            // platform-only after `seal-credentials off`, as a start with the vault already open does.
+            ConfigSecretMigration.migrateAtStart(baseConfigDir.resolve("config.toml"))
         })
     } catch (_: javax.crypto.AEADBadTagException) {
         VaultUnlockOutcome.BadPassphrase
@@ -200,6 +203,8 @@ internal fun Main.profileNeedsVaultedFields(profile: ProfileInfo): Boolean {
     if (profileNeedsVaultedXtraPassphrase(profile)) return true
     val factory = ProviderRegistry.get(profile.type) ?: return false
     if (factory.needsCredentialSeal(baseConfigDir.resolve(profile.name))) return true
+    // #859: a provider secret field of config.toml sealed under the vault key opens only after vault.unlock.
+    if (profile.rawProvider.hasSealedSecretField()) return true
     val vaultFields = factory.credentialPrompts().filter { it.required && it.key in Vault.SENSITIVE_FIELDS }
     if (vaultFields.isEmpty()) return false
     val rp =
@@ -239,3 +244,8 @@ private fun Main.profileNeedsVaultedXtraPassphrase(profile: ProfileInfo): Boolea
     val credentials = LifecycleHooks.env("CREDENTIALS_DIRECTORY")
     return credentials.isNullOrBlank() || !Files.isRegularFile(Path.of(credentials).resolve("unidrive-xtra-pass"))
 }
+
+private fun org.krost.unidrive.sync.RawProvider?.hasSealedSecretField(): Boolean =
+    this != null &&
+        listOf(access_key_id, secret_access_key, password, client_id, client_secret)
+            .any { it?.startsWith(org.krost.unidrive.auth.KeyedCredentialProtector.PREFIX) == true }
