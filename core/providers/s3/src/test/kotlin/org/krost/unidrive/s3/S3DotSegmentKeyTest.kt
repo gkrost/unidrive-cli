@@ -172,4 +172,44 @@ class S3DotSegmentKeyTest {
             assertFalse(fake.objects.containsKey("a.b"))
             assertTrue(fake.objects.containsKey("up/ok.txt"))
         }
+
+    @Test
+    fun `a folder delete and a folder move leave keys with dot segments alone`() =
+        runTest {
+            val fake = FakeS3()
+            fake.put("d/ok.txt", "o")
+            fake.put("d/./x.txt", "x")
+            fake.put("m/ok.txt", "o")
+            fake.put("m/../y.txt", "y")
+            val provider = provider(fake)
+
+            provider.deleteById("d/", "/d")
+            provider.move("/m", "/n")
+
+            assertTrue(fake.objects.containsKey("d/./x.txt"), "the delete left the dot-segment key")
+            assertFalse(fake.objects.containsKey("d/ok.txt"))
+            assertTrue(fake.objects.containsKey("m/../y.txt"), "the move left the dot-segment key")
+            assertTrue(fake.objects.containsKey("n/ok.txt"))
+            assertFalse(fake.objects.containsKey("n/../y.txt"))
+            val named = fake.requests.filter { (it.key ?: "").let { k -> "/./" in k || "/../" in k } || "/./" in String(it.body) || "/../" in String(it.body) }
+            assertEquals(emptyList(), named.map { it.method to it.key }, "no request named a dot-segment key")
+        }
+
+    @Test
+    fun `a resumed listing drops staged items whose key has a dot segment`() =
+        runTest {
+            val fake = FakeS3()
+            fake.put("b.txt", "2")
+            val staged =
+                listOf(
+                    org.krost.unidrive.CloudItem("a.txt", "", "placeholder", 1, false, null, null, null, null),
+                    org.krost.unidrive.CloudItem("r/../z.txt", "", "placeholder", 1, false, null, null, null, null),
+                    org.krost.unidrive.CloudItem("q/./", "", "placeholder", 0, true, null, null, null, null),
+                )
+            val context = org.krost.unidrive.ScanContext("a.txt", staged, { _, _ -> })
+
+            val paths = provider(fake).delta(null, scanContext = context).items.map { it.path }.toSet()
+
+            assertEquals(setOf("/a.txt", "/b.txt"), paths)
+        }
 }

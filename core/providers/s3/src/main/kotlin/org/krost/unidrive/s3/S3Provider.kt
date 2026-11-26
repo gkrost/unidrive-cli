@@ -206,10 +206,10 @@ class S3Provider(
             var parent = item.path.substringBeforeLast('/', "")
             while (parent.isNotEmpty() && folders.add(parent)) parent = parent.substringBeforeLast('/', "")
         }
+        val skipped = DotSegmentSkips()
         val resumeAfter = scanContext?.resumeMarker
         // A staged item's path is a placeholder; its id is the key, which is the path.
-        scanContext?.resumedItems?.forEach { admit(if (it.isFolder) folderItem(pathOf(it.id)) else it.copy(path = pathOf(it.id), name = nameOf(it.id))) }
-        val skipped = DotSegmentSkips()
+        scanContext?.resumedItems?.filter { skipped.admits(it.id) }?.forEach { admit(if (it.isFolder) folderItem(pathOf(it.id)) else it.copy(path = pathOf(it.id), name = nameOf(it.id))) }
         var token: String? = null
         val pages = pageGuard("The S3 listing of the bucket")
         do {
@@ -660,13 +660,15 @@ class S3Provider(
     private suspend fun allObjects(prefix: String): List<S3Object> {
         val objects = mutableListOf<S3Object>()
         val pages = pageGuard("The S3 listing under '$prefix'")
+        val skipped = DotSegmentSkips()
         var token: String? = null
         do {
             val page = api.list(prefix, token = token)
-            objects += page.objects
+            objects += page.objects.filter { skipped.admits(it.key) }
             pages.follow(page.nextToken)
             token = page.nextToken
         } while (token != null)
+        skipped.summarise(log)
         return objects
     }
 
