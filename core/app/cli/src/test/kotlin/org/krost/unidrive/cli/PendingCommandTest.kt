@@ -77,7 +77,7 @@ class PendingCommandTest {
 
     private fun seedRow(
         path: String,
-        remoteId: String? = "local:${path.hashCode()}",
+        remoteId: String? = null,
         localSize: Long = 10,
     ) {
         val db = StateDatabase(profileDir.resolve("state.db"))

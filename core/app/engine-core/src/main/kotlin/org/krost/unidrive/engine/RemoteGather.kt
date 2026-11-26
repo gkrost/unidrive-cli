@@ -552,7 +552,7 @@ class RemoteGather(
     ): CloudItem? {
         val row = runCatching { db.getEntryByRemotePath(item.path) }.getOrNull() ?: return null
         val id = row.remoteId ?: return null
-        if (id == item.id || id.startsWith("local:")) return null
+        if (id == item.id) return null
         if (id in gatheredIds || id in twins) return null
         if (item.isFolder && !row.isFolder) return null
         return trackedRow(id)

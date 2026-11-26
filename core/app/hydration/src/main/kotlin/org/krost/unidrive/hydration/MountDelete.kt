@@ -75,7 +75,7 @@ internal class MountDelete(
         if (!neverOnDrive) {
             // archive#402/#403: a row with a cloud id is deleted by that id: a lookup by path could reach a duplicate twin.
             // archive#1178: that also holds for a delete for good, where the wrong twin would be unrecoverable.
-            val remoteId = entryBefore?.remoteId?.takeUnless { it.startsWith("local:") }
+            val remoteId = entryBefore?.remoteId
             val remotePath = remotePathOf(path, entryBefore)
             val fileWindow = window?.takeIf { !permanent && entryBefore?.isFolder == false }
             if (remoteId != null && fileWindow != null) {
