@@ -234,11 +234,12 @@ import java.util.concurrent.atomic.AtomicLong
  * NDJSON lines via the writer function. When a subscriber's queue is full the
  * dispatcher drops the OLDEST queued event that is not an outcome (never a
  * `completed`, nor a `failed` that is not retried) and bumps a per-subscriber
- * lost counter; outcomes are kept beyond 64, up to a hard cap of 512 (half the replay ring, so what a disconnected subscriber missed is still in the ring); the writer emits one `{"event":"lost","since_last":N}` sentinel
- * line ahead of the next deliverable event and resets the counter. A subscriber whose queue holds nothing but outcomes beyond the
- * hard cap is DISCONNECTED (gkrost/unidrive-cli#845, owner decision 2026-11-26): its writer stops, its queue is dropped and its
- * connection is closed with no final line; it subscribes again with since_seq and run_id, and the ring (not its queue) supplies
- * what it missed, or `replay:"gap"` when the ring has moved past it. The whole
+ * lost counter; outcomes are kept beyond 64; the writer emits one `{"event":"lost","since_last":N}` sentinel
+ * line ahead of the next deliverable event and resets the counter. A subscriber is DISCONNECTED (gkrost/unidrive-cli#845, owner
+ * decision 2026-11-26) when it stops reading while the replay ring (REPLAY_CAPACITY events; a download is three) fills past what it was
+ * last given, or when its queue holds more than SUBSCRIBER_TERMINAL_HARD_CAP outcomes (a memory bound): its writer stops, its queue is
+ * dropped and its connection is closed with no final line. It subscribes again with since_seq and run_id, and the ring (not its
+ * queue) supplies what it missed, or `replay:"gap"` when the ring has moved past it. The whole
  * registry plus writer-coroutine teardown is owned by this handler;
  * onSubscriberDisconnect(connectionId) is the production hook called from
  * IpcServer's connection-close listener.
@@ -368,10 +369,7 @@ class HydrationIpcHandler(
         subscriberWriter = writer
     }
 
-    /**
-     * gkrost/unidrive-cli#845: how the daemon closes a connection from its side; called for a subscriber at the hard queue cap
-     * (after its writer and queue are gone). Unset (tests, a client with no such hook): the subscriber is dropped, nothing closes.
-     */
+    /** gkrost/unidrive-cli#845: how the daemon closes a disconnected subscriber's connection; unset, it is only dropped. */
     fun onSubscriberDisconnected(closeConnection: (connectionId: String) -> Unit) {
         this.closeConnection = closeConnection
     }
@@ -396,18 +394,20 @@ class HydrationIpcHandler(
                 if (replayRing.size > REPLAY_CAPACITY) replayFloor = replayRing.removeFirst().seq
             }
             for ((id, sub) in subscribers) {
-                if (sub.queue.offer(sequenced)) overflowed.add(id to sub)
+                if (sub.queue.offer(sequenced) || fellBehindRing(sub)) overflowed.add(id to sub)
             }
         }
         // gkrost/unidrive-cli#845: outside the lock, and never a wait on the subscriber's socket.
         for ((id, sub) in overflowed) disconnectAtHardCap(id, sub)
     }
 
-    /**
-     * gkrost/unidrive-cli#845 (item #746-9): a subscriber whose queue holds only outcomes beyond the hard cap reads nothing.
-     * It is dropped and its connection closed; the replay ring holds what it missed, so it subscribes again with `since_seq`
-     * and the `run_id` and converges (or is told `replay:"gap"` when the ring has moved past it).
-     */
+    // gkrost/unidrive-cli#845: the cap is in replay events (a download is three): a subscriber not reading while the ring fills past
+    // what it was given is disconnected while the ring still holds all it missed. Called under [fanOutLock].
+    private fun fellBehindRing(sub: Subscriber): Boolean =
+        sub.startGate.isCompleted && replayRing.size >= REPLAY_CAPACITY - SUBSCRIBER_REPLAY_HEADROOM &&
+            sub.queue.notReadingBefore(replayRing[SUBSCRIBER_REPLAY_HEADROOM].seq)
+
+    // gkrost/unidrive-cli#845 (item #746-9): drop the subscriber and close its connection; it replays from the ring with since_seq.
     private fun disconnectAtHardCap(connectionId: String, sub: Subscriber) {
         if (!subscribers.remove(connectionId, sub)) return // already gone or replaced by a repeat subscribe
         sub.job.cancel()
@@ -458,12 +458,12 @@ class HydrationIpcHandler(
                 replay = replayRing.filter { it.seq > from }
                 replayState = if (sameRun && sinceSeq >= replayFloor) "complete" else "gap"
             }
-            registerSubscriber(connectionId, replay)
+            registerSubscriber(connectionId, replay, if (sinceSeq != null && replayState != null && sinceSeq <= tail) sinceSeq else tail)
             val replayMember = replayState?.let { ""","replay":"$it"""" } ?: ""
             """{"ok":true,"tail_seq":$tail,"run_id":${jsonEsc(runId)}$replayMember}"""
         }
 
-    private fun registerSubscriber(connectionId: String, replay: List<Sequenced>) {
+    private fun registerSubscriber(connectionId: String, replay: List<Sequenced>, startedAfterSeq: Long) {
         val scope = subscriberScope ?: return  // pre-start() subscribe: caller didn't wire the pipeline
         val writer = subscriberWriter ?: return
         // Repeat-subscribe on the same connection: tear down the prior subscriber first
@@ -471,6 +471,7 @@ class HydrationIpcHandler(
         subscribers.remove(connectionId)?.let { it.job.cancel(); it.queue.close() }
         val queue =
             SubscriberQueue(replay, SUBSCRIBER_QUEUE_CAPACITY, SUBSCRIBER_TERMINAL_HARD_CAP, { it.event.isTerminalForSubscriber() }) { it.seq }
+        queue.lastPolledSeq = startedAfterSeq
         val startGate =
             if (replay.isEmpty()) CompletableDeferred(Unit).apply { complete(Unit) } else CompletableDeferred()
         val job = scope.launch {
@@ -513,9 +514,11 @@ class HydrationIpcHandler(
         const val OUTCOME_TTL_MS = 10 * 60_000L
         const val OUTCOME_CAP = 4096
 
-        // The most outcomes (completed, failed for good) one subscriber's queue keeps when nothing else is left to drop; one more and it is
-        // disconnected (gkrost/unidrive-cli#845). Kept below REPLAY_CAPACITY so its reconnect with since_seq finds what it missed in the ring.
-        const val SUBSCRIBER_TERMINAL_HARD_CAP = 512
+        // Outcomes one subscriber's queue keeps before it is disconnected (#845): a memory bound; [fellBehindRing] acts first.
+        const val SUBSCRIBER_TERMINAL_HARD_CAP = 1024
+
+        // #845: replay events of room a stalled subscriber is disconnected ahead of the ring's eviction.
+        const val SUBSCRIBER_REPLAY_HEADROOM = 64
 
         // gkrost/unidrive-cli#437: how many events (progress not counted, it is never replayed) a `since_seq` subscribe can catch up on.
         const val REPLAY_CAPACITY = 1024
