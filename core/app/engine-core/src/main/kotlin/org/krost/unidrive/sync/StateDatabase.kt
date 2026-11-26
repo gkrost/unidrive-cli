@@ -71,7 +71,7 @@ class StateDatabase(
     val file: Path get() = dbPath
 
     private var _conn: Connection? = null
-    private val conn: Connection
+    internal val conn: Connection
         get() = _conn ?: error("StateDatabase not initialized — call initialize() first")
 
     // The thread that opened the manual batch ([beginBatch]) holding the connection's one SQLite
@@ -398,6 +398,7 @@ class StateDatabase(
             check(recorded <= SCHEMA_VERSION) {
                 "state.db was written by a newer unidrive (schema $recorded, this build supports $SCHEMA_VERSION)."
             }
+            StateDbSchemaCheck.admit(dbPath, recorded, c, connector) // never migrated from here (#845)
         } catch (e: Throwable) {
             runCatching { c.close() }
             throw e
@@ -416,7 +417,7 @@ class StateDatabase(
                 // Moves what the WAL holds into the file and empties it, waiting a second at most for a reader of another
                 // connection: a copy of state.db alone is then complete again. The last connection to close does this
                 // anyway; this one may not be the last.
-                if (!readOnly && !isDisposable) {
+                if (!readOnly && !isDisposable && StateDbSchemaCheck.changedRows(c) > 0) {
                     // #384 (measured in docs/dev/findings/state-db-optimize-page-size.md): the default `PRAGMA optimize`
                     // records the planner statistics before the checkpoint, so the next start reads them from the file —
                     // never a plain ANALYZE or an optimize mask, which analyse fully. Since SQLite 3.54 the bundled driver
