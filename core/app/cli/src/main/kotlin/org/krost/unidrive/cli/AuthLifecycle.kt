@@ -36,7 +36,7 @@ internal fun reply(
         0
     } catch (e: LifecycleError) {
         if (json) emitJson(lifecycleErrorJson(e)) else System.err.println("Error: ${e.message}")
-        1
+        e.exitCode
     } catch (e: Exception) {
         // A front-end parses stdout: whatever else goes wrong is still one JSON refusal, with the
         // exception's type only (its message could quote a response or a path).
