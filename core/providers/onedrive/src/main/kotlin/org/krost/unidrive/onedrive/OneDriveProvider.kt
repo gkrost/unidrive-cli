@@ -268,7 +268,7 @@ class OneDriveProvider(
         remotePath: String,
         destination: Path,
     ): GraphApiService.DownloadedFile {
-        if (remoteId.isBlank() || remoteId.startsWith("local:")) return downloadReading(remotePath, destination)
+        if (remoteId.isBlank()) return downloadReading(remotePath, destination)
         return permanentIfGone(remotePath) {
             try {
                 graphApi.downloadFileResumable(remoteId, destination)

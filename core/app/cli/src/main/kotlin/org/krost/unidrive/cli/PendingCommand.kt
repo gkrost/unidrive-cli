@@ -1,5 +1,6 @@
 package org.krost.unidrive.cli
 
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -316,7 +317,7 @@ class PendingCommand {
                         add(
                             buildJsonObject {
                                 put("path", row.path)
-                                put("remote_id", row.remoteId)
+                                put("remote_id", JsonNull) // a pending row has no cloud id; the key it is stored under is no id
                                 put("local_size", row.localSize)
                                 val size = cacheSize(row.path)
                                 put("cache_present", size != null)
