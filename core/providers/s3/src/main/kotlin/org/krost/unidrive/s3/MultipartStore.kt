@@ -5,9 +5,7 @@ import org.krost.unidrive.io.ResumeSessionStore
 import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 import java.time.Instant
-import java.util.Properties
 
 /**
  * The multipart uploads this profile has started and not finished, so an upload cut off half-way resumes with the
@@ -43,7 +41,7 @@ internal class MultipartStore(
     )
 
     @Serializable
-    private data class Stored(
+    internal data class Stored(
         val key: String,
         val uploadId: String,
         val localPath: String,
@@ -132,12 +130,12 @@ internal class MultipartStore(
      * converts them again.
      */
     private fun migrate() {
-        val legacy = legacyFiles()
+        val legacy = LegacyMultipartRecords.files(dir)
         if (legacy.isEmpty()) return
         val unreadable = mutableListOf<Path>()
         var converted = 0
         for (file in legacy) {
-            val record = readLegacy(file)
+            val record = LegacyMultipartRecords.read(file, openLegacy)
             if (record == null) {
                 unreadable.add(file)
                 continue
@@ -149,50 +147,13 @@ internal class MultipartStore(
             }
             Files.deleteIfExists(file)
         }
-        unreadable.forEach { setAside(it) }
+        unreadable.forEach { LegacyMultipartRecords.setAside(it) }
         migration = Migration(converted, unreadable.map { it.fileName.toString() })
         log.info("S3 multipart records: {} converted to one file each, {} unreadable", converted, unreadable.size)
     }
 
-    private fun legacyFiles(): List<Path> {
-        if (!Files.isDirectory(dir)) return emptyList()
-        return Files.list(dir).use { files -> files.filter { it.fileName.toString().endsWith(LEGACY_SUFFIX) }.sorted().toList() }
-    }
-
-    // The record's age is its file's time, which the old store renewed on every save.
-    private fun readLegacy(file: Path): Stored? =
-        try {
-            val props = Properties().apply { openLegacy(file).use { load(it) } }
-            Stored(
-                key = requiredProperty(props, "key"),
-                uploadId = requiredProperty(props, "uploadId"),
-                localPath = requiredProperty(props, "localPath"),
-                size = requiredProperty(props, "size").toLong(),
-                mtimeMillis = requiredProperty(props, "mtimeMillis").toLong(),
-                partSize = requiredProperty(props, "partSize").toLong(),
-                proofSha256 = props.getProperty("proofSha256"),
-                savedAtMillis = Files.getLastModifiedTime(file).toMillis(),
-            )
-        } catch (e: IllegalArgumentException) {
-            log.warn(
-                "S3 multipart record {} cannot be read ({}) and is set aside; the upload it describes stays open on S3 until a lifecycle rule ends it",
-                file.fileName, e.javaClass.simpleName,
-            )
-            null
-        }
-
-    private fun requiredProperty(props: Properties, name: String): String =
-        requireNotNull(props.getProperty(name)) { "missing multipart property: $name" }
-
-    private fun setAside(file: Path) {
-        val aside = file.resolveSibling(file.fileName.toString() + ".corrupt")
-        runCatching { Files.move(file, aside, StandardCopyOption.REPLACE_EXISTING) }
-            .onFailure { log.warn("S3 multipart record {} could not be set aside ({}); it is tried again at the next start", file.fileName, it.javaClass.simpleName) }
-    }
-
-    private companion object {
+    internal companion object {
         const val RECORD_SUFFIX = ".json"
-        const val LEGACY_SUFFIX = ".upload"
         val log: org.slf4j.Logger = org.slf4j.LoggerFactory.getLogger(MultipartStore::class.java)
     }
 }
