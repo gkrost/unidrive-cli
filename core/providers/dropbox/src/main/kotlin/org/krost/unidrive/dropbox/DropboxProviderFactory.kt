@@ -20,6 +20,7 @@ import java.nio.file.Path
  * (gkrost/unidrive-cli#797, [org.krost.unidrive.auth.CredentialProtectors.sealableAtRestDefault]), which changes nothing
  * until `vault seal-credentials on`.
  */
+@Suppress("TooManyFunctions") // the interface's bare + properties overload pairs and its credential hooks; none of them hides another
 open class DropboxProviderFactory(
     private val credentialProtector: org.krost.unidrive.auth.CredentialProtector? =
         org.krost.unidrive.auth.CredentialProtectors.sealableAtRestDefault(),

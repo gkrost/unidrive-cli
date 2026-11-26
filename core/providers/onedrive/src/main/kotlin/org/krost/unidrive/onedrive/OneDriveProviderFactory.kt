@@ -296,7 +296,7 @@ open class OneDriveProviderFactory(
                     return refusal
                 }
                 try {
-                    oauth.saveSignInToken(outcome.token)
+                    oauth.saveToken(outcome.token, signIn = true)
                 } catch (e: Exception) {
                     finishFlow(profileDir, continuationHandle)
                     oauth.close()
