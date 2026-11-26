@@ -29,6 +29,7 @@ internal class TransferWithdrawn : CancellationException("the item was supersede
 internal class StreamingWithdrawals {
     private val pending = ConcurrentLinkedQueue<CloudItem>()
     private val withdrawn = ConcurrentHashMap.newKeySet<Pair<String, String>>()
+    private val completed = ConcurrentHashMap.newKeySet<Pair<String, String>>()
     private val running = ConcurrentHashMap<Pair<String, String>, MutableSet<kotlinx.coroutines.Job>>()
 
     fun offer(item: CloudItem) {
@@ -46,10 +47,14 @@ internal class StreamingWithdrawals {
         accumulated: MutableSet<SyncAction>,
         claims: MutableSet<String>,
         buffer: StreamingReconcileBuffer,
+        // The plan and the claims carry real-local paths (archive#115); the gather's items carry remote ones.
+        toLocal: (String) -> String = { it },
     ) {
         // The page's own live items stand: a transfer for one of them is wanted again (moved away and back).
-        live.forEach { (path, item) -> withdrawn.remove(path to item.id) }
-        for (item in withdrawnItems) {
+        // A tombstone is no live occurrence: it must not clear the withdrawal of the item it deletes.
+        live.forEach { (path, item) -> if (!item.deleted) withdrawn.remove(toLocal(path) to item.id) }
+        for (remote in withdrawnItems) {
+            val item = remote.copy(path = toLocal(remote.path))
             val key = item.path to item.id
             withdrawn.add(key)
             running[key]?.forEach { it.cancel(TransferWithdrawn()) }
@@ -57,6 +62,28 @@ internal class StreamingWithdrawals {
             accumulated.removeAll { plannedFor(it) == key }
             claims.removeIf { it == item.path || it.startsWith(item.path + "|") }
             buffer.forgetLanded(item.path, item.id)
+            buffer.forgetDeferred(item.path, item.id)
+        }
+    }
+
+    /** The (path, id) of each streamed download that ran to its end and whose item a later page then superseded. */
+    fun completedAndWithdrawn(): List<Pair<String, String>> = completed.filter { it in withdrawn }
+
+    /**
+     * Such a download left its file at the old path, now untracked (the row follows the id): the next pass would upload
+     * it as a new file. [delete]d unless a row or another item's landed content holds the path.
+     */
+    fun removeFinished(
+        buffer: StreamingReconcileBuffer,
+        executedPaths: MutableSet<String>,
+        hasRow: (String) -> Boolean,
+        delete: (String) -> Unit,
+    ) {
+        for ((path, id) in completedAndWithdrawn()) {
+            val landed = buffer.landedIdAt(path)
+            if (hasRow(path) || (landed != null && landed != id)) continue
+            executedPaths.remove(path)
+            delete(path)
         }
     }
 
@@ -74,6 +101,7 @@ internal class StreamingWithdrawals {
                 // Registered first, then checked: a withdrawal either sees the job or is seen here.
                 if (key !in withdrawn) job.start() else job.cancel()
                 job.join()
+                if (action is SyncAction.DownloadContent && !job.isCancelled) completed.add(key)
             } finally {
                 running[key]?.remove(job)
             }
@@ -88,6 +116,7 @@ internal class StreamingWithdrawals {
             is SyncAction.TouchMetadata -> action.path to action.remoteItem.id
             is SyncAction.MoveLocal -> action.path to action.remoteItem.id
             is SyncAction.Upload -> action.remoteId?.let { action.path to it }
+            is SyncAction.Conflict -> action.remoteItem?.let { action.path to it.id }
             else -> null
         }
 }

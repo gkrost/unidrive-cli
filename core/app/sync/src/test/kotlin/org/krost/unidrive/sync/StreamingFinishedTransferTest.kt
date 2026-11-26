@@ -107,6 +107,13 @@ class StreamingFinishedTransferTest {
         }
 
     @Test
+    fun `a transfer finished before a pathless tombstone page converges on the next pass without uploading the stale copy`() =
+        runTest {
+            val out = converges(lastPage = item("X", "").copy(deleted = true), remoteAfter = setOf("/y", "/z"))
+            assertFalse("/p" in out.files, "the deleted item is gone locally")
+        }
+
+    @Test
     fun `a transfer finished before the item moved converges on the next pass without uploading the stale copy`() =
         runTest {
             val out = converges(lastPage = item("X", "/q"), remoteAfter = setOf("/q", "/y", "/z"))
