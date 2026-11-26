@@ -119,6 +119,12 @@ open class Main : Runnable {
      * invoke this on provider mutation or it will read stale data from the
      * first profile ever resolved in this JVM.
      */
+    /** #845: set by a caller or test to force (true) or forbid (false) non-interactive mode; null derives it from `--json`. */
+    internal var nonInteractive: Boolean? = null
+
+    /** The passphrase chain's sources; a test replaces it to supply a fake console (see NonInteractive.kt). */
+    internal var passphraseSourcesFactory: () -> PassphraseSources = { PassphraseSources() }
+
     fun invalidateProfileCaches() {
         _profile = null
         vaultDataCache = null
@@ -139,8 +145,7 @@ open class Main : Runnable {
         }
         val dupError = SyncConfig.detectRootIsolationConflicts(raw)
         if (dupError != null) {
-            System.err.println("Error: $dupError")
-            System.exit(1)
+            refuse("config_invalid", dupError, listOf("Error: $dupError"))
         }
 
         // No -p: [general] default_profile, else the only configured profile, else a refusal that
@@ -150,9 +155,7 @@ open class Main : Runnable {
                 ?: try {
                     SyncConfig.resolveDefaultProfile(raw)
                 } catch (e: NoDefaultProfileException) {
-                    System.err.println(e.message)
-                    System.exit(1)
-                    throw e
+                    refuse("profile_not_found", e.message ?: "no default profile")
                 }
         val resolved =
             try {
@@ -167,15 +170,12 @@ open class Main : Runnable {
                     System.err.println("Using profile '${byType.name}' (matched by type '$profileName')")
                     byType
                 } else {
-                    System.err.println(e.message)
                     val typed = profilesOfType(profileName, raw)
+                    val lines = mutableListOf(e.message ?: "unknown profile '$profileName'")
                     if (typed.size > 1) {
-                        System.err.println(
-                            "Profiles of type '$profileName': ${typed.joinToString(", ")}",
-                        )
+                        lines += "Profiles of type '$profileName': ${typed.joinToString(", ")}"
                     }
-                    System.exit(1)
-                    throw e
+                    refuse("profile_not_found", lines.first(), lines)
                 }
             }
         _profile = resolved
@@ -251,6 +251,7 @@ open class Main : Runnable {
             } catch (_: Exception) {
                 null
             }
+        if (isNonInteractive) throw LifecycleError("config_not_found", "no config.toml at $configFile")
         System.err.print(renderConfigMissingMessage(configFile, verbose, parentCmd))
         System.exit(1)
         throw IllegalStateException("unreachable")
@@ -276,7 +277,13 @@ open class Main : Runnable {
             when (val resolution = vaultPassphraseResolution()) {
                 is PassphraseResolution.Secret -> resolution.chars
                 is PassphraseResolution.Refused ->
-                    if (resolution.consoleWasPresent) {
+                    if (isNonInteractive) {
+                        throw LifecycleError(
+                            "vault_passphrase_required",
+                            "vault.enc exists but no passphrase is available (${resolution.detail}); set UNIDRIVE_VAULT_PASS, " +
+                                "a systemd credential named unidrive-vault-pass, or [general] unlock_helper",
+                        )
+                    } else if (resolution.consoleWasPresent) {
                         System.err.println("Error: could not read passphrase.")
                         System.exit(1)
                         throw IllegalStateException("unreachable")
@@ -302,13 +309,9 @@ open class Main : Runnable {
             try {
                 vault.read(passphrase).also { installCredentialSeal(it) }
             } catch (e: javax.crypto.AEADBadTagException) {
-                System.err.println("Error: Wrong vault passphrase.")
-                System.exit(1)
-                throw IllegalStateException("unreachable")
+                refuse("vault_wrong_passphrase", "Wrong vault passphrase.", listOf("Error: Wrong vault passphrase."))
             } catch (e: java.security.GeneralSecurityException) {
-                System.err.println("Error: Vault decryption failed: ${e.message}")
-                System.exit(1)
-                throw IllegalStateException("unreachable")
+                refuse("vault_decrypt_failed", "Vault decryption failed", listOf("Error: Vault decryption failed: ${e.message}"))
             }
         vaultDataCache = data
         return data
@@ -391,9 +394,8 @@ open class Main : Runnable {
         val factory =
             ProviderRegistry.get(type)
                 ?: run {
-                    System.err.println("Unknown provider type: $type. Supported: ${ProviderRegistry.knownTypes.joinToString(", ")}")
-                    System.exit(1)
-                    throw IllegalArgumentException("Unknown provider type: $type")
+                    val line = "Unknown provider type: $type. Supported: ${ProviderRegistry.knownTypes.joinToString(", ")}"
+                    refuse("unknown_provider_type", line)
                 }
 
         val properties = rawProviderToProperties(rp)
@@ -410,7 +412,9 @@ open class Main : Runnable {
             try {
                 factory.create(properties, tokenPath)
             } catch (e: org.krost.unidrive.ConfigurationException) {
-                System.err.println(configurationErrorLine(profileName, type, e.message))
+                val line = configurationErrorLine(profileName, type, e.message)
+                if (isNonInteractive) throw LifecycleError("configuration_error", line, e)
+                System.err.println(line)
                 System.exit(1)
                 throw e
             }
@@ -838,7 +842,16 @@ internal fun renderConfigMissingMessage(
  * refuses ([ConfigValueException]) exits 78 like every other configuration problem.
  */
 internal val cliExecutionExceptionHandler =
-    CommandLine.IExecutionExceptionHandler { ex, _, _ ->
+    CommandLine.IExecutionExceptionHandler { ex, _, parseResult ->
+        if (parseResult.jsonRequested()) {
+            // #845: a `--json` command always answers with one JSON object, whatever escaped it.
+            val refusal =
+                ex as? LifecycleError
+                    ?: unreachableRefusal(ex)
+                    ?: LifecycleError("internal_error", "unexpected failure: ${ex.javaClass.simpleName}")
+            emitJson(lifecycleErrorJson(refusal))
+            return@IExecutionExceptionHandler 1
+        }
         System.err.println("Error: ${ex.message ?: ex.javaClass.simpleName}")
         if (ex is ConfigValueException) MountCommand.EX_CONFIG else 1
     }
