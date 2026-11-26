@@ -2066,6 +2066,7 @@ class HydrationImpl(
         val job = coroutineContext[Job]
         val dir = mount.hydrationCacheDir()
         if (Files.isDirectory(dir)) {
+            org.krost.unidrive.engine.StalePartialSweep.sweep(dir) { stateDb.getEntryByRemoteId(it) != null }
             val cutoff = System.currentTimeMillis() - STALE_TEMP_AGE_MS
             try {
                 Files.walk(dir).use { stream ->

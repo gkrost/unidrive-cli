@@ -28,6 +28,7 @@ import org.krost.unidrive.engine.CursorState
 import org.krost.unidrive.engine.EnumerationEntryPoint
 import org.krost.unidrive.engine.FileEventTally
 import org.krost.unidrive.engine.FileEvents
+import org.krost.unidrive.engine.StalePartialSweep
 import org.krost.unidrive.engine.MountHost
 import org.krost.unidrive.engine.MountWiring
 import org.krost.unidrive.engine.NameKey
@@ -851,6 +852,7 @@ open class SyncEngine(
         // reason for being is to drain those.
         skipRemoteGather: Boolean = false,
     ) {
+        if (!dryRun) withContext(Dispatchers.IO) { StalePartialSweep.sweepOnce(syncRoot) { db.getEntryByRemoteId(it) != null } } // #845
         // A dry-run must never change real state. The engine writes to its database in many places (row
         // upserts, cursor bookkeeping, scan checkpoints, scanner pre-writes), so purity is guaranteed by
         // construction: the caller hands a dry-run a disposable database (StateDatabase.snapshotOf).
