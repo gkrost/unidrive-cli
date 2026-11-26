@@ -74,7 +74,7 @@ internal class RmdirStaleRowSettle(
         requireFolderGone: Boolean,
     ): Outcome {
         val rows = stateDb.getEntriesByPrefix(if (folder == "/") "/" else "$folder/")
-        if (!rows.all { it.remoteId?.startsWith("local:") == false && !pinned(it) }) return Outcome.LIVE
+        if (!rows.all { it.remoteId != null && !pinned(it) }) return Outcome.LIVE
         if (deferredByLag(folder, rows)) return Outcome.LIVE
         val live =
             runCatching { liveRemoteIdsBelow(folder, entry) }.getOrElse { e ->

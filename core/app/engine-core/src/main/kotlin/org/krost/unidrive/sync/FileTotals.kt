@@ -102,7 +102,7 @@ fun StateDatabase.writeUploadFailedPaths(limit: Int): List<WriteUploadFailedRow>
             .prepareStatement(
                 "SELECT path, name_block, upload_refused, local_mtime, local_size " +
                     "FROM sync_entries WHERE status='EXISTS' " +
-                    "AND remote_id GLOB 'local:*' AND last_error_at IS NOT NULL " +
+                    "AND pending_upload=1 AND last_error_at IS NOT NULL " +
                     "ORDER BY path LIMIT ?",
             ).use { stmt ->
                 stmt.setInt(1, limit)
