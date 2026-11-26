@@ -26,7 +26,7 @@ The engine writes exactly one line to the helper's standard input and then close
 {"op":"unlock","secret":"vault","keyring":"<path>"}
 ```
 
-- `op` is always `"unlock"`.
+- `op` is `"unlock"` for every op the engine implements today. A second op, `sign`, is proposed below.
 - `secret` is `"vault"` (the vault passphrase, `vault.enc`) or `"xtra"` (the X-tra
   passphrase, `xtra.key`). One run asks for one secret.
 - `keyring` is the absolute path of the keyring file the helper manages (per install:
@@ -79,6 +79,60 @@ passphrase path by removing the helper from the config).
 A reply that is not valid JSON, or that is neither shape above, is the hard error
 `invalid_reply`. A helper that does not answer within 60 seconds is destroyed and the
 run reports the hard error `timeout`.
+
+## Proposed: the `sign` op
+
+**Status: proposed, not implemented.** The CLI does not send `sign` yet, and nothing in the engine reads
+its reply. The Windows client proposal (the `unidrive-unlock` helper answering `sign`) defines this wire
+from its side; this section is the engine's side of it, to be agreed before either relies on it.
+
+**Purpose.** The CLI's guarded destructive commands run without a daemon, so they cannot ask a daemon
+for a nonce the way a client of a running daemon does. The remaining scope of cli#798 is `profile remove`,
+`trash purge --remote`, `relocate --delete-source`, `xtra export-key` and `vault change-passphrase`: each will
+get a presence proof from the helper. `sign` is the helper's half of that: it signs a message with the key
+the user's platform credential holds (the same keyring as `unlock`), after the platform's own presence prompt.
+
+Request (one line, same framing as `unlock`):
+
+```json
+{"op":"sign","keyring":"<path>","message":"<base64>"}
+```
+
+- `op` is `"sign"`.
+- `keyring` is the absolute path of the keyring file, as for `unlock`.
+- `message` is the base64 (standard alphabet, padded) of the bytes to sign. These are the presence-proof
+  message bytes; their format and the algorithm the signature uses are defined in
+  `docs/dev/specs/ipc-authentication.md` section 4a (Signed message), not here. The helper signs them as given
+  and does not interpret them.
+
+Reply, on success:
+
+```json
+{"signature":"<base64>"}
+```
+
+`signature` is the base64 (standard alphabet, padded) of the raw signature bytes. A client that puts a
+signature on the wire as base64url re-encodes it (section 4a).
+
+Example exchange:
+
+```
+-> {"op":"sign","keyring":"/home/u/.config/unidrive/keyring.hello","message":"dW5pZHJpdmUtcHJlc2VuY2UtdjF8..."}
+<- {"signature":"MEUCIQD..."}
+```
+
+Errors use the shape and the codes of the reply table above, with the same effect classes and nothing new:
+`declined` (the user refused the presence prompt), `unavailable`, `locked_out` and `witness_mismatch` mean
+what they mean for `unlock`; a malformed request or keyring, or an internal failure, is a helper-specific
+code (the "any other" row). The existing set expresses every case, so no code is added.
+
+The effect in the engine differs from `unlock` in one way, and that is a proposal too: there is no
+passphrase chain to fall through to. A guarded command that cannot get a proof is refused, whatever the
+class of the code, with the code named in the message. A guarded command never runs without its proof
+because the helper was soft-unavailable. Under the policy `off` the CLI does not call `sign` at all.
+
+The same engine-side rules as `unlock` apply: a reply that is not valid JSON or is neither shape is
+`invalid_reply`, and no answer within 60 seconds is `timeout`.
 
 ## The X-tra passphrase in the vault
 
