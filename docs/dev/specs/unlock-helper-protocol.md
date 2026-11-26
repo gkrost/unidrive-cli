@@ -147,8 +147,11 @@ again. A one-shot CLI process (including `xtra import-key` and `import-age`) fol
 reads the vault first when the vault's passphrase is available without a prompt (environment, systemd
 credential, unlock helper), and otherwise skips the vault step.
 
-**`--json` (gkrost/unidrive-cli#973).** `vault init`, `vault encrypt`, `vault change-passphrase`, `vault xtra-set` and
-`vault xtra-clear` take `--json` (the other `vault` subcommands do not, except `internxt-password-set|clear`). Each
+**`--json` (gkrost/unidrive-cli#973).** every `vault` subcommand takes `--json` (owner decision 2026-11-26: `--json` for all vault
+subcommands): `init`, `encrypt`, `decrypt`, `change-passphrase`, `forget`, `xtra-set`, `xtra-clear`, `seal-credentials`
+and `internxt-password-set|clear` (the last two are described above). `decrypt` takes `--passphrase-stdin` for this
+(it only prompted before). These are CLI results only: no IPC verb, no daemon contract level and no verb corpus changes.
+No answer ever carries a passphrase, a key or a credential. Each
 prints exactly one JSON object on stdout, so a client matches a token instead of the English stderr. Under `--json`
 nothing is ever prompted: the secrets come only from standard input, one line each, so the command needs its stdin
 flags (below) and a missing flag or an empty line is `invalid_request` (nothing further is read or written).
@@ -168,6 +171,9 @@ before the vault passphrase is tried at the write, so `xtra_passphrase_mismatch`
 | `vault init` | `--passphrase-stdin` (new passphrase) | none | `vault_exists`, `invalid_request`, `passphrase_too_short` |
 | `vault encrypt` | `--passphrase-stdin` (vault passphrase) | `profiles`: number of profiles whose secrets moved (0: none, or no `config.toml`) | `vault_absent`, `invalid_request`, `vault_bad_passphrase` |
 | `vault change-passphrase` | `--passphrase-stdin` (current), `--new-passphrase-stdin` (new) | none | `vault_absent`, `invalid_request`, `vault_bad_passphrase`, `passphrase_too_short` |
+| `vault decrypt` | `--passphrase-stdin` (vault passphrase) | `restored_profiles`; `orphans`: profile names left in the vault with no config section; `vault_deleted` | `vault_absent`, `invalid_request`, `vault_bad_passphrase`, `restore_failed` |
+| `vault forget <profile>` | `--passphrase-stdin` (vault passphrase) | `profile`; `removed`: whether the vault held an entry | `vault_absent`, `reserved_entry`, `invalid_request`, `profile_configured`, `vault_bad_passphrase` |
+| `vault seal-credentials on\|off` | `--passphrase-stdin` (vault passphrase) | `sealing`: `"on"` or `"off"` | `invalid_request` (exit 2: the state is neither; human mode's usage exit), `vault_absent`, `invalid_request`, `vault_bad_passphrase` |
 | `vault xtra-set` | `--passphrase-stdin` (vault), `--xtra-passphrase-stdin` (X-tra) | `key_files_not_under_passphrase`: key file names the passphrase does not open | `vault_absent`, `invalid_request`, `xtra_passphrase_mismatch`, `vault_bad_passphrase` |
 | `vault xtra-clear` | `--passphrase-stdin` (vault) | `removed`: whether the vault held the entry | `vault_absent`, `invalid_request`, `vault_bad_passphrase` |
 
@@ -178,6 +184,9 @@ before the vault passphrase is tried at the write, so `xtra_passphrase_mismatch`
 | `vault_exists` | (`init`) `vault.enc` already exists; nothing was written |
 | `vault_bad_passphrase` | the vault passphrase does not open `vault.enc`; nothing was written (same token as the IPC verbs and `internxt-password-*`) |
 | `passphrase_too_short` | (`init`, `change-passphrase`) the new passphrase is under 8 characters; nothing was written |
+| `reserved_entry` | (`forget`) the name is a reserved vault entry (`.xtra`, the seal key, an Internxt password), not a profile; nothing was dropped |
+| `profile_configured` | (`forget`) the profile is still in config.toml, whose vault entry is the only copy of its credentials; use `profile remove` |
+| `restore_failed` | (`decrypt`) a vault entry could not be put back into config.toml (no section for it, an unknown field, or the restored value did not verify); nothing was written and the vault was kept |
 | `xtra_passphrase_mismatch` | (`xtra-set`) `xtra.key`, `xtra-age.key` or `xtra-tink.key` exists and the X-tra passphrase opens none of them; nothing was stored |
 
 **Locked start and the marker.** Whether the vault holds `.xtra` is readable only after an unlock, but a

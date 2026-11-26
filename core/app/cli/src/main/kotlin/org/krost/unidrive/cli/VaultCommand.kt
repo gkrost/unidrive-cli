@@ -274,20 +274,35 @@ internal fun filterVaultedLines(
 // ── vault decrypt ────────────────────────────────────────────────────────────
 
 @Command(name = "decrypt", description = ["Restore credentials from vault to config.toml"], mixinStandardHelpOptions = true)
-class VaultDecryptCommand : Runnable {
+class VaultDecryptCommand : java.util.concurrent.Callable<Int> {
     @ParentCommand
     lateinit var vaultCmd: VaultCommand
 
-    override fun run() {
+    @Option(
+        names = ["--passphrase-stdin"],
+        description = [
+            "Read the vault passphrase from the first line of standard input instead of the " +
+                "terminal (no interactive terminal required)",
+        ],
+    )
+    var passphraseStdin: Boolean = false
+
+    @Option(names = ["--json"], description = ["Print the result (or the refusal, with a stable error token) as one JSON object; never prompts"])
+    var json: Boolean = false
+
+    override fun call(): Int {
         val baseDir = vaultCmd.parent.configBaseDir()
+        if (json) return vaultDecryptJson(baseDir, passphraseStdin)
         val vault = Vault(baseDir.resolve("vault.enc"))
         if (!vault.exists()) {
             System.err.println("No vault found.")
             System.exit(1)
         }
 
-        val passphrase = readPassphrase("Vault passphrase: ")
+        val passphrase =
+            if (passphraseStdin) readPassphraseStdin("--passphrase-stdin") else readPassphrase("Vault passphrase: ")
         println(decryptVault(baseDir, passphrase) { System.err.println("Warning: $it") })
+        return 0
     }
 }
 
@@ -301,11 +316,26 @@ internal fun decryptVault(
     baseDir: java.nio.file.Path,
     passphrase: CharArray,
     warn: (String) -> Unit,
-): String {
+): String = decryptVaultReport(baseDir, passphrase, warn).message
+
+/** What `vault decrypt` did: the line to print, how many profiles went back into config.toml, and the profiles left in the vault with no config section. */
+internal class DecryptReport(
+    val message: String,
+    val restoredProfiles: Int,
+    val orphans: List<String>,
+)
+
+internal fun decryptVaultReport(
+    baseDir: java.nio.file.Path,
+    passphrase: CharArray,
+    warn: (String) -> Unit,
+): DecryptReport {
     val vault = Vault(baseDir.resolve("vault.enc"))
     val all = vault.read(passphrase)
     val configPath = baseDir.resolve("config.toml")
-    return ConfigFileTransaction.withLock(configPath) {
+    var restoredProfiles = 0
+    var orphanNames = emptyList<String>()
+    val message = ConfigFileTransaction.withLock(configPath) {
         // Reserved entries are no profile's: they have no config section to go back into and stay in the vault
         // (the X-tra passphrase, issue#796; the credential seal key, #797). A seal key that is switched off is a leftover
         // like any other once no credentials file is sealed under it.
@@ -338,6 +368,8 @@ internal fun decryptVault(
         val configured = SyncConfig.parseRaw(configContent, configPath.toString()).providers.keys
         val restorable = data.filterKeys { it in configured }
         val orphans = data - restorable.keys
+        restoredProfiles = restorable.size
+        orphanNames = orphans.keys.toList()
         for (name in orphans.keys) {
             warn("the vault entry of profile '$name' has no config section and was not restored; drop it with `unidrive vault forget $name`")
         }
@@ -357,6 +389,7 @@ internal fun decryptVault(
                 (if (reserved.isEmpty()) "." else " and $keeps.")
         }
     }
+    return DecryptReport(message, restoredProfiles, orphanNames)
 }
 
 internal fun restoreVaultCredentials(configContent: String, data: Map<String, Map<String, String>>): String {
@@ -499,8 +532,12 @@ class VaultForgetCommand : java.util.concurrent.Callable<Int> {
     )
     var passphraseStdin: Boolean = false
 
+    @Option(names = ["--json"], description = ["Print the result (or the refusal, with a stable error token) as one JSON object; never prompts"])
+    var json: Boolean = false
+
     override fun call(): Int {
         val baseDir = vaultCmd.parent.configBaseDir()
+        if (json) return vaultForgetJson(baseDir, profile, passphraseStdin)
         val vault = Vault(baseDir.resolve("vault.enc"))
         if (!vault.exists()) {
             System.err.println("No vault found.")
@@ -738,7 +775,11 @@ class VaultSealCredentialsCommand : java.util.concurrent.Callable<Int> {
     )
     var passphraseStdin: Boolean = false
 
+    @Option(names = ["--json"], description = ["Print the result (or the refusal, with a stable error token) as one JSON object; never prompts"])
+    var json: Boolean = false
+
     override fun call(): Int {
+        if (json) return vaultSealCredentialsJson(vaultCmd.parent.configBaseDir(), state, passphraseStdin)
         val enabled =
             when (state) {
                 "on" -> true

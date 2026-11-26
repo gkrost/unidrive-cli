@@ -4,15 +4,16 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
+import org.krost.unidrive.sync.SyncConfig
 import org.krost.unidrive.sync.Vault
 import java.nio.file.Files
 import java.nio.file.Path
 import javax.crypto.AEADBadTagException
 
 /*
- * gkrost/unidrive-cli#973: `vault xtra-set --json` / `vault xtra-clear --json`, and `vault init|encrypt|change-passphrase --json`. One JSON object on stdout, the
+ * gkrost/unidrive-cli#973: `vault xtra-set --json` / `vault xtra-clear --json`, and `vault init|encrypt|decrypt|change-passphrase|forget|seal-credentials --json`. One JSON object on stdout, the
  * refusal carrying a stable `error` token (invalid_request, vault_absent, vault_bad_passphrase,
- * xtra_passphrase_mismatch, vault_exists, passphrase_too_short), exit 0 or 1 as in human mode. Under --json nothing is ever prompted: the secrets come
+ * xtra_passphrase_mismatch, vault_exists, passphrase_too_short, reserved_entry, profile_configured, restore_failed), exit 0 or 1 as in human mode. Under --json nothing is ever prompted: the secrets come
  * only from the stdin flags, one line each (vault passphrase first), and a missing flag or line is invalid_request.
  */
 
@@ -179,3 +180,101 @@ internal fun vaultChangePassphraseJson(
             newPass?.fill('\u0000')
         }
     }
+
+internal fun vaultDecryptJson(
+    configDir: Path,
+    passphraseStdin: Boolean,
+): Int =
+    reply(true) {
+        val vault = openVault(configDir)
+        requireFlags(passphraseStdin, message = "--json needs --passphrase-stdin; it never prompts")
+        val passphrase = requireStdinSecret("--passphrase-stdin")
+        try {
+            val report =
+                try {
+                    badPassphraseAsRefusal { decryptVaultReport(configDir, passphrase) { } }
+                } catch (e: IllegalArgumentException) {
+                    // restoreVaultCredentials refuses before it writes: the vault is kept.
+                    throw LifecycleError("restore_failed", "the credentials could not be restored; the vault was kept", e)
+                }
+            buildJsonObject {
+                put("ok", true)
+                put("restored_profiles", report.restoredProfiles)
+                putJsonArray("orphans") { report.orphans.forEach { add(JsonPrimitive(it)) } }
+                put("vault_deleted", !vault.exists())
+            }
+        } finally {
+            passphrase.fill('\u0000')
+        }
+    }
+
+internal fun vaultForgetJson(
+    configDir: Path,
+    profile: String,
+    passphraseStdin: Boolean,
+): Int =
+    reply(true) {
+        val vault = openVault(configDir)
+        if (isReservedVaultSection(profile)) {
+            throw LifecycleError("reserved_entry", "'$profile' is a reserved vault entry, not a profile; nothing was dropped")
+        }
+        requireFlags(passphraseStdin, message = "--json needs --passphrase-stdin; it never prompts")
+        val passphrase = requireStdinSecret("--passphrase-stdin")
+        try {
+            val configPath = configDir.resolve("config.toml")
+            val removed =
+                badPassphraseAsRefusal {
+                    ConfigFileTransaction.withLock(configPath) {
+                        // The entry of a configured profile is the only copy of its credentials: never dropped here.
+                        if (Files.exists(configPath) &&
+                            profile in SyncConfig.parseRaw(Files.readString(configPath), configPath.toString()).providers
+                        ) {
+                            throw LifecycleError("profile_configured", "profile '$profile' is still configured; remove it with 'unidrive profile remove $profile'")
+                        }
+                        forgetVaultEntry(vault, passphrase, profile)
+                    }
+                }
+            buildJsonObject {
+                put("ok", true)
+                put("profile", profile)
+                put("removed", removed)
+            }
+        } finally {
+            passphrase.fill('\u0000')
+        }
+    }
+
+internal fun vaultSealCredentialsJson(
+    configDir: Path,
+    state: String,
+    passphraseStdin: Boolean,
+): Int {
+    val enabled =
+        when (state) {
+            "on" -> true
+            "off" -> false
+            else -> {
+                // The human mode's usage error: exit code 2.
+                emitJson(lifecycleErrorJson(LifecycleError("invalid_request", "expected on or off, got '$state'")))
+                return 2
+            }
+        }
+    return reply(true) {
+        val vault = openVault(configDir)
+        requireFlags(passphraseStdin, message = "--json needs --passphrase-stdin; it never prompts")
+        val passphrase = requireStdinSecret("--passphrase-stdin")
+        try {
+            badPassphraseAsRefusal {
+                ConfigFileTransaction.withLock(configDir.resolve("config.toml")) {
+                    vault.write(passphrase, withCredentialSeal(vault.read(passphrase), enabled))
+                }
+            }
+            buildJsonObject {
+                put("ok", true)
+                put("sealing", if (enabled) "on" else "off")
+            }
+        } finally {
+            passphrase.fill('\u0000')
+        }
+    }
+}
