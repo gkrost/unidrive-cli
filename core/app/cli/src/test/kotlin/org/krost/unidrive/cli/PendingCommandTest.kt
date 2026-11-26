@@ -120,6 +120,15 @@ class PendingCommandTest {
     }
 
     @Test
+    fun `the json form never publishes the key a pending row is stored under as its remote id`() {
+        seedRow("/stuck.txt", localSize = 42)
+        assertEquals(0, run("list", "--json"))
+        val row = Json.parseToJsonElement(out.toString(Charsets.UTF_8)).jsonObject.getValue("rows").toString()
+        assertTrue("\"remote_id\":null" in row, row)
+        assertFalse("local:" in row, row)
+    }
+
+    @Test
     fun `list shows path, size, age and cache state, and the json form matches`() {
         seedRow("/stuck.txt", localSize = 42)
         seedCache("/stuck.txt", "bytes")

@@ -130,7 +130,8 @@ class PendingUploadColumnTest {
             assertTrue("pending_upload" in columns())
             assertEquals(listOf("/pending.txt"), it.pendingUploadPaths(), "the minted key became a pending row")
             assertNull(it.getEntry("/pending.txt")?.remoteId)
-            assertEquals(minted, it.pendingRowDetails().single().remoteId, "the key stays the row's primary key")
+            assertEquals("/pending.txt", it.pendingRowDetails().single().path)
+            assertEquals(minted, storedKey("/pending.txt"), "the key stays the row's primary key")
             assertEquals("cloud-1", it.getEntry("/synced.txt")?.remoteId)
             assertEquals("local:report.txt", it.getEntry("/report.txt")?.remoteId, "a key that only starts with local: is a cloud key")
         }
@@ -217,6 +218,132 @@ class PendingUploadColumnTest {
         assertEquals(shape(fresh), shape(file))
         assertTrue(shape(fresh).any { it.equals("sync_entries.pending_upload integer 1 0", ignoreCase = true) }, "the column is NOT NULL DEFAULT 0 on a fresh file")
         assertTrue(shape(fresh).any { it.startsWith("index idx_sync_entries_pending_upload") })
+    }
+
+    private fun storedKey(path: String): String? =
+        raw { c ->
+            c.createStatement().use { s ->
+                s.executeQuery("SELECT remote_id FROM sync_entries WHERE path='$path'").use { rs -> if (rs.next()) rs.getString(1) else null }
+            }
+        }
+
+    private fun fresh(body: (StateDatabase) -> Unit) = StateDatabase(file).also { it.initialize() }.use(body)
+
+    @Test
+    fun `a minted pending key finds no row by remote id, and a local-prefixed cloud key does`() =
+        fresh { db ->
+            db.upsertEntry(row("/pending.txt", null))
+            db.upsertEntry(row("/report.txt", "local:report.txt"))
+            val minted = assertNotNull(storedKey("/pending.txt"))
+
+            assertNull(db.getEntryByRemoteId(minted))
+            assertNull(db.recovery.getEntryByRemoteIdAnyStatus(minted))
+            assertEquals(emptyMap(), db.getEntriesByRemoteIds(listOf(minted)))
+
+            assertEquals("/report.txt", db.getEntryByRemoteId("local:report.txt")?.path)
+            assertEquals("/report.txt", db.recovery.getEntryByRemoteIdAnyStatus("local:report.txt")?.path)
+            assertEquals(setOf("local:report.txt"), db.getEntriesByRemoteIds(listOf(minted, "local:report.txt")).keys)
+        }
+
+    @Test
+    fun `the remote path rows and the recently deleted ids never carry a minted key`() =
+        fresh { db ->
+            db.upsertEntry(row("/pending.txt", null).copy(remotePath = "/Server/pending.txt"))
+            db.upsertEntry(row("/cloud.txt", "c1").copy(remotePath = "/Server/cloud.txt"))
+            assertEquals(listOf("c1"), db.rowsWithRemotePath().map { it.third })
+
+            raw { c ->
+                c.createStatement().use { s ->
+                    s.executeUpdate("UPDATE sync_entries SET status='DELETED', mount_deleted_at='2999-01-01T00:00:00Z'")
+                }
+            }
+            assertEquals(setOf("c1"), db.recovery.recentlyDeletedRemoteIds(Instant.parse("2000-01-01T00:00:00Z")))
+        }
+
+    @Test
+    fun `deleting a pending row or a folder of them leaves no tombstone and tombstones the cloud rows`() =
+        fresh { db ->
+            db.upsertEntry(row("/gone.txt", null))
+            db.markDeleted("/gone.txt", mountDelete = true)
+            assertNull(db.statusOf("/gone.txt"), "a row that never reached the cloud has nothing to tombstone")
+
+            db.upsertEntry(row("/dir/p.txt", null))
+            db.upsertEntry(row("/dir/c.txt", "cloud-3"))
+            assertEquals(2, db.markDescendantsDeleted("/dir", mountDelete = true))
+            assertNull(db.statusOf("/dir/p.txt"))
+            assertEquals(org.krost.unidrive.sync.model.EntryStatus.DELETED, db.statusOf("/dir/c.txt"))
+            assertEquals(0, db.pendingUploadPaths().size)
+            assertEquals(0, db.getAllEntries().size, "the alive count follows")
+            assertEquals(
+                0,
+                raw { c -> c.createStatement().use { s -> s.executeQuery("SELECT COUNT(*) FROM sync_entries WHERE pending_upload=1").use { rs -> rs.next(); rs.getInt(1) } } },
+                "no unpurgeable tombstone",
+            )
+        }
+
+    @Test
+    fun `a kept row below a deleted folder keeps its key and its marks`() =
+        fresh { db ->
+            db.upsertEntry(row("/dir/keep.txt", null))
+            db.upsertEntry(row("/dir/other.txt", "cloud-4"))
+            db.markNeverSubmitted("/dir/keep.txt")
+            db.markUploadRefused("/dir/keep.txt", "100|200|x")
+            raw { c -> c.createStatement().use { s -> s.executeUpdate("UPDATE sync_entries SET name_block='similar|x' WHERE path='/dir/keep.txt'") } }
+            val before = storedKey("/dir/keep.txt")
+
+            db.markDescendantsDeleted("/dir", mountDelete = true, keep = listOf("/dir/keep.txt"))
+
+            assertEquals(before, storedKey("/dir/keep.txt"), "no second key is minted")
+            assertEquals(1, raw { c -> c.createStatement().use { s -> s.executeQuery("SELECT COUNT(*) FROM sync_entries WHERE path='/dir/keep.txt'").use { rs -> rs.next(); rs.getInt(1) } } })
+            assertEquals(true, db.neverSubmitted("/dir/keep.txt"))
+            assertEquals("100|200|x", db.uploadRefusal("/dir/keep.txt"))
+            assertNotNull(db.nameBlock("/dir/keep.txt"))
+            assertEquals(listOf("/dir/keep.txt"), db.pendingUploadPaths())
+            assertEquals(org.krost.unidrive.sync.model.EntryStatus.DELETED, db.statusOf("/dir/other.txt"))
+        }
+
+    @Test
+    fun `a guarded flip never takes a pending row and does take a local-prefixed cloud row`() =
+        fresh { db ->
+            db.upsertEntry(row("/p.txt", null))
+            db.upsertEntry(row("/report.txt", "local:report.txt"))
+            val rows = mapOf("/p.txt" to assertNotNull(db.getEntry("/p.txt")), "/report.txt" to assertNotNull(db.getEntry("/report.txt")))
+
+            assertEquals(listOf("/report.txt"), db.markDeletedChunked(listOf("/p.txt", "/report.txt"), expectedRows = rows))
+            assertNotNull(db.getEntry("/p.txt"))
+        }
+
+    @Test
+    fun `a schema 4 read of the pending column reads a local-prefixed cloud key as 0 and a minted key as 1`() {
+        writeSchema4File()
+        val read =
+            raw { c ->
+                c.createStatement().use { s ->
+                    s.executeQuery("SELECT path, ${PendingUploadKeys.SCHEMA4_FALLBACK_SQL} FROM sync_entries ORDER BY path").use { rs ->
+                        buildMap { while (rs.next()) put(rs.getString(1), rs.getInt(2)) }
+                    }
+                }
+            }
+        assertEquals(mapOf("/pending.txt" to 1, "/report.txt" to 0, "/synced.txt" to 0), read)
+    }
+
+    @Test
+    fun `the schema version is stamped once by a migration and not at all by the next open`() {
+        writeSchema4File()
+        raw { c ->
+            c.createStatement().use { s ->
+                s.executeUpdate("CREATE TABLE stamp_log (n INTEGER PRIMARY KEY AUTOINCREMENT)")
+                s.executeUpdate(
+                    "CREATE TRIGGER log_stamp AFTER INSERT ON sync_state WHEN NEW.key='schema_version' BEGIN INSERT INTO stamp_log (n) VALUES (NULL); END",
+                )
+            }
+        }
+        fun stamps() = raw { c -> c.createStatement().use { s -> s.executeQuery("SELECT COUNT(*) FROM stamp_log").use { rs -> rs.next(); rs.getInt(1) } } }
+
+        StateDatabase(file).also { it.initialize() }.close()
+        assertEquals(1, stamps(), "the migration stamps, and nothing stamps again")
+        StateDatabase(file).also { it.initialize() }.close()
+        assertEquals(1, stamps(), "an open of a current file writes no stamp")
     }
 
     private inline fun <T> StateDatabase.use(body: (StateDatabase) -> T): T =

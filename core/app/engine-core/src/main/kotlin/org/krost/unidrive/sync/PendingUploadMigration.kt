@@ -62,6 +62,12 @@ object PendingUploadKeys {
     private val SHAPE = Regex("local:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
     fun isMinted(key: String): Boolean = SHAPE.matches(key)
+
+    /**
+     * What a read-only open of a schema 4 file reads for the missing `pending_upload` column: the same rule as
+     * [PendingUploadMigration], so a cloud key like `local:report.txt` reads as 0 before the file is migrated.
+     */
+    val SCHEMA4_FALLBACK_SQL: String = "CASE WHEN remote_id GLOB '$GLOB' THEN 1 ELSE 0 END"
 }
 
 /**
