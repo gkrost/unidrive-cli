@@ -240,7 +240,7 @@ class InternxtDownloadResumeTest {
         }
 
     @Test
-    fun `the whole-file hash check still rejects a corrupted prefix`() =
+    fun `a corrupted local prefix is dropped and the download restarts from zero, not refused as remote content`() =
         runTest {
             onShard = { n, range ->
                 if (n == 1) {
@@ -254,10 +254,40 @@ class InternxtDownloadResumeTest {
             }
             val provider = newProvider()
 
+            provider.downloadById(fileUuid, "/a.bin", destination)
+
+            assertTrue(shardRanges[1]!!.startsWith("bytes="), "the corrupt prefix was resumed, so the check had to catch it: $shardRanges")
+            assertNull(shardRanges[2], "after the failed check the retry asks for the whole shard: $shardRanges")
+            assertContentEquals(plaintext, Files.readAllBytes(destination))
+            assertEquals(listOf("out.bin"), folder(), "no partial or record is left behind")
+        }
+
+    @Test
+    fun `a full download that fails the shard hash is still refused as remote content`() =
+        runTest {
+            onShard = { _, _ -> whole(encrypted(plaintextB)) } // not the bytes the bridge recorded the hash of
+            val provider = newProvider()
+
             assertFailsWith<RemoteContentRefusedDownloadException> { provider.downloadById(fileUuid, "/a.bin", destination) }
 
             assertFalse(Files.exists(destination), "a result that fails the shard hash is never published")
-            assertTrue(shardRanges[1]!!.startsWith("bytes="), "the corrupt prefix was resumed, so the check had to catch it: $shardRanges")
-            assertEquals(emptyList(), folder(), "the refused prefix is deleted, not kept for another try")
+            assertEquals(1, shardRanges.size, "a refusal is not retried: $shardRanges")
+            assertEquals(emptyList(), folder())
+        }
+
+    @Test
+    fun `a 416 to a Range request drops the prefix and the same call completes from zero`() =
+        runTest {
+            onShard = { n, range ->
+                if (n == 1) respond("", HttpStatusCode.RequestedRangeNotSatisfiable) else defaultShard(n, range)
+            }
+            val provider = newProvider()
+
+            provider.downloadById(fileUuid, "/a.bin", destination)
+
+            assertTrue(shardRanges[1]!!.startsWith("bytes="), "$shardRanges")
+            assertNull(shardRanges[2], "after the 416 the next request carries no Range: $shardRanges")
+            assertContentEquals(plaintext, Files.readAllBytes(destination))
+            assertEquals(listOf("out.bin"), folder())
         }
 }

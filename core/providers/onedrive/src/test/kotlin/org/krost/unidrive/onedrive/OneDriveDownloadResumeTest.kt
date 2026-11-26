@@ -214,6 +214,24 @@ class OneDriveDownloadResumeTest {
         }
 
     @Test
+    fun `a 416 to a Range request drops the prefix and the same call completes from zero`() =
+        runTest {
+            onContent = { n, range ->
+                if (n == 1) respond("", HttpStatusCode.RequestedRangeNotSatisfiable) else default(n, range)
+            }
+            val service = newService()
+
+            service.downloadFile(itemId, destination)
+
+            assertEquals(3, contentRequests.size, "$contentRequests")
+            assertTrue(contentRequests[1]!!.startsWith("bytes="))
+            assertNull(contentRequests[2], "after the 416 the next request carries no Range")
+            assertContentEquals(content, Files.readAllBytes(destination))
+            assertEquals(listOf("f.bin"), folder())
+            service.close()
+        }
+
+    @Test
     fun `the whole-file hash check still rejects a corrupted prefix`() =
         runTest {
             // The kept prefix is damaged on disk between the broken attempt and the resume. The server's rest is right.

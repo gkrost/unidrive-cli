@@ -557,7 +557,7 @@ class HydrationImpl(
         // download); a crash leaves them behind.
         private const val STALE_TEMP_AGE_MS = 60L * 60 * 1000
         private val STAGING_DOWNLOAD_SUFFIX =
-            Regex("""\.hydrating-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$""")
+            Regex("""\.hydrating-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:\.(?:part|resume|resume-new)\.unidrive-tmp)?$""")
     }
 
     private fun touch(path: String) {

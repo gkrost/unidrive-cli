@@ -572,9 +572,8 @@ class GraphApiService(
                     httpClient.prepareGet(url) {
                         if (bearer != null) bearerAuth(bearer)
                         if (resumeFrom > 0L) header(HttpHeaders.Range, "bytes=$resumeFrom-")
-                        // Ktor counts the request timeout up to the end of the `execute` block, so the client's flat
-                        // 10 minute cap cut every download that needs longer, steady transfer or not. Sized from the
-                        // declared size like an upload (the larger of that floor and the time at the minimum throughput).
+                        // Ktor counts the request timeout to the end of `execute`, so the flat 10 minute cap cut every long transfer:
+                        // sized from the declared size like an upload (the larger of that floor and the minimum-throughput time).
                         timeout { requestTimeoutMillis = UploadTimeoutPolicy.computeRequestTimeoutMs(item.size) }
                     }
                 val outcome: DownloadOutcome =
@@ -595,6 +594,7 @@ class GraphApiService(
                             val waitMs = pickBackoffMsWithBody(response, body, throttleAttempts, totalThrottleWaitMs)
                             return@execute DownloadOutcome.Throttle(waitMs, response.status.value)
                         }
+                        if (org.krost.unidrive.http.discardIfRangeRefused(response.status.value, resumeFrom, destPath)) return@execute DownloadOutcome.RangeRefused.also { rangeRefused = true }
                         if (!response.status.isSuccess()) {
                             throw GraphApiException(
                                 "Download failed: ${response.status} - ${readBoundedErrorBody(response)}",
