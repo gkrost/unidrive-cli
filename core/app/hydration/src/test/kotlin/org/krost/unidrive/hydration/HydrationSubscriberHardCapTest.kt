@@ -44,8 +44,8 @@ class HydrationSubscriberHardCapTest {
     private fun completed(i: Int) =
         HydrationEvent.Completed("/$i.txt", "h$i", HydrationEvent.Completed.Direction.UPLOAD, ok = true, error = null)
 
-    // Enough outcomes that a reader which reads nothing is past the queue capacity and the hard cap.
-    private val overTheCap = HydrationIpcHandler.SUBSCRIBER_TERMINAL_HARD_CAP + HydrationIpcHandler.SUBSCRIBER_QUEUE_CAPACITY + 10
+    // Enough events that a reader which reads nothing has the replay ring filled past what it was given: the cap is in replay events.
+    private val overTheCap = HydrationIpcHandler.REPLAY_CAPACITY - HydrationIpcHandler.SUBSCRIBER_REPLAY_HEADROOM + 2
 
     private fun newHandler() = HydrationIpcHandler(HydrationTestEnv().hydration, handleIdRun = "0123456789ab")
 
@@ -68,6 +68,39 @@ class HydrationSubscriberHardCapTest {
         advanceUntilIdle()
         assertTrue(writer.linesFor("slow").none { it.contains(""""event":"lost"""") }, "no outcome was dropped on the way")
         handler.onSubscriberDisconnect("slow")
+    }
+
+    @Test
+    fun `a subscriber disconnected at the cap during download triples replays completely, not gap`() = runTest {
+        val handler = newHandler()
+        val writer = FakeWriter()
+        handler.start(this, writer::write)
+        handler.handle("c1", """{"verb":"hydration.subscribe"}""")
+        handler.dispatchEvent(HydrationEvent.Hydrated("/seen", 1))
+        advanceUntilIdle()
+        val applied = writer.linesFor("c1").map(::seqOf).toMutableList()
+        val lastApplied = applied.last()
+        writer.gates["c1"] = CompletableDeferred()
+
+        // Every download is three replayable events; only the completed is an outcome the queue keeps.
+        var downloads = 0
+        while (handler.hasSubscribers() && downloads < HydrationIpcHandler.REPLAY_CAPACITY) {
+            downloads++
+            handler.dispatchEvent(HydrationEvent.Hydrating("/$downloads.txt"))
+            handler.dispatchEvent(HydrationEvent.Hydrated("/$downloads.txt", 1))
+            handler.dispatchEvent(completed(downloads))
+        }
+        advanceUntilIdle()
+        assertFalse(handler.hasSubscribers(), "the stalled subscriber was disconnected")
+
+        val reply = handler.handle("c2", """{"verb":"hydration.subscribe","since_seq":$lastApplied,"run_id":"0123456789ab"}""")
+        assertTrue(reply.contains(""""replay":"complete""""), reply)
+        handler.onSubscribeReplyWritten("c2")
+        advanceUntilIdle()
+        applied += writer.linesFor("c2").map(::seqOf)
+        assertEquals((1L..(1L + 3L * downloads)).toList(), applied, "every event is applied once, in order")
+        handler.onSubscriberDisconnect("c1")
+        handler.onSubscriberDisconnect("c2")
     }
 
     @Test
