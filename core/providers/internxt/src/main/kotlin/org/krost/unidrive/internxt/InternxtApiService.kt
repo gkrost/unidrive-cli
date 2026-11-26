@@ -1430,8 +1430,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
         onProgress: ((Long) -> Unit)? = null,
         resume: org.krost.unidrive.http.ResumeIdentity? = null,
     ): InternxtDownloadedContent {
-        // The content is AES-CTR with no MAC, so a shard fetched over plain http can be altered on the way unseen
-        // (the recorded hash is the only check, and it too comes from a response that is not ours to trust blindly).
+        // AES-CTR has no MAC, so a shard over plain http can be altered unseen and the recorded hash is no guard.
         // The URL is never put in the message: it can carry a signed token.
         if (!isHttps(downloadUrl)) {
             throw RemoteContentRefusedDownloadException(
@@ -1450,11 +1449,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
                         timeout { requestTimeoutMillis = downloadRequestTimeoutMs(expectedSize) }
                         if (from > 0L) header(HttpHeaders.Range, "bytes=$from-")
                     }.execute { response ->
-                        if (from > 0L && response.status == HttpStatusCode.RequestedRangeNotSatisfiable) {
-                            // The kept prefix cannot be continued: drop it and ask for the whole shard.
-                            org.krost.unidrive.http.ResumableStaging.discardFor(destination)
-                            return@execute null
-                        }
+                        if (org.krost.unidrive.http.discardIfRangeRefused(response.status.value, from, destination)) return@execute null
                         if (!response.status.isSuccess()) {
                             // #262: a throttling storage host's Retry-After reaches the shard-commit retry and the bridge budget.
                             // The presigned URL's error body is not quoted (it can echo the signed request).
