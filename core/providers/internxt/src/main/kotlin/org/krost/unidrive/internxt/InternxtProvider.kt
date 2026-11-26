@@ -4311,13 +4311,13 @@ class InternxtProvider(
     // completes.
     private fun logFreshCursorStart(
         marker: String?,
-        stagedRows: Int,
+        hasStagedRows: Boolean,
     ) {
-        if (marker != null || stagedRows > 0) {
+        if (marker != null || hasStagedRows) {
             log.info(
-                "The stored scan (marker {}, {} staged rows) is not one the cursor listing can resume; listing from the start",
+                "The stored scan (marker {}, staged rows: {}) is not one the cursor listing can resume; listing from the start",
                 marker?.take(60),
-                stagedRows,
+                hasStagedRows,
             )
         } else {
             log.info("Listing the whole drive by cursor: folders and files, one request at a time each")
@@ -4406,24 +4406,24 @@ class InternxtProvider(
 
     // The rows of a resumed cursor listing back into the gather: the folders and the ancestor-only records into their maps, the
     // files into [files], or, for a gather that hands its files over from the staging, only as far as [stream] needs them.
-    // Returns how many of the files name no stored object ([namesNoStoredObject]), counted in the same pass.
     private fun resumeFrom(
         resume: CursorResume,
+        staged: Iterable<CloudItem>,
         stream: GatherStream?,
         folders: MutableMap<String, InternxtFolder>,
         files: MutableMap<String, InternxtFile>,
         ancestors: MutableMap<String, InternxtFolder>,
     ): Int {
         var withoutObject = 0
-        for (row in resume.rows) {
+        for (row in staged.asSequence().filter { isCursorStaged(it) || it.hash == CURSOR_ANCESTOR_TAG }) {
             if (namesNoStoredObject(row)) withoutObject++
             when {
+                row.hash == CURSOR_ANCESTOR_TAG -> ancestors[row.id] = row.toResumedAncestor()
                 row.isFolder -> folders[row.id] = row.toResumedFolder()
                 stream != null -> stream.resumed(row)
                 else -> files[row.id] = row.resumedFile(resume.marker.startedAt)
             }
         }
-        for (row in resume.ancestors) ancestors[row.id] = row.toResumedAncestor()
         return withoutObject
     }
 
@@ -4587,9 +4587,9 @@ class InternxtProvider(
         // answer the paths that run through them. Staged with the live rows, so a restart keeps them.
         val ancestors = LinkedHashMap<String, InternxtFolder>()
         if (resume == null) {
-            logFreshCursorStart(scanContext?.resumeMarker, staged.count())
+            logFreshCursorStart(scanContext?.resumeMarker, staged.any())
         } else {
-            logRowsWithoutStoredObject(resumeFrom(resume, stream, folders, files, ancestors), "cursor listing")
+            logRowsWithoutStoredObject(resumeFrom(resume, staged, stream, folders, files, ancestors), "cursor listing")
             log.info(
                 "Resuming the cursor listing begun {}: folders {}, files {}, {} staged rows, {} ancestor-only rows",
                 startedAt,
