@@ -77,4 +77,34 @@ class IpcServerCloseTest {
                 serverScope.cancel()
             }
         }
+    // gkrost/unidrive-cli#845: the daemon closes the connection of a hydration subscriber at its queue's hard cap.
+    @Test
+    fun `closeConnection ends one connection and fires its close listeners`() =
+        runBlocking(Dispatchers.IO) {
+            val serverScope = CoroutineScope(coroutineContext + SupervisorJob())
+            var client: SocketChannel? = null
+            try {
+                server = IpcServer(socketPath)
+                val closed = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+                server!!.registerConnectionCloseListener { closed += it }
+                server!!.registerHandler("whoami") { connId, _ -> """{"ok":true,"id":"$connId"}""" }
+                server!!.start(serverScope)
+                withTimeout(5_000) { while (!Files.exists(socketPath)) delay(10) }
+                client = SocketChannel.open(StandardProtocolFamily.UNIX).also { it.connect(UnixDomainSocketAddress.of(socketPath)) }
+                val request = ByteBuffer.wrap("""{"verb":"whoami"}""".plus("\n").toByteArray(Charsets.UTF_8))
+                while (request.hasRemaining()) client.write(request)
+                val buf = ByteBuffer.allocate(256)
+                client.read(buf)
+                val id = Regex(""""id":"([^"]+)"""").find(String(buf.array(), 0, buf.position()))!!.groupValues[1]
+
+                server!!.closeConnection(id)
+
+                val eof = ByteBuffer.allocate(16)
+                assertTrue(withTimeout(5_000) { client.read(eof) } < 0, "the client reads the end of the stream")
+                withTimeout(5_000) { while (id !in closed) delay(10) }
+            } finally {
+                runCatching { client?.close() }
+                serverScope.cancel()
+            }
+        }
 }

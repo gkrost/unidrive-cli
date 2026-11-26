@@ -265,6 +265,14 @@ class IpcServer(
     }
 
     /**
+     * Close one connection from the daemon's side (gkrost/unidrive-cli#845: a hydration subscriber at its queue's hard cap).
+     * Its reader ends with the closed channel, removes the client and fires the close listeners. Unknown id: nothing.
+     */
+    fun closeConnection(connectionId: String) {
+        clients.firstOrNull { it.id == connectionId }?.let { closeChannel(it.channel) }
+    }
+
+    /**
      * Mark a connection as a sync-progress subscriber. After this call, the
      * connection receives sync-progress events from `emit(...)` until it
      * disconnects (cleanup via `unregisterSyncSubscriber`, called from a
