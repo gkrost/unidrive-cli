@@ -2017,7 +2017,7 @@ class MountEngine private constructor(
     // The listing of [path], or null when [root] itself is already gone in the cloud; see [MountDelete.snapshotListing].
     internal suspend fun snapshotListing(path: String, root: String): List<CloudItem>? = deletes.snapshotListing(path, root)
 
-    private val deletes =
+    internal val deletes =
         MountDelete(
             provider = provider,
             db = db,

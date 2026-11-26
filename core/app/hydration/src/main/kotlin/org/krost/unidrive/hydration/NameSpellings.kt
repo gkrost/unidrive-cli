@@ -24,6 +24,27 @@ internal class NameSpellings(private val store: NameSpellingStore? = null) {
     // named, how many claims hold it right now, and whether a verb has already succeeded with it.
     private val seen = ConcurrentHashMap<String, Spelling>()
 
+    // gkrost/unidrive-cli#948: the NFC paths of files whose earlier decomposed spelling the NFC arrival in flight may replace
+    // ([NfcSpellingWins]), and the records that swap put aside until its verb commits or fails.
+    private val permits = ConcurrentHashMap.newKeySet<String>()
+    private val swapped = ConcurrentHashMap<String, Spelling>()
+    private val dropped = ConcurrentHashMap<String, StaleSpelling>()
+
+    // The decomposed names whose NFC upload has not landed yet: the old object goes once it has ([NfcSpellingWins.landed]).
+    private val stale = ConcurrentHashMap<String, StaleSpelling>()
+
+    fun takeStale(nfcPath: String): StaleSpelling? = stale.remove(nfcPath)
+
+    fun hasStale(nfcPath: String): Boolean = stale.containsKey(nfcPath)
+
+    fun permit(nfcPath: String) {
+        permits.add(nfcPath)
+    }
+
+    fun endPermit(nfcPath: String) {
+        permits.remove(nfcPath)
+    }
+
     private class Spelling(val raw: String) {
         // The claims that hold this record: one per active claim of the same spelling. An increment/decrement
         // pair per claim; a record with no claims and nothing committed is removed again.
@@ -99,7 +120,26 @@ internal class NameSpellings(private val store: NameSpellingStore? = null) {
                         }
                     else ->
                         if (known.raw != raw) {
-                            isClash = true
+                            // The permitted NFC arrival takes the record over for the length of its verb.
+                            if (raw == nfc && nfc in permits) {
+                                // The row drops its decomposed cloud name now, before the verb's upload starts, atomically: a row that
+                                // changed underneath is not adopted. A failed verb gives the name back ([rollback]).
+                                val adoption = store?.adoptNfc(nfc) ?: Adoption.NothingToDrop
+                                val fresh = Spelling(raw)
+                                if (adoption is Adoption.Changed) {
+                                    isClash = true
+                                } else if (seen.replace(nfc, known, fresh)) {
+                                    fresh.claims.incrementAndGet()
+                                    swapped[nfc] = known
+                                    (adoption as? Adoption.Dropped)?.let { dropped[nfc] = it.stale }
+                                    claimed += nfc to raw
+                                } else {
+                                    (adoption as? Adoption.Dropped)?.let { store?.restoreSpelling(nfc, it.stale) }
+                                    raced = true
+                                }
+                            } else {
+                                isClash = true
+                            }
                         } else {
                             known.claims.incrementAndGet()
                             claimed += nfc to known.raw
@@ -117,7 +157,12 @@ internal class NameSpellings(private val store: NameSpellingStore? = null) {
 
     /** Persists a succeeded verb's claim: the record is marked owned by the success and the store is written. */
     fun commit(claim: List<Pair<String, String>>) {
+        val replaced = claim.filter { (nfc, _) -> swapped.remove(nfc) != null }
+        for ((nfc, _) in replaced) dropped.remove(nfc)?.let { stale[nfc] = it }
         val persisted = store ?: return
+        for ((nfc, _) in replaced) {
+            persisted.forgetUnder(nfc)
+        }
         for ((nfc, raw) in claim) {
             val s = seen[nfc]
             if (s != null && s.raw == raw) {
@@ -136,6 +181,12 @@ internal class NameSpellings(private val store: NameSpellingStore? = null) {
         for ((nfc, raw) in claim) {
             val s = seen[nfc] ?: continue
             if (s.raw != raw) continue
+            val old = swapped.remove(nfc)
+            if (old != null) {
+                seen.replace(nfc, s, old)
+                dropped.remove(nfc)?.let { store?.restoreSpelling(nfc, it) }
+                continue
+            }
             if (s.claims.decrementAndGet() <= 0 && !s.committed) seen.remove(nfc, s)
         }
     }
@@ -181,6 +232,15 @@ interface NameSpellingStore {
      */
     fun load(): Map<String, String>
 
+    /** gkrost/unidrive-cli#948: the row at [nfcPath] is written by the NFC spelling now: it stops addressing its cloud item by a decomposed name. */
+    fun adoptNfc(nfcPath: String): Adoption = Adoption.NothingToDrop
+
+    /** Gives back what [adoptNfc] dropped, when the NFC verb that adopted failed and the row is still the one it dropped it from. */
+    fun restoreSpelling(
+        nfcPath: String,
+        stale: StaleSpelling,
+    ) {}
+
     /**
      * gkrost/unidrive-cli#948: the spelling of the name at [nfcPath] that the state already holds although no verb recorded
      * it: the item spelled in NFC that holds the name of a twin pair the cloud listing brought in (its decomposed twin sits
@@ -199,6 +259,21 @@ interface NameSpellingStore {
     fun forgetUnder(nfcPath: String)
 }
 
+/** The decomposed name a row addressed its cloud item by, and the id the item had. */
+data class StaleSpelling(val remotePath: String, val remoteId: String)
+
+/** What [NameSpellingStore.adoptNfc] did to the row at the NFC path. */
+sealed class Adoption {
+    /** The row has no decomposed name to drop. */
+    data object NothingToDrop : Adoption()
+
+    /** The row changed underneath (an upload in flight, an edit noted): nothing was dropped, the NFC arrival is not settled. */
+    data object Changed : Adoption()
+
+    /** The decomposed name is gone from the row; [stale] is what it was. */
+    data class Dropped(val stale: StaleSpelling) : Adoption()
+}
+
 /** [NameSpellingStore] on the profile's state.db (the `name_spellings` table, gkrost/unidrive-cli#24). */
 class StateDbNameSpellingStore(private val db: StateDatabase) : NameSpellingStore {
     override fun load(): Map<String, String> {
@@ -209,12 +284,45 @@ class StateDbNameSpellingStore(private val db: StateDatabase) : NameSpellingStor
     override fun known(nfcPath: String): String? {
         val row = db.getEntry(nfcPath) ?: return null
         if (row.remotePath != null && row.remotePath != nfcPath) return null
+        // The twin sits in the folder of the name, under its decorated name: the folder's rows, not the table, are looked at.
         val name = nfcPath.substringAfterLast('/')
         val twinned =
-            db.rowsWithRemotePath().any { (path, remotePath, _) ->
-                path != nfcPath && PathNormalizer.nfc(remotePath) == nfcPath && DuplicateNames.isDecorationOf(path.substringAfterLast('/'), name)
+            db.listDirectChildren(nfcPath.substringBeforeLast('/', "")).any { twin ->
+                twin.path != nfcPath &&
+                    twin.remotePath?.let { PathNormalizer.nfc(it) == nfcPath } == true &&
+                    DuplicateNames.isDecorationOf(twin.path.substringAfterLast('/'), name)
             }
         return nfcPath.takeIf { twinned }
+    }
+
+    // One transaction: the row is read and written under the writer's monitor, so an upload that completes meanwhile is
+    // either before it (the row shows it, and the adoption backs off or finds the new state) or after it.
+    override fun adoptNfc(nfcPath: String): Adoption =
+        db.batch {
+            val row = db.getEntry(nfcPath)
+            val remote = row?.remotePath
+            val id = row?.remoteId
+            when {
+                row == null || remote == null || id == null || row.isFolder || remote == nfcPath || PathNormalizer.nfc(remote) != nfcPath ->
+                    Adoption.NothingToDrop
+                row.isPendingUpload || row.editBase != null -> Adoption.Changed
+                else -> {
+                    db.upsertEntry(row.copy(remotePath = null), keepMarks = true)
+                    Adoption.Dropped(StaleSpelling(remote, id))
+                }
+            }
+        }
+
+    override fun restoreSpelling(
+        nfcPath: String,
+        stale: StaleSpelling,
+    ) {
+        db.batch {
+            val row = db.getEntry(nfcPath)
+            if (row != null && row.remotePath == null && row.remoteId == stale.remoteId) {
+                db.upsertEntry(row.copy(remotePath = stale.remotePath), keepMarks = true)
+            }
+        }
     }
 
     override fun record(

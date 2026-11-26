@@ -3341,6 +3341,9 @@ class HydrationImpl(
         return stamp != "$baselineMtime|$baselineSize"
     }
 
+    override suspend fun deleteStaleSpelling(oldRemotePath: String, previousId: String, path: String): Boolean =
+        mount.deletes.deleteStaleSpelling(oldRemotePath, previousId, path)
+
     override fun holdsUnsyncedBytesAt(path: String): Boolean =
         stateDb.getEntry(path)?.let { !it.isFolder && (it.remoteId == null || holdsUnsyncedBytes(it) || hasUploadSlot(it.path)) } == true
 

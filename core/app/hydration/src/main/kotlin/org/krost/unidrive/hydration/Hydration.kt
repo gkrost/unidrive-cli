@@ -173,6 +173,17 @@ interface Hydration {
     /** gkrost/unidrive-cli#948: the file at [path] holds bytes the cloud has not seen (never uploaded, an edit or an upload not done). */
     fun holdsUnsyncedBytesAt(path: String): Boolean = false
 
+    /**
+     * gkrost/unidrive-cli#948: the NFC upload of [path] landed over a name the cloud held as [oldRemotePath] (the item [previousId]):
+     * deletes that old object, to the provider's trash where it has one. False when nothing was deleted (the same object was replaced
+     * in place, it is not the item it was, or the delete failed; a failure is logged and nothing else changes).
+     */
+    suspend fun deleteStaleSpelling(
+        oldRemotePath: String,
+        previousId: String,
+        path: String,
+    ): Boolean = false
+
     /** [permanent] (archive#1178): delete the tree for good, bypassing the provider's trash (`rm --permanent -r`). */
     suspend fun rmdir(
         path: String,
