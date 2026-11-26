@@ -1104,6 +1104,7 @@ class StateDatabase(
             // The same lookup also says whether the row this one replaces (the same remote id) is alive: the alive
             // count changes by what the new row is minus what the old one was (see below).
             var wasAlive = false
+            var ownPending = false
             cached(UPSERT_PROBE_SQL) { stmt ->
                 stmt.setString(1, entry.path)
                 stmt.setString(2, storedId)
@@ -1111,10 +1112,14 @@ class StateDatabase(
                 stmt.executeQuery().use { rs ->
                     while (rs.next()) {
                         val id = rs.getString(1)
-                        if (id == storedId) wasAlive = rs.getString(2) == EntryStatus.EXISTS.name else evictedIds[id] = rs.getInt(3) == 1
+                        if (id == storedId) {
+                            wasAlive = rs.getString(2) == EntryStatus.EXISTS.name; ownPending = rs.getInt(3) == 1
+                        } else evictedIds[id] = rs.getInt(3) == 1
                     }
                 }
             }
+            // A cloud id equal to a pending row's minted key would replace that row (path, marks, cache bytes): refuse.
+            if (ownPending && entry.remoteId != null) return@batch log.errorKeyCollision(entry.path, storedId)
             if (evictedIds.isNotEmpty()) {
                 conn
                     .prepareStatement(
@@ -1124,7 +1129,7 @@ class StateDatabase(
                         stmt.setString(2, storedId)
                         countAlive(-stmt.executeUpdate())
                     }
-                log.warnRekeyed(entry.path, storedId, evictedIds)
+                log.warnRekeyed(entry.path, entry.remoteId, evictedIds)
             }
             cached(if (keepMarks) UPSERT_ENTRY_KEEPING_MARKS_SQL else UPSERT_ENTRY_SQL) { stmt ->
                 stmt.setString(1, storedId)
@@ -1348,7 +1353,7 @@ class StateDatabase(
     ): String? {
         if (remoteId == null || nfcPath.all { it < '\u0080' }) return remotePath
         val stored =
-            conn.prepareStatement("SELECT remote_path FROM alive_entries WHERE remote_id = ? AND path = ?").use { stmt ->
+            conn.prepareStatement("SELECT remote_path FROM alive_entries WHERE remote_id = ? AND path = ? AND pending_upload = 0").use { stmt ->
                 stmt.setString(1, remoteId)
                 stmt.setString(2, nfcPath)
                 stmt.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
@@ -1673,7 +1678,7 @@ class StateDatabase(
             beginWrite()
             conn.prepareStatement(
                 "UPDATE sync_entries SET remote_content_id = ? " +
-                    "WHERE remote_id = ? AND path = ? AND status = 'EXISTS' AND is_folder = 0 AND remote_content_id IS NULL " +
+                    "WHERE remote_id = ? AND path = ? AND status = 'EXISTS' AND pending_upload = 0 AND is_folder = 0 AND remote_content_id IS NULL " +
                     "AND edit_base IS NULL AND remote_hash IS ? AND remote_version IS ? AND remote_size = ? " +
                     "AND (remote_hash IS NOT NULL OR remote_version IS NOT NULL OR remote_modified IS ?)",
             ).use { stmt ->
@@ -2094,7 +2099,7 @@ class StateDatabase(
             conn
                 .prepareStatement(
                     "UPDATE sync_entries SET download_quarantined=1, last_error_at=? " +
-                        "WHERE remote_id=? AND status='EXISTS'",
+                        "WHERE remote_id=? AND status='EXISTS' AND pending_upload=0",
                 ).use { stmt ->
                     stmt.setString(1, at.toString())
                     stmt.setString(2, remoteId)
@@ -2819,7 +2824,7 @@ class StateDatabase(
             conn
                 .prepareStatement(
                     "UPDATE sync_entries SET download_quarantined=0, last_error_at=NULL " +
-                        "WHERE remote_id=? AND download_quarantined=1",
+                        "WHERE remote_id=? AND status='EXISTS' AND pending_upload=0 AND download_quarantined=1",
                 ).use { stmt ->
                     stmt.setString(1, remoteId)
                     return stmt.executeUpdate() == 1

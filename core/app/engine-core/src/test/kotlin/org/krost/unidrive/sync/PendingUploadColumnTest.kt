@@ -346,6 +346,55 @@ class PendingUploadColumnTest {
         assertEquals(1, stamps(), "an open of a current file writes no stamp")
     }
 
+    @Test
+    fun `a cloud id equal to a pending row's minted key is refused and the pending row stays`() =
+        fresh { db ->
+            db.upsertEntry(row("/a/new.txt", null))
+            val minted = assertNotNull(storedKey("/a/new.txt"))
+
+            db.upsertEntry(row("/other.txt", minted))
+
+            assertEquals(listOf("/a/new.txt"), db.pendingUploadPaths(), "the pending row is not overwritten")
+            assertNull(db.getEntry("/other.txt"), "the colliding cloud item is not tracked under that key")
+            assertEquals(minted, storedKey("/a/new.txt"))
+        }
+
+    @Test
+    fun `quarantine and content id writes by remote id never touch a pending row`() =
+        fresh { db ->
+            db.upsertEntry(row("/p.txt", null))
+            val minted = assertNotNull(storedKey("/p.txt"))
+            raw { c -> c.createStatement().use { s -> s.executeUpdate("UPDATE sync_entries SET last_error_at='2026-01-01T00:00:00Z', download_quarantined=1 WHERE path='/p.txt'") } }
+
+            assertFalse(db.clearDownloadQuarantine(minted))
+            assertFalse(db.setDownloadQuarantine(minted, Instant.parse("2026-02-02T00:00:00Z")))
+            assertFalse(db.fillContentId(row("/p.txt", minted), "obj|3"))
+
+            val state = raw { c -> c.createStatement().use { s -> s.executeQuery("SELECT last_error_at, remote_content_id FROM sync_entries WHERE path='/p.txt'").use { rs -> rs.next(); rs.getString(1) to rs.getString(2) } } }
+            assertEquals("2026-01-01T00:00:00Z" to null, state, "the failed-upload stamp survives and no content id is written")
+        }
+
+    @Test
+    fun `the re-key warning never calls the minted key of a pending upload an incoming remote id`() {
+        val minted = "local:6f1c0d1e-0000-4000-8000-000000000001"
+        val pendingEvictsCloud = rekeyWarning("/a.txt", null, "cloud-1")
+        assertFalse("incoming remote_id" in pendingEvictsCloud, pendingEvictsCloud)
+        assertFalse(minted in pendingEvictsCloud)
+        assertTrue("pending upload" in pendingEvictsCloud, pendingEvictsCloud)
+        assertTrue("incoming remote_id=cloud-2" in rekeyWarning("/a.txt", "cloud-2", "cloud-1"))
+    }
+
+    @Test
+    fun `a read-only open of a schema 4 file reads a local-prefixed cloud key as a cloud row`() {
+        writeSchema4File()
+        StateDatabase(file, readOnly = true).also { it.initialize() }.use {
+            assertEquals(listOf("/pending.txt"), it.pendingUploadPaths())
+            assertEquals("local:report.txt", it.getEntry("/report.txt")?.remoteId)
+            assertNull(it.getEntry("/pending.txt")?.remoteId)
+        }
+        assertFalse("pending_upload" in columns(), "the read-only open did not migrate")
+    }
+
     private inline fun <T> StateDatabase.use(body: (StateDatabase) -> T): T =
         try {
             body(this)
