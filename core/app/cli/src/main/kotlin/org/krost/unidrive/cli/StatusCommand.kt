@@ -328,7 +328,7 @@ class StatusCommand : Callable<Int> {
                 pendingCursor = cursor.pendingCursor
                 // archive#403: the items kept under a decorated name (unresolved duplicates).
                 duplicateNames = duplicateNamesOf(db)
-            } finally {
+            } catch (e: IllegalStateException) { System.err.println(e.message) /* older schema: the way out; the audit goes on */ } finally {
                 db.close()
             }
         }
@@ -451,7 +451,7 @@ class StatusCommand : Callable<Int> {
                 println("Sync scope: invalid: ${e.message}")
                 return
             }
-        scopeStatusLine(configured, persistedScope(configDir))?.let { println(it) }
+        scopeStatusLine(configured, try { persistedScope(configDir) } catch (_: IllegalStateException) { emptyList() })?.let { println(it) } // an older schema has no scope to show
         if (configured.isNotEmpty()) {
             val excludes = scopeExcludes(profile, raw)
             val outside =
