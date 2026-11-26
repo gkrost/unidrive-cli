@@ -2025,6 +2025,9 @@ class IpcContractCorpusTest {
             else -> RmdirResult.Ok
         }
 
+        // gkrost/unidrive-cli#948: /spell/draft... is a file whose bytes the cloud has not seen.
+        override fun holdsUnsyncedBytesAt(path: String): Boolean = path.startsWith("/spell/draft")
+
         override suspend fun create(connectionId: String, handleId: String, path: String): CreateResult = when {
             readOnly(path) -> CreateResult.Failed(HydrationError.ReadOnly)
             path.startsWith("/missing/") -> CreateResult.ParentNotFound

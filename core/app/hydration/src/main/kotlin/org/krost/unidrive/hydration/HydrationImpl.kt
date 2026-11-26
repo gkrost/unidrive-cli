@@ -3350,6 +3350,9 @@ class HydrationImpl(
         return stamp != "$baselineMtime|$baselineSize"
     }
 
+    override fun holdsUnsyncedBytesAt(path: String): Boolean =
+        stateDb.getEntry(path)?.let { !it.isFolder && (it.remoteId == null || holdsUnsyncedBytes(it) || hasUploadSlot(it.path)) } == true
+
     // archive#1040 M4: the renames whose cache copy still has to follow them (see [RenameRollForward]).
     private val renames = RenameRollForward(stateDb, mount) { oldNorm, newNorm -> moveCacheFile(oldNorm, newNorm) }
 
