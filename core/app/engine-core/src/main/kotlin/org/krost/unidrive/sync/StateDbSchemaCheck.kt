@@ -41,6 +41,10 @@ internal object StateDbSchemaCheck {
     /** Test seam: table -> columns a later build adds, expected on top of this build's own bootstrap. */
     internal val expectedExtra = ConcurrentHashMap<String, Set<String>>()
 
+    /** This build's own tables with their columns (bootstrapped in memory once per process), plus the [expectedExtra] seam. */
+    fun referenceTables(dbPath: Path): Map<String, Set<String>> =
+        referenceShape(dbPath, JdbcStateDatabaseConnector).tables.toMutableMap().also { t -> expectedExtra.forEach { (k, v) -> t[k] = t[k].orEmpty() + v } }
+
     /** Rows [c]'s INSERT/UPDATE/DELETE statements changed since it opened; 0 when it only read. A failed probe reads as "changed". */
     fun changedRows(c: Connection): Long =
         runCatching { c.createStatement().use { st -> st.executeQuery("SELECT total_changes()").use { rs -> if (rs.next()) rs.getLong(1) else 1L } } }
@@ -86,9 +90,21 @@ internal object StateDbSchemaCheck {
             }
         }
 
+    // A column the file lacks is read (NULL or its fallback) or refuses the open: see [StateDbColumnClasses].
+    private fun classify(
+        table: String,
+        absent: Set<String>,
+        missing: MutableList<String>,
+        gaps: MutableMap<String, List<String>>,
+    ) {
+        val (readable, refused) = absent.partition { fallbacks.containsKey(it) || "$table.$it" in StateDbColumnClasses.additiveNull }
+        missing += refused.map { "missing column $table.$it" }
+        if (readable.isNotEmpty()) gaps[table] = readable
+    }
+
     /**
      * Admits the read-only connection [c] of the file at [dbPath], stamped [recorded], or throws [IllegalStateException]
-     * with the way out. A table missing columns is shadowed, for this connection only, by a TEMP view that selects NULL
+     * with the way out. A table missing readable columns (see [StateDbColumnClasses]) is shadowed, for this connection only, by a TEMP view that selects NULL
      * in their place and keeps `rowid` (and `alive_entries` is shadowed with it), so every query by name keeps working: the gap is found
      * once here, never by catching "no such column" later. The temp schema is not the file: nothing is written to it.
      */
@@ -109,7 +125,11 @@ internal object StateDbSchemaCheck {
             expectedExtra.forEach { (table, columns) -> tables[table] = tables[table].orEmpty() + columns }
             for ((table, columns) in tables) {
                 val have = actual.tables[table]
-                if (have == null) missing += "missing table $table" else if (!have.containsAll(columns)) gaps[table] = (columns - have).toList()
+                if (have == null) {
+                    missing += "missing table $table"
+                } else {
+                    classify(table, columns - have, missing, gaps)
+                }
             }
             missing += (expected.views - actual.views).map { "missing view $it" }
         }

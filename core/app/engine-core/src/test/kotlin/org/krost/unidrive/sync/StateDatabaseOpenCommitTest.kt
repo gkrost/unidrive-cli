@@ -298,6 +298,50 @@ class StateDatabaseOpenCommitTest {
     }
 
     @Test
+    fun `every column of the bootstrap schema is classified`() {
+        val unclassified = StateDbColumnClasses.unclassified(StateDbSchemaCheck.referenceTables(TestScratch.directory("sdb-classes").resolve("state.db")))
+        assertEquals(emptyList(), unclassified, "classify each new column in StateDbColumnClasses (additiveNull or required) or register a fallback")
+    }
+
+    @Test
+    fun `a new column that nobody classified is reported`() {
+        StateDbSchemaCheck.expectedExtra["sync_entries"] = setOf("brand_new")
+        try {
+            val tables = StateDbSchemaCheck.referenceTables(TestScratch.directory("sdb-classes2").resolve("state.db"))
+            assertEquals(listOf("sync_entries.brand_new"), StateDbColumnClasses.unclassified(tables))
+        } finally {
+            StateDbSchemaCheck.expectedExtra.remove("sync_entries")
+        }
+    }
+
+    @Test
+    fun `a read-only open refuses a file missing a required column and writes nothing`() {
+        val file = seeded()
+        exec(file, "ALTER TABLE sync_entries DROP COLUMN local_size")
+        withObserver(file) { obs ->
+            val before = footprint(file)
+            val version = obs.dataVersion()
+            val ex = assertFailsWith<IllegalStateException> { StateDatabase(file, readOnly = true).initialize() }
+            val msg = ex.message.orEmpty()
+            assertTrue(msg.contains("older unidrive") && msg.contains("sync_entries.local_size") && msg.contains("unidrive sync"), "clear message, got: $msg")
+            assertEquals(version, obs.dataVersion(), "no commit ran")
+            assertEquals(before, footprint(file), "nothing written")
+        }
+    }
+
+    @Test
+    fun `a read-only open refuses a file missing a column that no class holds`() {
+        val file = seeded()
+        StateDbSchemaCheck.expectedExtra["sync_entries"] = setOf("brand_new") // a future column nobody classified
+        try {
+            val ex = assertFailsWith<IllegalStateException> { StateDatabase(file, readOnly = true).initialize() }
+            assertTrue(ex.message.orEmpty().contains("sync_entries.brand_new"), ex.message)
+        } finally {
+            StateDbSchemaCheck.expectedExtra.remove("sync_entries")
+        }
+    }
+
+    @Test
     fun `a writable open whose migration only runs DDL still checkpoints at close`() {
         val file = seededWithoutAdditiveColumn() // the stamp is current: the open adds the column and changes no row
         withObserver(file) { obs ->
