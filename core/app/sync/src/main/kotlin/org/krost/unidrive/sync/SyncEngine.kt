@@ -2189,6 +2189,8 @@ open class SyncEngine(
             settled()
             authFailure.compareAndSet(null, e)
             stopPass()
+        } catch (e: TransferWithdrawn) {
+            throw e // the item was superseded: no placeholder to put back
         } catch (e: CancellationException) {
             download?.let { restoreToPlaceholder(it.path, it.remoteItem) }
             throw e
@@ -2379,8 +2381,9 @@ open class SyncEngine(
         // the buffered gather (see gatherRemoteChanges).
         val keyToPath = HashMap<String, String>()
         val collisions = HashMap<String, RemoteGather.CollisionRecord>()
-        // #745 finding 6: of an id delivered at more than one path, the gather keeps the last occurrence (GatherIdIndex).
-        val latestOfId = remoteGather.idIndex(changes, keyToPath, collisions)
+        // #745 finding 6: of an id at more than one path, the gather keeps the last occurrence (GatherIdIndex); #845: the dropped one is planned, StreamingWithdrawals takes it back.
+        val withdrawals = StreamingWithdrawals()
+        val latestOfId = remoteGather.idIndex(changes, keyToPath, collisions, withdrawals::offer)
         // archive#403: the twin rows of state.db, for the winner rule and placeTwins.
         remoteGather.loadTwins()
         val buffer = StreamingReconcileBuffer()
@@ -2586,6 +2589,7 @@ open class SyncEngine(
             // set regardless of which delta page the canonical folder entry
             // (e.g. /Pictures) falls on.
             val stableRemoteTopLevelNames: Set<String>,
+            val withdrawn: List<CloudItem>,
         )
 
         val pageChannel =
@@ -2624,6 +2628,7 @@ open class SyncEngine(
                 val consumerJob =
                     launch {
                         for (pageSlice in pageChannel) {
+                            withdrawals.apply(pageSlice.withdrawn, pageSlice.slice, safeAccumulator, accumulatedOnce, sentToExecutor, buffer)
                             if (pageSlice.slice.isEmpty()) continue
                             val pageLocal = resolvedLocal.get()
                             val pageActions =
@@ -2711,21 +2716,19 @@ open class SyncEngine(
                                     lastJobPerPath[action.path] =
                                         workers.launch {
                                             prior?.join()
-                                            dispatchStreamingTransfer(
-                                                action = action,
-                                                succeeded = if (action is SyncAction.Upload) uploaded else downloaded,
-                                                transferFailures = transferFailures,
-                                                authFailure = authFailure,
-                                                executedPaths = executedPaths,
-                                                gatherScope = gatherScope,
-                                                transferSemaphore = transferSemaphore,
-                                            )
+                                            withdrawals.run(action) {
+                                                dispatchStreamingTransfer(
+                                                    action = action,
+                                                    succeeded = if (action is SyncAction.Upload) uploaded else downloaded,
+                                                    transferFailures = transferFailures,
+                                                    authFailure = authFailure,
+                                                    executedPaths = executedPaths,
+                                                    gatherScope = gatherScope,
+                                                    transferSemaphore = transferSemaphore,
+                                                )
+                                            }
                                         }
-                                else -> {
-                                    // Defensive: classify() only surfaces
-                                    // Download/Upload to us. Ignore the rest so
-                                    // a future SyncAction variant doesn't crash.
-                                }
+                                else -> Unit // defensive: classify() surfaces only Download/Upload; a future variant must not crash
                             }
                         }
                     }
@@ -2737,9 +2740,9 @@ open class SyncEngine(
                     var heldItems: MutableMap<String, HeldItem>? = null
 
                     suspend fun flushHeld() {
-                        val held = heldItems ?: return
+                        val held = heldItems ?: LinkedHashMap()
                         heldItems = null
-                        if (held.isEmpty()) return
+                        if (held.isEmpty() && !withdrawals.hasPending()) return
                         val slice = LinkedHashMap<String, CloudItem>()
                         val ids = mutableListOf<String>()
                         for ((_, item) in held) {
@@ -2757,10 +2760,8 @@ open class SyncEngine(
                                 if (loneSurrogateWarned.add(item.resolved.path)) log.warn("Skipping cloud item {}: {}", item.resolved.path, surrogateIssue)
                                 continue
                             }
-                            // archive#401: single admit into the gather map. The page slice carries
-                            // the key's winner only when THIS page's item is it — a twin that
-                            // lost to an earlier page's winner was already reconciled on that
-                            // page, and the collision is recorded by the admit itself.
+                            // archive#401: single admit into the gather map. The page slice carries the key's winner only when
+                            // THIS page's item is it (a twin that lost to an earlier page's winner was already reconciled).
                             val winner = latestOfId.admitLatest(item.resolved)
                             if (winner.id == item.resolved.id) {
                                 slice[winner.path] = winner
@@ -2768,18 +2769,16 @@ open class SyncEngine(
                         }
                         reporter.onScanProgress("remote", changes.size)
                         // Pass the pre-fetched complete top-level set (page-order-independent).
-                        val page = PageSlice(slice, ids, stableRemoteTopLevelNames)
+                        val page = PageSlice(slice, ids, stableRemoteTopLevelNames, withdrawals.take())
                         if (deferUntilListing) deferredSlices.add(page) else pageChannel.send(page)
                     }
 
                     suspend fun ingestPage(page: DeltaPage) {
                         persistPendingCursor(page.cursor)
 
-                        // Resolve and stage the new page's items, keyed by remote id or, when the
-                        // item carries none, by path: a Dropbox tombstone has an empty id, and
-                        // keying it as "" would let the tombstones of one page overwrite each
-                        // other until only the last survives. A null resolve leaves the lookahead; a tombstone with no row still
-                        // ends its id's live occurrence: admitted, held, or earlier on this page.
+                        // Resolve and stage the new page's items, keyed by remote id or, when the item carries none, by path (a Dropbox
+                        // tombstone has an empty id; keyed "" the tombstones of one page would overwrite each other). A null
+                        // resolve leaves the lookahead; a tombstone with no row still ends its id's live occurrence: admitted, held, or earlier on this page.
                         val newItems = LinkedHashMap<String, HeldItem>()
                         for (item in page.items) {
                             val resolved = resolveItemPath(item) ?: run { latestOfId.unplacedTombstone(item, heldItems, newItems); continue }
