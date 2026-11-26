@@ -54,7 +54,7 @@ class ResetReportTest {
             for (i in 0 until 6_000) db.upsertEntry(row("/dead/f$i.txt", EntryStatus.DELETED))
             for (i in 0 until 100) db.upsertEntry(row("/live/f$i.txt", EntryStatus.EXISTS))
         }
-        db.upsertEntry(row("/pending.txt", EntryStatus.EXISTS, remoteId = "local:p1", hydrated = true))
+        db.upsertEntry(row("/pending.txt", EntryStatus.EXISTS, remoteId = null, hydrated = true))
         val scanId = db.beginScan(null)
         db.persistScanPage(
             scanId,

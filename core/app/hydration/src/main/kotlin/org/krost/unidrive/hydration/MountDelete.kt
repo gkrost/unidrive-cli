@@ -75,7 +75,7 @@ internal class MountDelete(
         if (!neverOnDrive) {
             // archive#402/#403: a row with a cloud id is deleted by that id: a lookup by path could reach a duplicate twin.
             // archive#1178: that also holds for a delete for good, where the wrong twin would be unrecoverable.
-            val remoteId = entryBefore?.remoteId?.takeUnless { it.startsWith("local:") }
+            val remoteId = entryBefore?.remoteId
             val remotePath = remotePathOf(path, entryBefore)
             val fileWindow = window?.takeIf { !permanent && entryBefore?.isFolder == false }
             if (remoteId != null && fileWindow != null) {
@@ -113,9 +113,11 @@ internal class MountDelete(
             db.markDeleted(path, mountDelete = true)
             // archive#87: a folder's rows below it are part of the same user delete — leave none of
             // them EXISTS, or the next fresh mount plans their re-download (the live 133k case).
-            db.markDescendantsDeleted(path, mountDelete = true)
-            kept.forEach { db.upsertEntry(it) }
-            kept.mapTo(HashSet()) { it.path }
+            // The kept rows are left out of the tombstones, not tombstoned and written again: a row that never reached the
+            // cloud keeps its key and its marks (never_submitted, upload_refused, name_block).
+            val keptPaths = kept.mapTo(HashSet()) { it.path }
+            db.markDescendantsDeleted(path, mountDelete = true, keep = keptPaths)
+            keptPaths
         }
     }
 

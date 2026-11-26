@@ -80,8 +80,8 @@ class StateDatabaseHotReadsTest {
         }
     }
 
-    // #841 (#744 finding 10, remainder): the three path-keyed `local:` tests match the synthetic as the rest of the code
-    // does (case-sensitive `startsWith("local:")`), so a cloud id that merely resembles it in another case stays a cloud id.
+    // #841 (#744 finding 10, remainder): the three path-keyed pending tests go by the `pending_upload` column (#845), so a cloud id that
+    // merely resembles the synthetic key (another case, or the same prefix) stays a cloud id.
 
     @Test
     fun `a pending row at a path held by a LOCAL-cased cloud id does not take that id as its synthetic`() {

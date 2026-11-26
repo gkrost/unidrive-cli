@@ -38,7 +38,7 @@ private const val PURGEABLE_TOMBSTONES =
         "AND last_synced GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*' AND substr(last_synced, 1, 19) < ? " +
         "AND (mount_deleted_at IS NULL OR substr(mount_deleted_at, 1, 19) < ?) " +
         "AND pending_local IS NULL AND edit_base IS NULL " +
-        "AND NOT (remote_id GLOB 'local:*' AND is_folder = 0 AND is_hydrated <> 0) " +
+        "AND NOT (pending_upload=1 AND is_folder = 0 AND is_hydrated <> 0) " +
         "AND NOT EXISTS (SELECT 1 FROM rename_intents r WHERE r.remote_id = sync_entries.remote_id " +
         "OR r.old_path = sync_entries.path OR r.new_path = sync_entries.path) " +
         "AND NOT EXISTS (SELECT 1 FROM replace_intents p WHERE p.source_remote_id = sync_entries.remote_id " +

@@ -614,10 +614,14 @@ class StateDatabase(
             }
         }
         createTables()
+        // Schema 5 (#845), one transaction that stamps itself; a new file has the column from createTables. One more probe, like
+        // the twenty createTables makes: files whose stamp is current but lack a column (the additive-column fixtures) still migrate.
+        val migrated = recordedVersion != null && PendingUploadMigration.needed(conn)
+        if (migrated) PendingUploadMigration.run(conn, ::stampSchemaVersion)
         dropMainFileStaging()
         // The stamp is a write in autocommit: the most common open — an up-to-date
         // file — must not write (see dropMainFileStaging). Only an unstamped or older file is stamped.
-        if (recordedVersion != SCHEMA_VERSION) stampSchemaVersion()
+        if (!migrated && recordedVersion != SCHEMA_VERSION) stampSchemaVersion()
     }
 
     // The staged scan used to live in this file (a `scan_staging` table, the checkpoint in the `scan_state` keys of
@@ -692,7 +696,8 @@ class StateDatabase(
                     hint_modified        TEXT,
                     hint_updated_at      TEXT,
                     changed_by           TEXT,
-                    changed_at_ms        INTEGER
+                    changed_at_ms        INTEGER,
+                    pending_upload       INTEGER NOT NULL DEFAULT 0
                 )
             """,
             )
@@ -705,6 +710,11 @@ class StateDatabase(
                     ON sync_entries(path) WHERE status='EXISTS'
             """,
             )
+            // gkrost/unidrive-cli#845: the pending rows, by path. A schema 4 file gets the column and this index from
+            // PendingUploadMigration; until then it has no column, so no index here.
+            if (columnExists("sync_entries", "pending_upload")) {
+                stmt.executeUpdate("CREATE INDEX IF NOT EXISTS idx_sync_entries_pending_upload ON sync_entries(path) WHERE status='EXISTS' AND pending_upload=1")
+            }
             // No query asks for the children of a parent_uuid (listings go by path, see listDirectChildren), and the
             // column is NULL on the alive rows of a large drive: the (parent_uuid, status) index cost every upsert a
             // write and 7 MB on a 372,000-row file for nothing (archive#951). An older file loses it at its next open.
@@ -731,63 +741,7 @@ class StateDatabase(
                 )
             """,
             )
-            stmt.executeUpdate(
-                """
-                CREATE TABLE IF NOT EXISTS pin_rules (
-                    id      INTEGER PRIMARY KEY AUTOINCREMENT,
-                    pattern TEXT NOT NULL UNIQUE,
-                    pinned  INTEGER NOT NULL
-                )
-            """,
-            )
-            // archive#1040 M4: the mount's renames between their cloud move and their cache copy's move ([recordRenameIntent]). A
-            // table of its own, created where it is missing: no schema_version bump, an older file simply has no record.
-            stmt.executeUpdate(
-                """
-                CREATE TABLE IF NOT EXISTS rename_intents (
-                    old_path  TEXT PRIMARY KEY,
-                    new_path  TEXT NOT NULL,
-                    remote_id TEXT,
-                    ghost     INTEGER NOT NULL DEFAULT 0
-                )
-            """,
-            )
-            // gkrost/unidrive-cli#311: the mount's replace-renames between parking the old destination and deleting it
-            // ([recordReplaceIntent]). A table of its own, additive like rename_intents: no schema_version bump, an older file
-            // simply has no record.
-            stmt.executeUpdate(
-                """
-                CREATE TABLE IF NOT EXISTS replace_intents (
-                    parking_path     TEXT PRIMARY KEY,
-                    source_path      TEXT NOT NULL,
-                    dest_path        TEXT NOT NULL,
-                    source_remote_id TEXT,
-                    dest_remote_id   TEXT
-                )
-                """,
-            )
-            // gkrost/unidrive-cli#24: the spelling a client used first for a name, so the hydration verbs' name_clash
-            // guard survives a daemon restart. A table of its own, additive like rename_intents: no schema_version bump,
-            // an older file simply has no record and the first spelling a client names wins once more.
-            stmt.executeUpdate(
-                """
-                CREATE TABLE IF NOT EXISTS name_spellings (
-                    nfc_path TEXT PRIMARY KEY,
-                    raw_path TEXT NOT NULL
-                )
-                """,
-            )
-            // gkrost/unidrive-cli#437: the client's handle id of each upload that has not ended, so the replay at the next start
-            // reports under it ([recordUploadHandle]). A table of its own, additive like rename_intents: no schema_version bump,
-            // an older file simply has no record and its replays report under the engine's own ids, as before.
-            stmt.executeUpdate(
-                """
-                CREATE TABLE IF NOT EXISTS upload_handles (
-                    path      TEXT PRIMARY KEY,
-                    handle_id TEXT NOT NULL
-                )
-                """,
-            )
+            createSideTables(stmt)
             // Permanent-failure quarantine columns on `sync_entries`: an additive
             // column with no schema_version bump because the columns carry safe
             // defaults (0 / NULL) so any pre-quarantine row reads as
@@ -1146,7 +1100,7 @@ class StateDatabase(
             // being silently re-keyed (e.g. an incremental delta carrying only the
             // other of two same-named items) — WARN so the row flip is visible.
             val storedId = entry.remoteId ?: storedRemoteIdFor(entry)
-            val evictedIds = mutableListOf<String>()
+            val evictedIds = linkedMapOf<String, Boolean>() // id -> was a pending row
             // The same lookup also says whether the row this one replaces (the same remote id) is alive: the alive
             // count changes by what the new row is minus what the old one was (see below).
             var wasAlive = false
@@ -1157,7 +1111,7 @@ class StateDatabase(
                 stmt.executeQuery().use { rs ->
                     while (rs.next()) {
                         val id = rs.getString(1)
-                        if (id == storedId) wasAlive = rs.getString(2) == EntryStatus.EXISTS.name else evictedIds.add(id)
+                        if (id == storedId) wasAlive = rs.getString(2) == EntryStatus.EXISTS.name else evictedIds[id] = rs.getInt(3) == 1
                     }
                 }
             }
@@ -1170,16 +1124,7 @@ class StateDatabase(
                         stmt.setString(2, storedId)
                         countAlive(-stmt.executeUpdate())
                     }
-                for (evicted in evictedIds) {
-                    if (evicted.startsWith("local:")) continue
-                    log.warn(
-                        "#401: upsert of path {} evicted alive row remote_id={} (incoming remote_id={}) — " +
-                            "a tracked cloud item was re-keyed to a different remote id at the same path",
-                        entry.path,
-                        evicted,
-                        storedId,
-                    )
-                }
+                log.warnRekeyed(entry.path, storedId, evictedIds)
             }
             cached(if (keepMarks) UPSERT_ENTRY_KEEPING_MARKS_SQL else UPSERT_ENTRY_SQL) { stmt ->
                 stmt.setString(1, storedId)
@@ -1240,6 +1185,8 @@ class StateDatabase(
                     stmt.setString(34, storedId)
                     stmt.setString(35, entry.path)
                 }
+                // The row never reached the cloud: the column says so, whatever the synthetic key looks like.
+                stmt.setInt(if (keepMarks) 36 else 32, if (entry.remoteId == null) 1 else 0)
                 stmt.executeUpdate()
             }
             // INSERT OR REPLACE swapped the row of this remote id (nothing, a tombstone or an alive row) for the new one.
@@ -1258,13 +1205,13 @@ class StateDatabase(
         conn
             .prepareStatement(
                 "SELECT remote_id FROM sync_entries WHERE path=? AND status='EXISTS' " +
-                    "AND remote_id GLOB 'local:*' LIMIT 1",
+                    "AND pending_upload=1 LIMIT 1",
             ).use { stmt ->
                 stmt.setString(1, path)
                 val rs = stmt.executeQuery()
                 if (rs.next()) return rs.getString(1)
             }
-        return "local:${UUID.randomUUID()}"
+        return "${PendingUploadKeys.PREFIX}${UUID.randomUUID()}"
     }
 
     /** For upsertEntry's collision DELETE step — get the storage-layer key without minting one. */
@@ -1519,8 +1466,8 @@ class StateDatabase(
                     SELECT
                       COALESCE(SUM(CASE WHEN is_folder=0 AND is_hydrated=0 THEN 1 END), 0),
                       COALESCE(SUM(CASE WHEN is_folder=0 THEN remote_size END), 0),
-                      COALESCE(SUM(CASE WHEN is_folder=0 AND is_hydrated=1 AND remote_id GLOB 'local:*' THEN COALESCE(local_size, 0) END), 0),
-                      COALESCE(SUM(CASE WHEN is_folder=0 AND is_hydrated=1 AND NOT (remote_id GLOB 'local:*') THEN COALESCE(local_size, 0) END), 0)
+                      COALESCE(SUM(CASE WHEN is_folder=0 AND is_hydrated=1 AND pending_upload=1 THEN COALESCE(local_size, 0) END), 0),
+                      COALESCE(SUM(CASE WHEN is_folder=0 AND is_hydrated=1 AND pending_upload=0 THEN COALESCE(local_size, 0) END), 0)
                     FROM alive_entries
                     """.trimIndent(),
                 ).use { rs ->
@@ -1586,7 +1533,7 @@ class StateDatabase(
         private val rs: ResultSet,
     ) {
         /** The remote id, null for a row that never reached the cloud. */
-        val remoteId: String? get() = rs.getString("remote_id")?.takeUnless { it.startsWith("local:") }
+        val remoteId: String? get() = rs.getString("remote_id")?.takeUnless { rs.getInt("pending_upload") == 1 }
 
         val path: String get() = rs.getString("path")
 
@@ -1681,7 +1628,7 @@ class StateDatabase(
             c
                 .prepareStatement(
                     "SELECT 1 FROM alive_entries WHERE $PARENT_DIR_OF_PATH = ? " +
-                        "AND remote_id IS NOT NULL AND remote_id NOT GLOB 'local:*' LIMIT 1",
+                        "AND remote_id IS NOT NULL AND pending_upload=0 LIMIT 1",
                 ).use { stmt ->
                     stmt.setString(1, base)
                     return stmt.executeQuery().next()
@@ -1785,7 +1732,7 @@ class StateDatabase(
             val prefix = PathNormalizer.nfc(pathRaw).trimEnd('/') + "/"
             c
                 .prepareStatement(
-                    "SELECT 1 FROM alive_entries WHERE ${underPrefix(prefix)} AND remote_id IS NOT NULL AND remote_id NOT GLOB 'local:*' LIMIT 1",
+                    "SELECT 1 FROM alive_entries WHERE ${underPrefix(prefix)} AND remote_id IS NOT NULL AND pending_upload=0 LIMIT 1",
                 ).use { stmt ->
                     stmt.bindPrefix(1, prefix)
                     return stmt.executeQuery().next()
@@ -1848,13 +1795,15 @@ class StateDatabase(
     fun markDeleted(path: String, mountDelete: Boolean = false) {
         locked("markDeleted") {
             val existing = getEntry(path) ?: return
+            // A row that never reached the cloud has nothing to tombstone (see deleteEntry): it goes, with its marks.
+            if (existing.remoteId == null) return deleteEntry(path)
             val deletedAt = java.time.Instant.now()
             // #744 finding 5: the tombstone and its mount_deleted_at stamp land together or not at all.
             batch {
                 upsertEntry(existing.copy(status = EntryStatus.DELETED, lastSynced = deletedAt))
                 if (mountDelete) {
                     conn.prepareStatement(
-                        "UPDATE sync_entries SET mount_deleted_at = ? WHERE path = ? AND remote_id IS ? AND status = 'DELETED'",
+                        "UPDATE sync_entries SET mount_deleted_at = ? WHERE path = ? AND pending_upload = 0 AND remote_id = ? AND status = 'DELETED'",
                     ).use { stmt ->
                         stmt.setString(1, deletedAt.toString())
                         stmt.setString(2, existing.path)
@@ -1933,7 +1882,7 @@ class StateDatabase(
         val deleted = mutableListOf<String>()
         val at = java.time.Instant.now().toString()
         val guard = if (expectedRows == null) "" else
-            " AND remote_id IS ? AND remote_path IS ? AND edit_base IS NULL AND is_hydrated = ? AND pending_local IS NULL"
+            " AND pending_upload = 0 AND remote_id = ? AND remote_path IS ? AND edit_base IS NULL AND is_hydrated = ? AND pending_local IS NULL"
         for (chunk in paths.chunked(chunkSize)) {
             locked("markDeletedChunked") {
                 batch {
@@ -1942,7 +1891,7 @@ class StateDatabase(
                         .use { stmt ->
                             for (raw in chunk) {
                                 val expected = expectedRows?.get(raw)
-                                if (expectedRows != null && (expected == null || expected.editBase != null)) continue
+                                if (expectedRows != null && !flippable(expected)) continue
                                 stmt.setString(1, at)
                                 stmt.setString(2, PathNormalizer.nfc(raw))
                                 if (expected != null) {
@@ -1972,7 +1921,7 @@ class StateDatabase(
      * no-op exactly as for the folder's own row. One UPDATE, not one call per row: state.db carries
      * hundreds of thousands of rows and this runs inside the delete's write.
      */
-    fun markDescendantsDeleted(folderPathRaw: String, mountDelete: Boolean = false): Int =
+    fun markDescendantsDeleted(folderPathRaw: String, mountDelete: Boolean = false, keep: Collection<String> = emptyList()): Int =
         locked("markDescendantsDeleted") {
             beginWrite()
             val folder = PathNormalizer.nfc(folderPathRaw)
@@ -1983,18 +1932,29 @@ class StateDatabase(
             // ["<folder>/", "<folder>0") — '0' is the character after '/' — and the range can use the
             // alive-path index.
             val upperBound = prefixUpperBound(prefix)
+            // [keep] paths are left as they are (the mount keeps rows of unsent edits below a deleted folder).
+            val kept = keepPathsJson(keep.map { PathNormalizer.nfc(it) })
+            val inRange = "status = 'EXISTS' AND path >= ? AND path < ? AND path NOT IN (SELECT value FROM json_each(?))"
+            // Rows that never reached the cloud have nothing to tombstone (see deleteEntry); the rest are tombstoned.
+            val dropped =
+                conn.prepareStatement("DELETE FROM sync_entries WHERE pending_upload = 1 AND $inRange").use { stmt ->
+                    stmt.setString(1, prefix)
+                    stmt.setString(2, upperBound)
+                    stmt.setString(3, kept)
+                    stmt.executeUpdate()
+                }
             conn.prepareStatement(
-                "UPDATE sync_entries SET status = 'DELETED', last_synced = ?, mount_deleted_at = ? " +
-                    "WHERE status = 'EXISTS' AND path >= ? AND path < ?",
+                "UPDATE sync_entries SET status = 'DELETED', last_synced = ?, mount_deleted_at = ? WHERE pending_upload = 0 AND $inRange",
             ).use { stmt ->
                 val deletedAt = java.time.Instant.now().toString()
                 stmt.setString(1, deletedAt)
                 stmt.setString(2, deletedAt.takeIf { mountDelete })
                 stmt.setString(3, prefix)
                 stmt.setString(4, upperBound)
+                stmt.setString(5, kept)
                 val tombstoned = stmt.executeUpdate()
-                countAlive(-tombstoned)
-                return tombstoned
+                countAlive(-tombstoned - dropped)
+                return tombstoned + dropped
             }
         }
 
@@ -2044,11 +2004,10 @@ class StateDatabase(
      */
     fun setStatusTrashed(remoteId: String): Boolean =
         locked("setStatusTrashed") {
-            if (remoteId.startsWith("local:")) return false // never trash a synthetic
             beginWrite()
             conn
                 .prepareStatement(
-                    "UPDATE sync_entries SET status='TRASHED', pending_local=NULL WHERE remote_id=? AND status='EXISTS'",
+                    "UPDATE sync_entries SET status='TRASHED', pending_local=NULL WHERE remote_id=? AND status='EXISTS' AND pending_upload=0",
                 ).use { stmt ->
                     stmt.setString(1, remoteId)
                     val flipped = stmt.executeUpdate()
@@ -2190,7 +2149,7 @@ class StateDatabase(
         locked("markUploadRefused") {
             beginWrite()
             val path = PathNormalizer.nfc(pathRaw)
-            val takesStamp = if (keepCloudBaseline) "remote_id GLOB 'local:*'" else "1"
+            val takesStamp = if (keepCloudBaseline) "pending_upload=1" else "1"
             conn
                 .prepareStatement(
                     "UPDATE sync_entries SET upload_refused=?, " +
@@ -2240,7 +2199,7 @@ class StateDatabase(
             conn
                 .prepareStatement(
                     "UPDATE sync_entries SET edit_base=? WHERE path=? AND status='EXISTS' AND is_folder=0 " +
-                        "AND remote_id NOT GLOB 'local:*' AND edit_base IS NULL",
+                        "AND pending_upload=0 AND edit_base IS NULL",
                 ).use { stmt ->
                     stmt.setString(1, base)
                     stmt.setString(2, path)
@@ -2561,7 +2520,7 @@ class StateDatabase(
                     val rs =
                         stmt.executeQuery(
                             "SELECT path, remote_path, remote_id FROM alive_entries " +
-                                "WHERE remote_path IS NOT NULL AND remote_path <> path AND remote_id IS NOT NULL",
+                                "WHERE remote_path IS NOT NULL AND remote_path <> path AND pending_upload = 0",
                         )
                     while (rs.next()) out += Triple(rs.getString(1), rs.getString(2), rs.getString(3))
                 }
@@ -2654,7 +2613,7 @@ class StateDatabase(
             conn
                 .prepareStatement(
                     "UPDATE sync_entries SET never_submitted=1 " +
-                        "WHERE path=? AND status='EXISTS' AND is_folder=0 AND remote_id GLOB 'local:*'",
+                        "WHERE path=? AND status='EXISTS' AND is_folder=0 AND pending_upload=1",
                 ).use { stmt ->
                     stmt.setString(1, path)
                     stmt.executeUpdate() == 1
@@ -2707,7 +2666,7 @@ class StateDatabase(
             c.createStatement().use { stmt ->
                 val rs = stmt.executeQuery(
                     "SELECT COUNT(*) FROM sync_entries WHERE status='EXISTS' " +
-                        "AND remote_id GLOB 'local:*' AND last_error_at IS NOT NULL",
+                        "AND pending_upload=1 AND last_error_at IS NOT NULL",
                 )
                 rs.next()
                 return rs.getInt(1)
@@ -2763,12 +2722,10 @@ class StateDatabase(
      * first existed only on this machine) and whether an attempt failed. Unordered; the caller aggregates.
      */
     /**
-     * One row awaiting upload with what archive#753's recovery needs: the remote id (a real one is never dropped),
-     * the local size (a zero size with no cache content is the stranded shape) and the two stamps.
+     * One row awaiting upload with what archive#753's recovery needs: the local size (a zero size with no cache content is the stranded shape) and the two stamps.
      */
     data class PendingRowDetail(
         val path: String,
-        val remoteId: String,
         val localSize: Long?,
         val lastSynced: Instant,
         val lastErrorAt: Instant?,
@@ -2779,15 +2736,14 @@ class StateDatabase(
         read("pendingRowDetails") { c ->
             val out = mutableListOf<PendingRowDetail>()
             c.createStatement().use { stmt ->
-                val rs = stmt.executeQuery("SELECT path, remote_id, local_size, last_synced, last_error_at FROM sync_entries WHERE $PENDING_UPLOAD_ROWS")
+                val rs = stmt.executeQuery("SELECT path, local_size, last_synced, last_error_at FROM sync_entries WHERE $PENDING_UPLOAD_ROWS")
                 while (rs.next()) {
                     out +=
                         PendingRowDetail(
                             path = rs.getString(1),
-                            remoteId = rs.getString(2),
-                            localSize = rs.getObject(3)?.let { (it as Number).toLong() },
-                            lastSynced = IsoInstants.parse(rs.getString(4)),
-                            lastErrorAt = rs.getString(5)?.let { IsoInstants.parse(it) },
+                            localSize = rs.getObject(2)?.let { (it as Number).toLong() },
+                            lastSynced = IsoInstants.parse(rs.getString(3)),
+                            lastErrorAt = rs.getString(4)?.let { IsoInstants.parse(it) },
                         )
                 }
             }
@@ -2823,7 +2779,7 @@ class StateDatabase(
             beginWrite() // windows#454 item 11: same reasoning as deleteLocalPendingRow
             conn
                 .prepareStatement(
-                    "DELETE FROM sync_entries WHERE path=? AND status='EXISTS' AND remote_id GLOB 'local:*' AND is_folder=0 AND is_hydrated=0",
+                    "DELETE FROM sync_entries WHERE path=? AND status='EXISTS' AND pending_upload=1 AND is_folder=0 AND is_hydrated=0",
                 ).use { stmt ->
                     stmt.setString(1, PathNormalizer.nfc(path))
                     val deleted = stmt.executeUpdate()
@@ -2889,13 +2845,12 @@ class StateDatabase(
         unhydrate: Boolean = false,
     ): Boolean =
         locked("setStatusExists") {
-            if (remoteId.startsWith("local:")) return false
             beginWrite()
             val hydration = if (unhydrate) ", is_hydrated=0" else ""
             conn
                 .prepareStatement(
                     "UPDATE sync_entries SET status='EXISTS', pending_local=NULL$hydration WHERE remote_id=? AND status='TRASHED' " +
-                        "AND NOT EXISTS (SELECT 1 FROM sync_entries o WHERE o.path = sync_entries.path AND o.status='EXISTS')",
+                        "AND pending_upload=0 AND NOT EXISTS (SELECT 1 FROM sync_entries o WHERE o.path = sync_entries.path AND o.status='EXISTS')",
                 ).use { stmt ->
                     stmt.setString(1, remoteId)
                     val flipped = stmt.executeUpdate()
@@ -3612,9 +3567,9 @@ class StateDatabase(
 
     private fun ResultSet.toSyncEntry(): SyncEntry {
         val storedId = getString("remote_id")
-        // Translate the storage-layer synthetic back to Kotlin's nullable
-        // `remoteId` contract — callers never see `local:*` strings.
-        val surfacedId = if (storedId != null && storedId.startsWith("local:")) null else storedId
+        // The storage-layer synthetic key reads back as Kotlin's null `remoteId`: the column says pending, not the key's
+        // spelling (an S3 key may start with `local:`).
+        val surfacedId = if (getInt("pending_upload") == 1) null else storedId
         return SyncEntry(
             path = getString("path"),
             remotePath = getString("remote_path"),
@@ -3705,7 +3660,7 @@ class StateDatabase(
             read("recentlyDeletedRemoteIds") { c ->
                 val bound = since.truncatedTo(java.time.temporal.ChronoUnit.SECONDS).minusSeconds(1).toString()
                 c.prepareStatement(
-                    "SELECT remote_id FROM sync_entries WHERE status = 'DELETED' AND remote_id IS NOT NULL AND mount_deleted_at >= ?",
+                    "SELECT remote_id FROM sync_entries WHERE status = 'DELETED' AND pending_upload = 0 AND mount_deleted_at >= ?",
                 ).use { stmt ->
                     stmt.setString(1, bound)
                     stmt.executeQuery().use { rs ->
@@ -3719,7 +3674,7 @@ class StateDatabase(
         /** Lookup by remote_id across all statuses — needed for the un-trash decision path. */
         fun getEntryByRemoteIdAnyStatus(remoteId: String): SyncEntry? =
             read("getEntryByRemoteIdAnyStatus") { c ->
-                c.prepareStatement("SELECT * FROM sync_entries WHERE remote_id = ?").use { stmt ->
+                c.prepareStatement("SELECT * FROM sync_entries WHERE remote_id = ? AND pending_upload = 0").use { stmt ->
                     stmt.setString(1, remoteId)
                     stmt.executeQuery().use { rs -> if (rs.next()) rs.toSyncEntry() else null }
                 }
@@ -3766,11 +3721,10 @@ class StateDatabase(
 
         /**
          * The WHERE clause that selects the alive file rows awaiting upload; [pendingUploadPaths] and
-         * [resetKeepingPending] share it. GLOB, not LIKE (archive#552): it is case-sensitive like the
-         * `startsWith("local:")` the rest of the code uses for the synthetic, and it can walk the remote_id index
-         * from 'local:' on instead of every row.
+         * [resetKeepingPending] share it. the `pending_upload` column (gkrost/unidrive-cli#845), not the spelling
+         * of the key: an S3 key may start with `local:`. `idx_sync_entries_pending_upload` serves it without a table walk.
          */
-        private const val PENDING_UPLOAD_ROWS = "status='EXISTS' AND remote_id GLOB 'local:*' AND is_folder=0 AND is_hydrated<>0"
+        private const val PENDING_UPLOAD_ROWS = "status='EXISTS' AND pending_upload=1 AND is_folder=0 AND is_hydrated<>0"
 
         /**
          * The rows blocked by name, ordered by path. `ORDER BY path` alone lets SQLite walk the whole path index to
@@ -3812,9 +3766,9 @@ class StateDatabase(
 
         // The SQL of the calls that go through [cached]; the text is the cache key.
         private const val GET_ENTRY_SQL = "SELECT * FROM alive_entries WHERE path = ?"
-        private const val GET_ENTRY_BY_REMOTE_ID_SQL = "SELECT * FROM alive_entries WHERE remote_id = ?"
+        private const val GET_ENTRY_BY_REMOTE_ID_SQL = "SELECT * FROM alive_entries WHERE remote_id = ? AND pending_upload = 0"
         private val ENTRIES_BY_PATHS_SQL = inLookupSql("SELECT * FROM alive_entries WHERE path")
-        private val ENTRIES_BY_REMOTE_IDS_SQL = inLookupSql("SELECT * FROM alive_entries WHERE remote_id")
+        private val ENTRIES_BY_REMOTE_IDS_SQL = inLookupSql("SELECT * FROM alive_entries WHERE pending_upload = 0 AND remote_id")
         private const val NAME_BLOCK_SQL = "SELECT name_block FROM alive_entries WHERE path=?"
         private const val COUNT_NAME_BLOCKED_SQL = "SELECT COUNT(*) FROM alive_entries WHERE name_block IS NOT NULL AND substr(name_block, 1, length(?)) = ?"
         private const val BLOCKED_ANCESTOR_SQL =
@@ -3828,8 +3782,8 @@ class StateDatabase(
         // are evicted, see upsertEntry), and the row under its own remote id, if any, with its status. Two seeks of two
         // indexes; `path = ? AND ... OR remote_id = ?` would not promise that.
         private const val UPSERT_PROBE_SQL =
-            "SELECT remote_id, status FROM sync_entries WHERE path=? AND status='EXISTS' AND remote_id<>? " +
-                "UNION ALL SELECT remote_id, status FROM sync_entries WHERE remote_id=?"
+            "SELECT remote_id, status, pending_upload FROM sync_entries WHERE path=? AND status='EXISTS' AND remote_id<>? " +
+                "UNION ALL SELECT remote_id, status, pending_upload FROM sync_entries WHERE remote_id=?"
         private const val UPSERT_ENTRY_SQL =
             "INSERT OR REPLACE INTO sync_entries " +
                 "(remote_id, parent_uuid, path, remote_path, remote_hash, remote_size, remote_modified, " +
@@ -3837,9 +3791,9 @@ class StateDatabase(
                 "download_quarantined, last_error_at, local_hash, cache_backed, edit_base, remote_version, remote_content_id, " +
                 "hint_file_id, hint_bucket, hint_encrypt_version, hint_size, hint_modified, hint_updated_at, " +
                 "changed_by, changed_at_ms, " +
-                "pending_local) " +
+                "pending_local, pending_upload) " +
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
-                "(SELECT pending_local FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'))"
+                "(SELECT pending_local FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'), ?)"
 
         // The same, with the refusal stamp and the name block of the row it replaces carried over (see upsertEntry).
         // pending_local is carried here too: a same-path merge must not drop a remote change the next delta will not send.
@@ -3850,10 +3804,10 @@ class StateDatabase(
                 "download_quarantined, last_error_at, local_hash, cache_backed, edit_base, remote_version, remote_content_id, " +
                 "hint_file_id, hint_bucket, hint_encrypt_version, hint_size, hint_modified, hint_updated_at, " +
                 "changed_by, changed_at_ms, " +
-                "pending_local, upload_refused, name_block) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
+                "pending_local, upload_refused, name_block, pending_upload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
                 "(SELECT pending_local FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'), " +
                 "(SELECT upload_refused FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'), " +
-                "(SELECT name_block FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'))"
+                "(SELECT name_block FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'), ?)"
 
         /** The download hint's columns (gkrost/unidrive-cli#414), moved as one tuple wherever the row is written. */
         private val HINT_COLUMNS =
@@ -3887,7 +3841,7 @@ class StateDatabase(
         private const val FOLDERS_WITHOUT_CONTENT_IDS =
             "SELECT DISTINCT $PARENT_DIR_OF_PATH AS dir FROM sync_entries " +
                 "WHERE status='EXISTS' AND $PARENT_DIR_OF_PATH > ? AND is_folder=0 AND remote_content_id IS NULL " +
-                "AND remote_id IS NOT NULL AND remote_id NOT GLOB 'local:*' ORDER BY dir LIMIT ?"
+                "AND remote_id IS NOT NULL AND pending_upload=0 ORDER BY dir LIMIT ?"
 
         /**
          * The lookup by effective remote path (`COALESCE(remote_path, path) = ?`) as two seeks, both parameters the remote
@@ -4034,7 +3988,7 @@ class StateDatabase(
         // seeds its hint from — and a build that knows 3 resets them on every upsert, so the row's download would pay the
         // metadata call again. A build that knows 3 refuses a file stamped 4; a file at 3 gets the columns it lacks and is
         // stamped 4, its rows kept.
-        internal const val SCHEMA_VERSION: Int = 4
+        internal const val SCHEMA_VERSION: Int = 5 // 5 (#845): pending_upload, see PendingUploadMigration
         internal const val SCHEMA_VERSION_KEY: String = "schema_version"
 
         // The keys of the resumable-scan checkpoint, read and written through
