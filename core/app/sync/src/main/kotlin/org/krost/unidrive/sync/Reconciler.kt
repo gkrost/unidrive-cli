@@ -612,10 +612,41 @@ class Reconciler(
                 actions.add(SyncAction.DeleteLocal(path, remoteId = remoteItem.id))
             }
         }
+        detectSliceRenames(actions, pageRemoteLocal, localChanges, alias)
         // archive#309: a streamed download starts before the scan ends, so a case twin's download is held back here already.
         dropDownloadsOntoLocalCaseTwins(actions, localChanges)
         dropStreamedDownloadsOntoCaseTwinsOnDisk(actions, entryByPath)
         return actions
+    }
+
+    /**
+     * gkrost/unidrive-cli#845: a streamed slice's download is dispatched before the scan ends, so the rename of a tracked
+     * item must turn into a move here, not at scan-end ([finalizeStreaming]): by then the bytes are fetched anew at the new
+     * path, the old path's file has no row, and the next pass uploads it as a new file. Only a rename that leaves the bytes
+     * as they are is taken here (one batched read for the slice's downloads and placeholders); a rename with an edit
+     * still streams its download and is paired at scan-end, as before.
+     */
+    private fun detectSliceRenames(
+        actions: MutableList<SyncAction>,
+        pageRemoteLocal: Map<String, CloudItem>,
+        localChanges: Map<String, ChangeState>,
+        alias: AliasContext,
+    ) {
+        val planned = HashMap<String, CloudItem>()
+        for (action in actions) {
+            val item =
+                when (action) {
+                    is SyncAction.DownloadContent -> action.remoteItem
+                    is SyncAction.CreatePlaceholder -> action.remoteItem
+                    else -> null
+                }
+            if (item != null && item.id.isNotEmpty()) planned[item.id] = item
+        }
+        if (planned.isEmpty()) return
+        val entries = db.getEntriesByRemoteIds(planned.keys).filter { (id, entry) -> !renamedContentChanged(planned.getValue(id), entry) }
+        if (entries.isEmpty()) return
+        val remoteChanges = if (alias.isEmpty) pageRemoteLocal else pageRemoteLocal.entries.associate { (k, v) -> alias.localToRemote(k) to v }
+        detectRemoteRenames(actions, remoteChanges, entries, localChanges, alias)
     }
 
     /**

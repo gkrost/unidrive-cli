@@ -15,7 +15,6 @@ import org.krost.unidrive.xtra.XtraKeyManager
 import org.krost.unidrive.xtra.XtraTinkKeyStore
 import java.nio.file.Files
 import java.nio.file.Path
-import kotlin.system.exitProcess
 
 /**
  * The X-tra layer (client-side encryption, config key `xtra_encryption`): every provider this CLI builds is
@@ -34,16 +33,19 @@ internal fun Main.wrapWithXtra(
     val name = rp?.xtra_algorithm?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: XtraAlgorithm.AES_GCM.configName
     val algorithm = XtraAlgorithm.named(name) ?: run {
         val known = XtraAlgorithm.entries.joinToString(", ") { it.configName }
-        System.err.println("Error: unknown xtra_algorithm \"$name\" (known: $known).")
-        exitProcess(1)
+        val line = "unknown xtra_algorithm \"$name\" (known: $known)."
+        refuse("configuration_error", line, listOf("Error: $line"))
     }
     // The key file comes from the same table `profile set` guards with. It never self-generates on the first
     // content operation (a root secret must not appear silently); it must exist, or the profile refuses to run.
     val keyPath = tokenPath.parent.resolve(algorithm.keyFileName)
     if (!Files.exists(keyPath)) {
-        System.err.println("Error: a profile sets xtra_encryption with xtra_algorithm = \"$name\" but $keyPath does not exist.")
-        System.err.println("Create it first: ${algorithm.initCommand}")
-        exitProcess(1)
+        val line = "a profile sets xtra_encryption with xtra_algorithm = \"$name\" but $keyPath does not exist."
+        refuse(
+            "xtra_key_missing",
+            "$line Create it first: ${algorithm.initCommand}",
+            listOf("Error: $line", "Create it first: ${algorithm.initCommand}"),
+        )
     }
     val strategy =
         when (algorithm) {
@@ -62,7 +64,7 @@ internal fun Main.wrapWithXtra(
  * credential, the unlocked vault's `.xtra` entry (released by `vault.unlock`, issue#796), the unlock
  * helper (secret kind `xtra`), then a console prompt.
  */
-internal fun Main.xtraPassphrase(): CharArray = xtraPassphrase(PassphraseSources())
+internal fun Main.xtraPassphrase(): CharArray = xtraPassphrase(effectivePassphraseSources())
 
 internal fun Main.xtraPassphrase(sources: PassphraseSources): CharArray =
     when (val resolution = resolvePassphrase(
@@ -85,7 +87,13 @@ internal fun Main.xtraPassphrase(sources: PassphraseSources): CharArray =
     )) {
         is PassphraseResolution.Secret -> resolution.chars
         is PassphraseResolution.Refused ->
-            if (resolution.consoleWasPresent) {
+            if (isNonInteractive) {
+                throw LifecycleError(
+                    "xtra_passphrase_required",
+                    "xtra_encryption is on but no passphrase is available (${resolution.detail}); set UNIDRIVE_XTRA_PASS, " +
+                        "a systemd credential named unidrive-xtra-pass, `unidrive vault xtra-set`, or [general] unlock_helper",
+                )
+            } else if (resolution.consoleWasPresent) {
                 System.err.println("Error: could not read passphrase.")
                 error("no X-tra passphrase available")
             } else if (daemonVaultLocked) {
