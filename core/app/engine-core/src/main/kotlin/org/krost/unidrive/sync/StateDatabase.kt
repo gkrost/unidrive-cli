@@ -2735,6 +2735,17 @@ class StateDatabase(
             return out
         }
 
+    /** gkrost/unidrive-cli#951: the alive rows whose upload the provider refused `parent_gone` for the cloud folder [folder]. */
+    fun pathsRefusedParentGone(folder: String): List<String> =
+        read("pathsRefusedParentGone") { c ->
+            val suffix = "|parent_gone: $folder"
+            c.prepareStatement("SELECT path, upload_refused FROM alive_entries WHERE instr(upload_refused, ?) > 0 ORDER BY path").use { stmt ->
+                stmt.setString(1, suffix)
+                val rs = stmt.executeQuery()
+                return generateSequence { if (rs.next()) rs.getString(1) to rs.getString(2) else null }.filter { it.second.endsWith(suffix) }.map { it.first }.toList()
+            }
+        }
+
     /**
      * One row awaiting upload, as [pendingUploadRows] reports it: when it was written ([lastSynced]) and
      * when an upload of it last failed ([lastErrorAt], null = no attempt has failed since).

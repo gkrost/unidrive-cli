@@ -67,6 +67,14 @@ class RemoteEnumeration(
         var onCacheCopyDropped: (path: String) -> Unit = {}
 
         /**
+         * gkrost/unidrive-cli#951: told the paths a listing's merge or reap changed in state.db (the set the view is invalidated
+         * with), once per enumeration that changed any. A folder among them that is alive is a folder the listing has just seen
+         * (new, or different from the row). Late-bound by the hydration layer; a no-op until then.
+         */
+        @Volatile
+        var onPathsChanged: (paths: Set<String>) -> Unit = {}
+
+        /**
          * Whether the row at [path] ([row] is its alive row, if any) may hold the only copy of an edit that has
          * not reached the cloud, so that nothing may drop the row or its cache copy (archive#301):
          * - an upload of the path is queued or in flight ([uploadInFlight]);
@@ -525,7 +533,7 @@ class RemoteEnumeration(
         // import (app:hydration depends on app:sync, not vice versa).
         val upserted = upsertedViewPaths.size
         if (upserted > 0 || reaped > 0) {
-            val changedPaths: Set<String> = upsertedViewPaths + reapedViewPaths
+            val changedPaths: Set<String> = (upsertedViewPaths + reapedViewPaths).also { reapGuards.onPathsChanged(it) }
             val tally = FileEventTally()
             for (path in changedPaths) {
                 if (tally.mayLogRemoteChange()) {

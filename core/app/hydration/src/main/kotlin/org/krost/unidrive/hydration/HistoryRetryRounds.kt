@@ -55,7 +55,7 @@ internal class HistoryRetryRounds(
                     val entry = impl.stateDb.getEntry(failedPath) ?: return@launch // deleted or renamed away: nothing left to upload at this path
                     if (!waitingForUpload(entry) || impl.isUploading(failedPath) || !impl.replayable(failedPath)) return@launch
                     val cachePath = impl.mount.resolveCachePath(failedPath)
-                    if (impl.refusedEarlier(failedPath, cachePath, engineOffer = true) != null) return@launch
+                    if (impl.refusedEarlier(failedPath, cachePath) != null) return@launch
                     val handleId = "engine-retry-$round"
                     if (entry.remoteId == null) {
                         impl.launchSerializedUpload(failedPath, cachePath, handleId, baseEtag = null)
@@ -138,7 +138,7 @@ internal class HistoryRetryRounds(
             return "busy"
         }
         if (!Files.exists(cachePath)) return "source_changed"
-        if (impl.refusedEarlier(path, cachePath, engineOffer = true) != null) return "refused_bytes"
+        if (impl.refusedEarlier(path, cachePath, userRetry = true) != null) return "refused_bytes"
         // The replay's base check, at admission time: a cloud version that moved since the edit began sends
         // nothing (both copies must survive). A row without a noted base offers its current token, as the
         // replay does; the execution's precondition is what keeps that honest.
