@@ -305,24 +305,42 @@ internal class ScanStaging(
     /**
      * Up to [limit] staged rows of [scanId] (all reconciled states) whose id sorts after [afterId], in id order: the
      * rows [load] returns, read a page at a time, so that a reader never holds the whole scan. The last id of a page is
-     * the [afterId] of the next; a page shorter than [limit] is the last.
+     * the [afterId] of the next; a page shorter than [limit] is the last. With [upToRowid] only the rows stored at or
+     * before that [highWater] mark: a row staged later (a new id) is left out, and so is no row that was there.
      */
     @Synchronized
     fun loadPage(
         scanId: String,
         afterId: String?,
         limit: Int,
+        upToRowid: Long? = null,
     ): List<CloudItem> {
         val c = connection() ?: return emptyList()
         val sql =
             "SELECT * FROM scan_staging WHERE scan_id = ?" + (if (afterId == null) "" else " AND remote_id > ?") +
-                " ORDER BY remote_id LIMIT ?"
+                (if (upToRowid == null) "" else " AND rowid <= ?") + " ORDER BY remote_id LIMIT ?"
         return c.prepareStatement(sql).use { stmt ->
             stmt.setString(1, scanId)
             var next = 2
             if (afterId != null) stmt.setString(next++, afterId)
+            if (upToRowid != null) stmt.setLong(next++, upToRowid)
             stmt.setInt(next, limit)
             stmt.executeQuery().use { rs -> rs.stagedItems() }
+        }
+    }
+
+    /**
+     * The mark the rows stored so far are at or below (the largest rowid; 0 for an empty staging). A row staged again keeps
+     * its rowid (see the upsert), a row staged for the first time gets a larger one.
+     */
+    @Synchronized
+    fun highWater(): Long {
+        val c = connection() ?: return 0L
+        return c.createStatement().use { stmt ->
+            stmt.executeQuery("SELECT COALESCE(MAX(rowid), 0) FROM scan_staging").use { rs ->
+                rs.next()
+                rs.getLong(1)
+            }
         }
     }
 
@@ -546,9 +564,15 @@ internal class ScanStaging(
 
         private const val GET_META_SQL = "SELECT value FROM scan_meta WHERE key = ?"
         private const val SET_META_SQL = "INSERT OR REPLACE INTO scan_meta (key, value) VALUES (?, ?)"
+        // An upsert that updates in place, not INSERT OR REPLACE: a row staged again keeps its rowid, which is what keeps
+        // it inside the high-water mark of the resumed rows ([highWater]). A replaced row starts unreconciled, as a new one.
         private const val UPSERT_STAGED_ITEM_SQL =
-            "INSERT OR REPLACE INTO scan_staging " +
+            "INSERT INTO scan_staging " +
                 "(scan_id, remote_id, parent_uuid, plain_name, is_folder, size, modified, remote_hash, remote_version) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+                "ON CONFLICT(scan_id, remote_id) DO UPDATE SET parent_uuid = excluded.parent_uuid, " +
+                "plain_name = excluded.plain_name, is_folder = excluded.is_folder, size = excluded.size, " +
+                "modified = excluded.modified, remote_hash = excluded.remote_hash, " +
+                "remote_version = excluded.remote_version, reconciled = 0"
     }
 }
