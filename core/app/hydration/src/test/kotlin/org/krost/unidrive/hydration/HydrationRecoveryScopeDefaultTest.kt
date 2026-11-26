@@ -22,7 +22,7 @@ class HydrationRecoveryScopeDefaultTest {
     @Test
     fun `the default recovery upload scope survives a failed child and runs the next one`() =
         runBlocking {
-            val scope = HydrationImpl.defaultRecoveryUploadScope()
+            val scope = defaultRecoveryUploadScope()
             try {
                 withTimeout(WAIT_MS) {
                     // The failure is intentional: a test-local handler receives it, so it never reaches the
@@ -50,8 +50,8 @@ class HydrationRecoveryScopeDefaultTest {
 
     @Test
     fun `every call hands out its own supervising scope`() {
-        val first = HydrationImpl.defaultRecoveryUploadScope()
-        val second = HydrationImpl.defaultRecoveryUploadScope()
+        val first = defaultRecoveryUploadScope()
+        val second = defaultRecoveryUploadScope()
         try {
             first.cancel()
             assertFalse(first.isActive)

@@ -929,8 +929,7 @@ class HydrationIpcHandler(
     }
 
     // The name_clash answer for a verb that names a name by another spelling than the one a client used for it first.
-    private fun nameClash(vararg raws: String): String? =
-        raws.firstOrNull { spellings.clashes(it) }?.let { nfcWins.clashReply(it) }
+    private fun nameClash(vararg raws: String): String? = raws.firstOrNull { spellings.clashes(it) }?.let { nfcWins.clashReply(it) }
 
     // gkrost/unidrive-cli#452: the name_clash guard around a verb that records a spelling. The claim — a putIfAbsent
     // per name that could have a twin ([NameSpellings.claim]) — is the check and the reservation in one step, so a
