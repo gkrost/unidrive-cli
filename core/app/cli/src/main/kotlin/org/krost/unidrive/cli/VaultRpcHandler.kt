@@ -107,6 +107,10 @@ internal class VaultRpcHandler(
         }
     }
 
+    suspend fun internxtPasswordSetVerb(jsonRequest: String): String = TODO("861")
+
+    suspend fun internxtPasswordClearVerb(jsonRequest: String): String = TODO("861")
+
     companion object {
         /** The wrong-passphrase delay (the IPC handshake's failure delay, applied to the verb). */
         const val FAILURE_DELAY_MS: Long = 250L

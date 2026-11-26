@@ -31,6 +31,7 @@ internal data class AuthStatus(
 internal fun authStatusOf(
     state: CredentialHealthMonitor.State,
     profileDir: Path,
+    totpRequired: Boolean = false,
 ): AuthStatus {
     val dir = profileDir.toString()
     return when (state) {

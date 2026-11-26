@@ -439,6 +439,7 @@ internal fun daemonCapabilitiesJson(
     vaultUnlockable: Boolean = false,
     // gkrost/unidrive-cli#860: scope.set swaps the scope live (a mount daemon that can persist it).
     scopeSettable: Boolean = false,
+    internxtPassword: Boolean = false,
 ): String =
     (
         profileMode.capabilities + NOTIFICATIONS_STATUS_CAPABILITY +

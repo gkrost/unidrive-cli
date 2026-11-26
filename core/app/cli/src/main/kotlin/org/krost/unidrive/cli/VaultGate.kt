@@ -41,6 +41,12 @@ internal class DaemonVault(
     // gkrost/unidrive-cli#798: the co-factor of a first presence enrollment — whether a passphrase opens vault.enc,
     // with no side effect (the data is neither cached nor the gate moved).
     val passphraseMatches: (CharArray) -> Boolean = { false },
+    // gkrost/unidrive-cli#861: the daemon's profile when it is an Internxt profile (the vault.internxt_password verbs
+    // store its sign-in), null otherwise; and the vault rewrite those verbs run: the passphrase opens vault.enc, the
+    // change applies to what it holds, the result is written and becomes the daemon's in-memory vault data.
+    val internxtProfile: String? = null,
+    val rewrite: (CharArray, (Map<String, Map<String, String>>) -> Map<String, Map<String, String>>) -> VaultUnlockOutcome =
+        { _, _ -> VaultUnlockOutcome.Failed("this daemon cannot write its vault") },
 )
 
 /**

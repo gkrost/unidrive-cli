@@ -129,7 +129,10 @@ internal fun Main.dropVaultData() {
  * are registered and the `vault-unlock:v1` capability advertised — with the gate starting
  * locked exactly on a [DaemonVaultStart.Locked] start.
  */
-internal fun Main.daemonVault(start: DaemonVaultStart): DaemonVault? {
+internal fun Main.daemonVault(
+    start: DaemonVaultStart,
+    internxtProfile: String? = null,
+): DaemonVault? {
     if (!Files.exists(baseConfigDir.resolve("vault.enc"))) return null
     val gate =
         when (start) {
