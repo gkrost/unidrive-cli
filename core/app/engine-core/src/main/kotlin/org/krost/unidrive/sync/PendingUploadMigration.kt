@@ -74,20 +74,30 @@ object PendingUploadKeys {
  * archive#401: an upsert evicted alive rows at its path ([evicted]: remote id to whether it was a pending row). Removing a
  * pending row is the normal upload-completion swap; removing a row with a real cloud id means a tracked remote item is being
  * silently re-keyed (e.g. an incremental delta carrying only the other of two same-named items), so that is a WARN.
+ * [incomingId] is null for a pending upload: its minted key is no remote id and is not printed.
  */
 internal fun org.slf4j.Logger.warnRekeyed(
     path: String,
-    incomingId: String,
+    incomingId: String?,
     evicted: Map<String, Boolean>,
 ) {
-    for ((id, wasPending) in evicted) {
-        if (wasPending) continue
-        warn(
-            "#401: upsert of path {} evicted alive row remote_id={} (incoming remote_id={}) — " +
-                "a tracked cloud item was re-keyed to a different remote id at the same path",
-            path,
-            id,
-            incomingId,
-        )
-    }
+    for ((id, wasPending) in evicted) if (!wasPending) warn(rekeyWarning(path, incomingId, id))
 }
+
+internal fun rekeyWarning(
+    path: String,
+    incomingId: String?,
+    evictedId: String,
+): String =
+    if (incomingId == null) {
+        "#401: a pending upload at path $path evicted alive cloud row remote_id=$evictedId (the file that was tracked there is replaced by unsent bytes)"
+    } else {
+        "#401: upsert of path $path evicted alive row remote_id=$evictedId (incoming remote_id=$incomingId) — " +
+            "a tracked cloud item was re-keyed to a different remote id at the same path"
+    }
+
+/** gkrost/unidrive-cli#845: a cloud id that equals the minted key of a pending row; the write is refused, the pending row stays. */
+internal fun org.slf4j.Logger.errorKeyCollision(
+    path: String,
+    key: String,
+) = error("#845: refused the upsert of path $path: its cloud id equals the key of a pending upload ($key); the pending row is kept")
