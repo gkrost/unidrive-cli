@@ -4089,14 +4089,10 @@ class HydrationImpl(
         } catch (e: CancellationException) {
             renames.interrupted(intent)
             throw e
-        } catch (e: org.krost.unidrive.NameRefusedException) {
-            // cli#950: a name the drive refuses as a sibling's is the blocked-row refusal with its sibling, whatever 409 caused it.
-            renames.abandon(intent)
-            RenameResult.Failed(HydrationError.NameRefused(e.reason, e.sibling))
         } catch (e: Exception) {
             renames.abandon(intent)
             // gkrost/unidrive-cli#445: a provider's 409 on a move is "the name is taken" (new_path_exists), not free text a client matches.
-            if (isProviderConflict(e)) RenameResult.NewPathExists else RenameResult.Failed(HydrationError.Generic(e.message ?: "rename failed"))
+            nameRefusal(e) ?: if (isProviderConflict(e)) RenameResult.NewPathExists else RenameResult.Failed(HydrationError.Generic(e.message ?: "rename failed"))
         }
 
     private fun isProviderConflict(e: Throwable): Boolean =

@@ -3629,12 +3629,7 @@ open class SyncEngine(
                 }
             } catch (e: Exception) {
                 (e as? org.krost.unidrive.NameRefusedException)?.let { db.markNameBlocked(action.fromPath, it.reason, it.sibling) }
-                auditLog?.emit(
-                    action = "Move",
-                    path = action.path,
-                    fromPath = action.fromPath,
-                    result = "failed:${e.javaClass.simpleName}: ${e.message}",
-                )
+                auditLog?.emit(action = "Move", path = action.path, fromPath = action.fromPath, result = "failed:${e.javaClass.simpleName}: ${e.message}")
                 throw e
             }
         val localPath = placeholder.resolveLocal(action.path)
