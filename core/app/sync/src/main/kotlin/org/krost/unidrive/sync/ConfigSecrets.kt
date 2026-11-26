@@ -2,11 +2,8 @@ package org.krost.unidrive.sync
 
 import org.krost.unidrive.auth.CredentialProtectionException
 import org.krost.unidrive.auth.CredentialProtector
-import org.krost.unidrive.auth.CredentialData
 import org.krost.unidrive.auth.CredentialLockedException
 import org.krost.unidrive.auth.CredentialProtectors
-import org.krost.unidrive.auth.KeyedCredentialProtector
-import java.nio.file.Files
 import java.nio.file.Path
 
 /**
@@ -30,37 +27,6 @@ import java.nio.file.Path
 object ConfigSecrets {
     /** The config fields protected at rest; the same field names the vault moves. */
     val SENSITIVE_FIELDS: Set<String> = Vault.SENSITIVE_FIELDS
-
-    /**
-     * The protector of these fields (gkrost/unidrive-cli#859, #797): the vault-key seal over the host's platform
-     * default, as the credential files have it. Without a seal key in the process, or with sealing off, it writes and
-     * reads exactly what the platform default did; a host without one (Linux) keeps plaintext fields until sealing is on.
-     */
-    fun defaultProtector(): CredentialProtector = sealableProtector(CredentialProtectors.atRestDefaultOrNull())
-
-    /** The seal over [inner], or over the plaintext field itself when [inner] is null ([NoPlatformStore]). */
-    fun sealableProtector(inner: CredentialProtector?): CredentialProtector = KeyedCredentialProtector(inner ?: NoPlatformStore)
-
-    /** Whether config.toml holds a field sealed under the vault key (so `vault decrypt` keeps the key, #797). */
-    fun holdsSealedField(configPath: Path): Boolean =
-        runCatching { Files.readString(configPath).contains(KeyedCredentialProtector.PREFIX) }.getOrDefault(false)
-
-    /**
-     * No platform layer: the field is its own value. A platform reference from another host is not plaintext here
-     * ([ForeignReference], reported as "protected on another computer", as without a protector).
-     */
-    private object NoPlatformStore : CredentialProtector {
-        override fun protect(id: String, plaintext: String): String = plaintext
-
-        override fun decode(id: String, stored: String): CredentialData {
-            if (CredentialProtectors.REFERENCE_PREFIXES.any { stored.startsWith(it) }) throw ForeignReference()
-            return CredentialData(stored, true)
-        }
-
-        override fun delete(id: String) = Unit
-    }
-
-    private class ForeignReference : CredentialProtectionException("a platform reference from another computer")
 
     /**
      * The identity a protector binds a stored value to: the canonical path of [configPath] — the file's
@@ -89,7 +55,7 @@ object ConfigSecrets {
         rp: RawProvider?,
         profileName: String,
         configPath: Path,
-        protector: CredentialProtector? = defaultProtector(),
+        protector: CredentialProtector? = ConfigSecretSeal.defaultProtector(),
     ): RawProvider? {
         if (rp == null) return rp
         val id = identity(configPath)
@@ -108,7 +74,7 @@ object ConfigSecrets {
             val data =
                 try {
                     protector.decode(id, value)
-                } catch (_: ForeignReference) {
+                } catch (_: ConfigSecretSeal.ForeignReference) {
                     foreign(field)
                 } catch (_: CredentialLockedException) {
                     // Sealed under the vault key and this process holds none (#797): locked, never missing or corrupt.

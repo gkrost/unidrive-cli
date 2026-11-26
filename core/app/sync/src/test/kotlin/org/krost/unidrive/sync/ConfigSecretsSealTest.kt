@@ -142,7 +142,7 @@ class ConfigSecretsSealTest {
 
     @Test
     fun `on a host without a platform store a foreign platform reference is still refused`() {
-        val noStore = ConfigSecrets.sealableProtector(null)
+        val noStore = ConfigSecretSeal.sealableProtector(null)
         Files.writeString(configPath, config("unidrive-dpapi-v1:AAAA"))
 
         val e =
@@ -154,7 +154,7 @@ class ConfigSecretsSealTest {
 
     @Test
     fun `on a host without a platform store an unsealed field is plaintext as before`() {
-        val noStore = ConfigSecrets.sealableProtector(null)
+        val noStore = ConfigSecretSeal.sealableProtector(null)
         Files.writeString(configPath, config(s3Secret))
 
         assertEquals(null, ConfigSecrets.migrateText(Files.readString(configPath), configPath, noStore))
@@ -163,14 +163,14 @@ class ConfigSecretsSealTest {
 
     @Test
     fun `the default config protector is the keyed seal`() {
-        assertIs<KeyedCredentialProtector>(ConfigSecrets.defaultProtector())
+        assertIs<KeyedCredentialProtector>(ConfigSecretSeal.defaultProtector())
     }
 
     @Test
     fun `a config that holds a sealed field is reported as sealed`() {
         writePlatformOnly()
-        assertFalse(ConfigSecrets.holdsSealedField(configPath))
+        assertFalse(ConfigSecretSeal.holdsSealedField(configPath))
         sealAll()
-        assertTrue(ConfigSecrets.holdsSealedField(configPath))
+        assertTrue(ConfigSecretSeal.holdsSealedField(configPath))
     }
 }

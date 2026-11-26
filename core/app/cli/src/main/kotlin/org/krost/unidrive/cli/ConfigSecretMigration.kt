@@ -1,6 +1,7 @@
 package org.krost.unidrive.cli
 
 import org.krost.unidrive.auth.CredentialProtector
+import org.krost.unidrive.sync.ConfigSecretSeal
 import org.krost.unidrive.sync.ConfigSecrets
 import org.slf4j.LoggerFactory
 import java.io.IOException
@@ -23,7 +24,7 @@ internal object ConfigSecretMigration {
 
     fun migrateAtStart(
         configPath: Path,
-        protector: CredentialProtector? = ConfigSecrets.defaultProtector(),
+        protector: CredentialProtector? = ConfigSecretSeal.defaultProtector(),
     ) {
         if (protector == null) return
         if (!Files.exists(configPath)) return

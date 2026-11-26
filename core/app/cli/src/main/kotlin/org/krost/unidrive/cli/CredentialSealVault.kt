@@ -61,7 +61,7 @@ internal fun withCredentialSeal(
  * config.toml a provider secret field sealed under it (#859).
  */
 internal fun anyCredentialsSealed(baseDir: Path): Boolean =
-    org.krost.unidrive.sync.ConfigSecrets.holdsSealedField(baseDir.resolve("config.toml")) ||
+    org.krost.unidrive.sync.ConfigSecretSeal.holdsSealedField(baseDir.resolve("config.toml")) ||
         runCatching {
             Files.newDirectoryStream(baseDir, Files::isDirectory).use { dirs -> dirs.any { dir -> ProviderRegistry.all().any { it.needsCredentialSeal(dir) } } }
         }.getOrDefault(false)
