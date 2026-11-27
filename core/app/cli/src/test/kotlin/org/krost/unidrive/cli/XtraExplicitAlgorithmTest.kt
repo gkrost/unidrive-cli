@@ -111,7 +111,8 @@ class XtraExplicitAlgorithmTest {
         Files.writeString(dir.resolve("xtra.key"), "k")
         assertEquals(0, run("profile", "set", "work", "xtra_encryption", "true", "--json"))
         assertEquals(existing, Files.readString(config), "setting the value in force writes no algorithm")
-        assertEquals(0, run("xtra", "init"), "a second key file for the installation")
+        Files.delete(dir.resolve("xtra-sym.key"))
+        assertEquals(0, run("xtra", "init"), "a new key file for the installation")
         assertEquals(existing, Files.readString(config), "xtra init never rewrites an encrypted profile")
         assertEquals("aes-gcm", listedAlgorithm())
     }
@@ -141,5 +142,57 @@ class XtraExplicitAlgorithmTest {
         assertEquals("aes-gcm", listedAlgorithm())
         XtraSymmetricKeyStore(dir.resolve("xtra-sym.key")).generate(pass.toCharArray())
         assertEquals("aes-gcm", listedAlgorithm())
+    }
+
+    // ── Review round ──────────────────────────────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `import-key on a clean installation restores an RSA backup or fails, never exit 0 with nothing imported`() {
+        val backup = TestScratch.directory("xtra-explicit-rsa-backup")
+        XtraKeyManager(backup.resolve("xtra.key")).generate(pass.toCharArray())
+
+        val code = run("xtra", "import-key", "--input", backup.toString())
+        assertEquals(0, code, "a valid RSA backup restores")
+        assertTrue(Files.exists(dir.resolve("xtra.key")), "the RSA key file was restored")
+        assertFalse(Files.exists(dir.resolve("xtra-sym.key")))
+    }
+
+    @Test
+    fun `import-key with nothing to import exits non-zero`() {
+        val empty = TestScratch.directory("xtra-explicit-empty-backup")
+        assertEquals(1, run("xtra", "import-key", "--input", empty.toString()))
+    }
+
+    @Test
+    fun `xtra init with -p writes the named profile and never the default one`() {
+        Files.writeString(
+            config,
+            "[general]\ndefault_profile = \"work\"\n\n" + section() + "\n[providers.home]\ntype = \"localfs\"\nroot_path = \"/tmp/home\"\n",
+        )
+        assertEquals(0, run("-p", "home", "xtra", "init"))
+        val raw = SyncConfig.parseRaw(Files.readString(config)).providers
+        assertEquals("aes-gcm-sym", raw.getValue("home").xtra_algorithm)
+        assertEquals(null, raw.getValue("work").xtra_algorithm, "the default profile is not the one -p named")
+    }
+
+    @Test
+    fun `xtra init with a -p that names no profile writes no profile`() {
+        Files.writeString(config, "[general]\ndefault_profile = \"work\"\n\n" + section())
+        run("-p", "nosuch", "xtra", "init")
+        assertEquals(null, storedAlgorithm(), "a -p that names no profile must not fall back to the default profile")
+    }
+
+    @Test
+    fun `xtra init refuses to name the algorithm of a profile with sync state unless forced`() {
+        Files.writeString(config, section())
+        Files.createDirectories(dir.resolve("work"))
+        Files.write(dir.resolve("work").resolve("state.db"), byteArrayOf(1, 2, 3))
+
+        assertEquals(1, run("xtra", "init"))
+        assertEquals(null, storedAlgorithm(), "refused: the profile's algorithm is unchanged")
+        assertFalse(Files.exists(dir.resolve("xtra-sym.key")), "a refused init creates no key")
+
+        assertEquals(0, run("xtra", "init", "--force"))
+        assertEquals("aes-gcm-sym", storedAlgorithm())
     }
 }
