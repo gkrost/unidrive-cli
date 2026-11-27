@@ -31,8 +31,16 @@ class HttpRetryBudgetPermitTest {
 
     private fun budget(
         maxConcurrency: Int,
+        reservedForUserSlots: Int = 0,
         clock: () -> Long = FakeClock(),
-    ) = HttpRetryBudget(maxConcurrency = maxConcurrency, stormThreshold = 2, minSpacingMs = 0, stormSpacingMs = 0, clock = clock)
+    ) = HttpRetryBudget(
+        maxConcurrency = maxConcurrency,
+        stormThreshold = 2,
+        minSpacingMs = 0,
+        stormSpacingMs = 0,
+        reservedForUserSlots = reservedForUserSlots,
+        clock = clock,
+    )
 
     @Test
     fun `a third caller waits until one of two permits is released`() =
@@ -330,6 +338,81 @@ class HttpRetryBudgetPermitTest {
             gate.complete(Unit)
             holder.await()
             assertEquals(2, budget.freeSlots(), "a released permit is free again")
+        }
+
+    // gkrost/unidrive-cli#74 ask 3: the reserved user-op slot. Background callers - the poll's listings - can fill
+    // only the bound minus the reserved slots, so the poll's two slow listings can never occupy both Drive REST
+    // slots and a user-driven call never queues behind them. A slot the poll may not take still reads free.
+    @Test
+    fun `a reserved slot stays free to the background lane only while no user-driven caller has claimed it`() =
+        runTest {
+            val budget = budget(maxConcurrency = 2, reservedForUserSlots = 1)
+            val gate = CompletableDeferred<Unit>()
+            val poll = async { budget.withPermit { gate.await() } }
+            runCurrent()
+            assertEquals(1, budget.freeSlots(), "the slot reserved for user ops reads free while it is idle")
+            gate.complete(Unit)
+            poll.await()
+        }
+
+    @Test
+    fun `the poll's second listing parks and the user-driven call takes the reserved slot at once`() =
+        runTest {
+            val budget = budget(maxConcurrency = 2, reservedForUserSlots = 1)
+            val gates = List(3) { CompletableDeferred<Unit>() }
+            val order = Collections.synchronizedList(mutableListOf<String>())
+
+            val pollFirst = async { budget.withPermit { order.add("poll-1"); gates[0].await() } }
+            runCurrent()
+            assertEquals(listOf("poll-1"), order.toList(), "the poll's first listing fills the share the poll may fill")
+
+            val pollSecond = async { budget.withPermit { order.add("poll-2"); gates[1].await() } }
+            runCurrent()
+            assertEquals(listOf("poll-1"), order.toList(), "the poll's second listing parks: the reserved slot is not its own")
+
+            val user =
+                launch {
+                    withContext(Priority.Foreground) {
+                        budget.withPermit {
+                            order.add("user")
+                            gates[2].await()
+                        }
+                    }
+                }
+            runCurrent()
+            assertEquals(listOf("poll-1", "user"), order.toList(), "the user-driven call takes the reserved slot, not a place behind the poll's listing")
+
+            // A permit the user gave back is still beyond the poll's bound while another poll listing holds one.
+            gates[2].complete(Unit)
+            user.join()
+            runCurrent()
+            assertEquals(listOf("poll-1", "user"), order.toList())
+
+            // The poll's second listing runs once the first released its permit: the poll serializes, it never starves.
+            gates[0].complete(Unit)
+            pollFirst.await()
+            runCurrent()
+            assertEquals(listOf("poll-1", "user", "poll-2"), order.toList())
+
+            gates[1].complete(Unit)
+            pollSecond.await()
+        }
+
+    @Test
+    fun `with the concurrency at its storm floor the poll still gets the one permit left`() =
+        runTest {
+            val clock = FakeClock()
+            val budget = budget(maxConcurrency = 2, reservedForUserSlots = 1, clock = clock)
+            budget.recordThrottle(10)
+            budget.recordThrottle(10)
+            assertEquals(1, budget.currentConcurrency(), "the storm halved the bound to its floor")
+
+            val ran = AtomicInteger(0)
+            val poll = async { budget.withPermit { ran.incrementAndGet() } }
+            runCurrent()
+
+            assertEquals(1, ran.get(), "the reservation never takes the poll's last permit")
+            poll.await()
         }
 
     @Test
