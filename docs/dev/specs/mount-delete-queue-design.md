@@ -5,7 +5,9 @@ purpose: a durable write-behind delete queue, one folder trash in place of its c
 per-folder recursive listing. The throughput part that is already built (the kind hint, one trash call per listed item,
 the batch SPI, the synchronous coalescing window) is described in section 1 as the baseline.
 
-File:line references point at the tree this document was added to. They describe the code as it is, not a plan.
+Not folded in: the first review's D1 to D9. They are requirements if the queue is ever built. D1 (a create, an upload or a rename target *at* the path of an open job) and D2 (a job outlives the two-hour receipt) lose data. The recreate rule in 2.3 and the receipt rule in 2.2 stated the opposite and have changed (an id with an open job is never resurrected for as long as the job exists; a create, an upload or a rename target at the path of an open job waits for it). D3 to D9 are not yet worked into the text.
+
+Read against `8551c7f4`. Line numbers are of that commit. They describe the code as it is, not a plan.
 
 ---
 
@@ -46,7 +48,7 @@ The guard exists because a poll can lag another device's writes (`MountDelete.kt
 | State | Where | Survives a restart |
 |---|---|---|
 | Tombstone + `mount_deleted_at` receipt | `sync_entries` (`StateDatabase.kt:1840`, `:1969`) | yes. Written **after** the provider call. |
-| Rename record (old path, new path, id) | `rename_intents` (`StateDatabase.kt:3313`), `RenameRollForward.kt:12-33` | yes. Written **before** the cloud move and settled at start (`settleAll`, `:95`). This is the engine's only write-ahead journal today. |
+| Rename record (old path, new path, id) | `rename_intents` (`StateDatabase.kt:3313`), `RenameRollForward.kt:12-33` | yes. Written **before** the cloud move and settled at start (`settleAll`, `:95`). It is one of two write-ahead records today; `replace_intents` (`StateSideTables.kt:36`, written at `StateDatabase.kt:3360`, settled at `:3396`, spared by the purge at `TombstonePurge.kt:44`) is the other. |
 | Coalescing window and its open batch | `DeleteCoalescer` fields | no, and none is needed: nothing in it has been acknowledged yet. |
 | Folders deleted while rows below were kept | `RmdirWindow.deletedWithKeptRows` (`RmdirWindow.kt:11-13`) | no. After a restart, a kept row's upload is refused as `parent_gone`. |
 | Sweep progress of a released hold | `DeleteSweepProgress` (`DeleteSweepProgress.kt:24`), counts only | no. A restart starts the sweep's progress over. |
@@ -56,7 +58,7 @@ The guard exists because a poll can lag another device's writes (`MountDelete.kt
 
 The contract is "OK means the provider operation succeeded or the item is already gone" (`MountDelete.kt:40-55`, `DeleteCoalescer.kt:19-21`). A crash therefore never loses an acknowledged delete. These are the windows that exist:
 
-1. **The provider call succeeded, the process died before the tombstone** (`MountDelete.kt:113`/`:136`/`:140`). The client got no OK (the connection dropped), and the row stays alive. The view shows the item until a delta reports it trashed. A retried `rm` deletes by the same id and gets the already-gone answer, so the effect is idempotent and only the call is repeated. Side effect: no `mount_deleted_at` receipt was written, so for up to the lagging window a guard on the parent folder can refuse with `not_empty`, because the lagging listing still names that child and the passing-over rule cannot apply.
+1. **The provider call succeeded, the process died before the tombstone** (`MountDelete.kt:113`/`:136`/`:140`). The client got no OK (the connection dropped), and the row stays alive. The view shows the item until a delta reports it trashed. A retried `rm` deletes by the same id and gets the already-gone answer, so the effect is idempotent and only the call is repeated. Side effect: no `mount_deleted_at` receipt was written. The row stays alive, so a guard on the parent compares it like any observed child and passes while the listing's metadata is unchanged (`RmdirRefusal.kt:120`, `:37-48`). The refusal can start once a delta has flipped the row to `TRASHED`, which the pass-over does not cover (`RmdirRefusal.kt:123` passes over `DELETED` only), and it lasts until the listing catches up.
 2. **A batch whose reply was lost after the server committed it.** The 5xx retry or the per-item 400 fallback answers each item as already gone (`InternxtBatchTrash.kt:62`, `:66`). Calls are duplicated, the effect is not.
 3. **A folder trash that committed, then a crash before the subtree tombstones.** The same as 1, for the whole subtree. The next start shows the subtree until the delta reports the folder. On Internxt only the folder row is marked and the children stay `EXISTS` while their parent is trashed (3.3), so the rows below settle only through the dead-parent handling, never through a per-child tombstone or a delta for each child.
 4. **A kept row below a deleted folder** (`RmdirWindow`): after a restart its upload has no folder to land in (`parent_gone`). No delete is lost, but a file the user kept ends up refused.
@@ -95,7 +97,7 @@ Two request shapes reach the engine, and the slices treat them apart:
 - Per-item outcomes only. A batch answer that does not name each item (the Internxt 400) splits back to singles, as `trashInBatches` does today. A job is `done` only on its own success or its own already-gone answer.
 - `expected_version`: a file job carries the version the tombstone saw. If the cloud item moved on before the drain, the job does not delete the newer version. It becomes `failed: changed_remotely` and the row is shown again at once (failure classes, 2.3). That is the same rule the folder guard applies to children.
 - "A not-found answer counts as done" uses the corrected Internxt meaning (1.2). For a permanent job, a trashed answer is not done.
-- Receipts: the anti-resurrection window starts when the **intent** commits, because a lagging listing must not bring back a queued item. A separate `done_at` starts the ordinary recent-success receipt (`mount_deleted_at` semantics), so the 2 h window runs from the moment the cloud actually changed.
+- Receipts: a job is not a time window. **An id with an open job is never resurrected for as long as the job exists**: the poll's merge must not replace the tombstone, however long the job waits (a queued job can live for days, the receipt window is 2 h). The ordinary receipt window therefore starts at `done_at` (`mount_deleted_at` semantics), so the 2 h of lagging-listing protection run from the moment the cloud actually changed, and the open-job rule covers the time before it.
 
 ### 2.3 Ordering against uploads and renames of the same subtree
 
@@ -107,14 +109,14 @@ Two request shapes reach the engine, and the slices treat them apart:
   - **Refused for good** (`refused`: a permission or namespace refusal): the job goes to the failed-ops list, and the row follows the user's retry or cancel (question 6).
 - **A create or upload below a queued folder delete** has to wait or be refused, as `RmdirWindow.awaitDeletesAbove` (`:1444`) does for a running delete. With a queue, "running" lasts until the job is `done`. Option: answer `busy` for creates below a queued folder (simple, but visible to the user), or let the create go and drop the folder job in favour of child jobs (more code, and the guard's evidence changes). Recommendation: `busy`, with an explicit retry hint.
 - **A rename out of a queued subtree.** It is refused while the job is not `done`: the cloud item to move may be trashed by the folder job at any moment. A rename *into* a queued folder is refused for the same reason.
-- **Recreate at the same path** after a queued file delete is allowed. The new row has no cloud id until its upload lands, and the old job deletes by the old id.
+- **A create, an upload or a rename target at the path of an open job waits for it** (`busy` with a retry hint, as for a create below a queued folder). Recreating a path is not allowed to overtake its own queued delete: a `mkdir` at the path of a queued folder delete is refused with 409 and `existingFolderAt` adopts the old cloud folder (`MountEngine.kt:2236-2269`), which the job would then trash together with what was uploaded below it. Once the job is `done`, the path is free and a new item gets its own row and id.
 - **Order within the queue.** Children before their folder, unless subtree coalescing (section 3) replaces them. Folder jobs are sent alone, after their guard, as today (`MountDelete.kt:117`), so that unrelated file batches cannot age the guard's snapshot. On Internxt the order can be relaxed: by the reviewer's reading of Internxt's public server source (not verified here), trashing a child of a trashed folder succeeds, because the update filters on the item's own status and owner and never looks at the parent. On S3 the rule stands.
 
 ### 2.4 Held deletes and the mass-delete guard
 
 The client holds deletes behind its own mass-delete guard: per-account thresholds, moves out of the drive counted as deletes, and the guard disarming after 10 quiet minutes. The engine sees a released hold as a drain over `unlink`/`rmdir` marked with `sweep_total` (`DeleteSweepProgress.kt:9-14`).
 
-- The queue sits **behind** the client's guard. A held delete is never in the engine's queue, so releasing a hold enqueues and cancelling it enqueues nothing. Nothing in the engine changes the client's thresholds or its quiet-time disarm.
+- The queue sits **behind** the client's guard, but it is not a brake for the engine: `deferred` is opt-in per request, so any full-scope client can send it, and the engine's own delete guards stay away from mount verbs. The brake is the engine's own `cancel_all` (S3). A held delete is never in the engine's queue, so releasing a hold enqueues and cancelling it enqueues nothing. Nothing in the engine changes the client's thresholds or its quiet-time disarm.
 - What the client's guard counts does not change: it counts what the user did, and the queue only changes when the cloud sees it.
 - A drain of a released hold is the main beneficiary: thousands of `unlink`s acknowledged at state.db speed. `DeleteSweepProgress` keeps counting **acknowledged** items. A second count, *sent*, shows the cloud's progress (see 2.5).
 - The engine's own delete guards (`max_delete_*`, `bulk_reap_guard`, `DeleteGuards.kt:8-25`) apply to the sync engine's planned deletes, not to mount verbs, and stay as they are.
@@ -122,8 +124,8 @@ The client holds deletes behind its own mass-delete guard: per-account threshold
 ### 2.5 IPC and status surface
 
 - **Opt in, never by default.** An advertised capability (for example `hydration.delete_queue` in `daemon.status`) and a per-request field (`"deferred":true`) on `unlink`/`rmdir`. Without it, the verb stays synchronous, so existing clients and `rm --permanent` see no change. Permanent deletes stay synchronous in the first slice: a deferred permanent delete that fails cannot be undone by the user.
-- **Reply.** `{"ok":true,"queued":true,"op_id":"…"}`: "queued" is a result of its own, never folded into a plain `ok`. This follows the decision taken for `trash purge --remote --json`, which reports a provider-queued purge as `"result":"partial","queued":true` and not as `"emptied"`.
-- **daemon.status** gets a `delete_queue` object with counts only (no paths, like `delete_sweep`): `queued`, `sending`, `failed`, `oldest_queued_ms`.
+- **Reply.** `{"ok":true,"result":"queued","op_id":"…"}`: "queued" is a result of its own, never folded into a plain `ok`. This follows `trash purge --remote --json`, which reports a provider-queued purge as `{"ok":true,"result":"queued","count":N}` and not as `"emptied"` (`TrashCommand.kt:402-416`).
+- **daemon.status** gets a `delete_queue` object with counts only (no paths, like `delete_sweep`): `queued`, `sending`, `failed`, `oldest_queued_ms`. It ships with the drainer (S3), together with `cancel_all`, so that a wrongly queued bulk delete can be seen and stopped from the first slice on.
 - **Failures after the OK** cannot become the syscall's errno. They land in a failed-ops list: a new `hydration.delete_queue.list` / `.retry` / `.cancel`, and `unidrive` CLI subcommands with `--json`. Only the classes 2.3 counts as failures land there. Each entry has a stable reason code (`changed_remotely`, `unobserved_child`, `refused`, …). `auth_required` and `network_error` are not failures: those jobs stay `queued`. Whether the row comes back follows the class (2.3): at once for an item that is alive and is not what was deleted, otherwise only on an explicit cancel.
 - **Draining** uses the provider's existing request budget and the `DeleteCoalescer` batch shape (50 per call, 2 in flight) as its sender. The window becomes the drainer's flush, not a second mechanism.
 
@@ -182,7 +184,7 @@ Recommendation: G0 now, apart from the queue: it helps the synchronous path, and
 
 ### 5.1 Recommendation
 
-Build the queue **only** if a single-threaded bulk delete (Linux `rm -rf`, a scripted cleanup) of thousands of entries is a real workload after a live re-measure. The synchronous window already serves parallel deleters such as Explorer and released holds that drain in parallel. If the queue is built: J1 (state.db), opt-in IPC, file jobs first, then folder jobs, then coalescing with G2. G1a is not built (section 4); G1a' is an option after S0.
+Build the queue **only** if a single-threaded bulk delete (Linux `rm -rf`, a scripted cleanup) of thousands of entries is a real workload after a live re-measure. The synchronous window already serves parallel deleters such as Explorer. A released hold is not counted: the Windows client's journal sends one entry per call and awaits it, so that drain reaches the engine as a sequential stream, and it is unmeasured (S0). If the queue is built: J1 (state.db), opt-in IPC, file jobs first, then folder jobs, then coalescing with G2. G1a is not built (section 4); G1a' is an option after S0.
 
 ### 5.2 Slices
 
@@ -192,8 +194,8 @@ Build the queue **only** if a single-threaded bulk delete (Linux `rm -rf`, a scr
 | S1b | G0: list by id inside the guard walk (optional `listChildrenById` SPI, Internxt first), with pinned call counts per folder | S-M (~100 lines + tests) | none |
 | S1 | ~~G1a~~ dropped (section 4). Option after S0: G1a', skip re-listing on the guard's own cloud listing younger than ~10 s with no row change below | S-M (~80 lines + tests) | S0 |
 | S2 | S3 `BatchDeleteProvider` over `DeleteObjects` (per-key answers) | S (~60 lines) | none |
-| S3 | `delete_jobs` table, schema bump, `markDeleted` + job in one transaction, start-up settle, drainer over `DeleteCoalescer`; **file jobs only**, opt-in `deferred` | L (~300 lines + crash matrix) | S0 decision |
-| S4 | Status counts, failed-ops list/retry/cancel verbs and CLI | M (~200 lines) | S3 |
+| S3 | `delete_jobs` table, schema bump, `markDeleted` + job in one transaction, start-up settle, drainer over `DeleteCoalescer`; **file jobs only**, opt-in `deferred`. **The brake ships with the drainer:** `cancel_all`, which stops the drainer before it removes jobs and brings the rows back, and the `delete_queue` status counts | L (~350 lines + crash matrix) | S0 decision |
+| S4 | Failed-ops list and retry verbs, per-job cancel, and the CLI | M (~150 lines) | S3 |
 | S5 | Folder jobs (no coalescing): guard at drain time, `busy` below a queued folder | M (~150 lines) | S3 |
 | S6 | Subtree coalescing with G2, `superseded_by`, rename-record check; Internxt, OneDrive and Dropbox only | L (~250 lines) | S5 |
 
@@ -204,6 +206,7 @@ Build the queue **only** if a single-threaded bulk delete (Linux `rm -rf`, a scr
 - **Batch outcomes:** all succeed; a lost reply after the server committed; one bad id (400) inside a 50; 51 items; a mixed per-item answer.
 - **Ordering:** a create, upload or rename below a queued folder; a recreate at a queued file's path with a new id; a rename out of the subtree whose cloud move failed (must block coalescing).
 - **Guard:** an unknown child appearing between the queue and the drain blocks coalescing; a lagging listing during the queue and after `done`; a guard refusal at drain brings the folder row back at once; G0 pins one content call per folder and no resolve.
+- **The brake (S3):** a client that queues N entries and goes away (the drainer sends them, the counts show them, `cancel_all` stops it); a cancel while a batch is in flight (the batch finishes, nothing new is sent, the unsent rows come back).
 - **Pinned HTTP counts** for a known folder and for 50/51 targets, per provider fake.
 
 ### 5.4 Questions for the owner
