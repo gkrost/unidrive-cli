@@ -29,6 +29,8 @@ import org.krost.unidrive.CaseSensitivity
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.AccountName
 import org.krost.unidrive.CloudProvider
+import org.krost.unidrive.ConditionalWrite
+import org.krost.unidrive.WriteGuard
 import org.krost.unidrive.CredentialProof
 import org.krost.unidrive.NotSignedInException
 import org.krost.unidrive.DeltaCursorExpiredException
@@ -130,6 +132,10 @@ class DropboxProvider(
         )
 
     override fun hashAlgorithm(): HashAlgorithm = HashAlgorithm.DropboxContentHash
+
+    // #268: the token pins the item's rev, and the server refuses an upload (update + strict_conflict) or a delete
+    // (parent_rev) whose rev is no longer current.
+    override val conditionalWrite: ConditionalWrite get() = ConditionalWrite(upload = WriteGuard.ATOMIC, delete = WriteGuard.ATOMIC)
 
     override fun attachRequestMetrics(sink: org.krost.unidrive.http.RequestMetricsSink?) = api.attachRequestMetrics(sink)
 

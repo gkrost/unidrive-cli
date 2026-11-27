@@ -19,8 +19,6 @@ import org.krost.unidrive.testing.TestScratch
 class LocalFsConformanceTest : CloudProviderConformanceTest() {
     override val idAddressedDelete: Boolean = false
     override val idAddressedMove: Boolean = false
-    override val guardedUpload: Boolean = false
-    override val guardedDelete: Boolean = false
 
     override fun newProvider(): CloudProvider = LocalFsProvider(TestScratch.directory("conformance-localfs"))
 

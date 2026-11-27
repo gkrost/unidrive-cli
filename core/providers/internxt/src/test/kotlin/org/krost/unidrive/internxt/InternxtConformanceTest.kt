@@ -32,7 +32,6 @@ import org.krost.unidrive.testing.TestScratch
  */
 class InternxtConformanceTest : CloudProviderConformanceTest() {
     override val statefulBackend: Boolean = false
-    override val guardedDelete: Boolean = false
     override val storedCredentialsRemovable: Boolean = true
 
     // The root folder id `internxtProviderOn` signs the write provider in with.

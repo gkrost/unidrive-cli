@@ -13,6 +13,8 @@ import org.krost.unidrive.CapabilityResult
 import org.krost.unidrive.CaseSensitivity
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
+import org.krost.unidrive.ConditionalWrite
+import org.krost.unidrive.WriteGuard
 import org.krost.unidrive.ContentProof
 import org.krost.unidrive.CredentialProof
 import org.krost.unidrive.DeltaPage
@@ -87,6 +89,11 @@ class S3Provider(
     override fun capabilities(): Set<Capability> = setOf(Capability.Delta, Capability.Share, Capability.VerifyItem, Capability.PermanentDelete)
 
     override fun hashAlgorithm(): HashAlgorithm = HashAlgorithm.Md5Hex
+
+    // #268: AWS checks If-Match on the PUT and the multipart complete; elsewhere the upload, and every delete, compare the
+    // token with a HEAD first.
+    override val conditionalWrite: ConditionalWrite
+        get() = ConditionalWrite(upload = if (config.vendor.conditionalWrites) WriteGuard.ATOMIC else WriteGuard.EMULATED, delete = WriteGuard.EMULATED)
 
     override fun attachRequestMetrics(sink: org.krost.unidrive.http.RequestMetricsSink?) = api.attachRequestMetrics(sink)
 
