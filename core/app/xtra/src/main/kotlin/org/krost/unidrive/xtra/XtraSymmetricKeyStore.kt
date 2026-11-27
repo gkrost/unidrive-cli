@@ -55,12 +55,16 @@ class XtraSymmetricKeyStore(
 
     fun exists(): Boolean = Files.exists(keyPath)
 
-    /** A fresh random master key under [passphrase]; never over an existing key file (it is every file's only key). */
+    /**
+     * A fresh random master key under [passphrase]; never over an existing key file (it is every file's only key). The
+     * install is a create-new ([createKeyFileExclusively]): of two generates racing for one path exactly one lands, and
+     * the other throws [IllegalStateException] holding no key.
+     */
     fun generate(passphrase: CharArray) {
         requirePassphrase(passphrase)
         check(!exists()) { "X-tra symmetric key file already exists, refusing to replace it: $keyPath" }
         val key = ByteArray(MASTER_KEY_LENGTH).also { SecureRandom().nextBytes(it) }
-        writeKeyFile(keyPath, passphrase, key)
+        writeKeyFile(keyPath, passphrase, key, createNew = true)
         masterKey = key
     }
 
@@ -198,17 +202,19 @@ private fun writeKeyFile(
     keyPath: Path,
     passphrase: CharArray,
     masterKey: ByteArray,
+    createNew: Boolean = false,
 ) {
     val blob = sealKeyFile(passphrase, masterKey)
     Files.createDirectories(keyPath.parent)
-    OwnerOnlyAtomicWrite.replace(keyPath, blob, verify = { tmp ->
+    val verify = { tmp: Path ->
         val verified = openKeyFile(Files.readAllBytes(tmp), passphrase, tmp.toString())
         try {
             check(verified.contentEquals(masterKey)) { "The new key file is not what was written; the old one was kept." }
         } finally {
             verified.fill(0)
         }
-    })
+    }
+    if (createNew) createKeyFileExclusively(keyPath, blob, verify) else OwnerOnlyAtomicWrite.replace(keyPath, blob, verify = verify)
 }
 
 private fun deriveKek(

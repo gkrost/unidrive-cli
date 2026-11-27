@@ -49,15 +49,21 @@ class XtraKeyManager(private val keyPath: Path) {
 
     fun exists(): Boolean = Files.exists(keyPath)
 
+    /**
+     * A fresh key pair under [passphrase]; never over an existing key file. The install is a create-new
+     * ([createKeyFileExclusively]): of two generates racing for one path exactly one lands, and the other throws
+     * [IllegalStateException] holding no key.
+     */
     fun generate(passphrase: CharArray) {
         require(passphrase.size >= MIN_PASSPHRASE_LENGTH) { "Passphrase must be at least $MIN_PASSPHRASE_LENGTH characters" }
+        check(!exists()) { "X-tra key file already exists, refusing to replace it: $keyPath" }
         val keyGen = KeyPairGenerator.getInstance("RSA")
         keyGen.initialize(RSA_KEY_SIZE, SecureRandom())
         val pair = keyGen.generateKeyPair()
 
+        writeKeyFile(passphrase, pair.private.encoded, createNew = true)
         privateKey = pair.private
         publicKey = publicOf(pair.private)
-        writeKeyFile(passphrase, pair.private.encoded)
     }
 
     fun load(passphrase: CharArray) {
@@ -129,7 +135,7 @@ class XtraKeyManager(private val keyPath: Path) {
         return KeyFactory.getInstance("RSA").generatePublic(RSAPublicKeySpec(rsaPriv.modulus, rsaPriv.publicExponent))
     }
 
-    private fun writeKeyFile(passphrase: CharArray, pkcs8Bytes: ByteArray) {
+    private fun writeKeyFile(passphrase: CharArray, pkcs8Bytes: ByteArray, createNew: Boolean = false) {
         val salt = randomBytes(SALT_LENGTH)
         val iv = randomBytes(IV_LENGTH)
         val key = deriveKey(passphrase, salt)
@@ -137,7 +143,7 @@ class XtraKeyManager(private val keyPath: Path) {
         Files.createDirectories(keyPath.parent)
         // archive#1053, the vault's rule: the key file is the only copy of what decrypts the account's content,
         // so the new bytes replace the old only once they decrypt back to what was written.
-        OwnerOnlyAtomicWrite.replace(keyPath, salt + iv + encrypted, verify = { tmp ->
+        val verify = { tmp: Path ->
             val onDisk = Files.readAllBytes(tmp)
             check(onDisk.size >= SALT_LENGTH + IV_LENGTH + GCM_TAG_BITS / 8) { "The new key file is truncated; the old one was kept." }
             val diskIv = onDisk.copyOfRange(SALT_LENGTH, SALT_LENGTH + IV_LENGTH)
@@ -145,7 +151,12 @@ class XtraKeyManager(private val keyPath: Path) {
             check(decryptBlob(key, diskIv, diskCiphertext).contentEquals(pkcs8Bytes)) {
                 "The new key file is not what was written or does not decrypt; the old one was kept."
             }
-        })
+        }
+        if (createNew) {
+            createKeyFileExclusively(keyPath, salt + iv + encrypted, verify)
+        } else {
+            OwnerOnlyAtomicWrite.replace(keyPath, salt + iv + encrypted, verify = verify)
+        }
     }
 
     private fun deriveKey(
