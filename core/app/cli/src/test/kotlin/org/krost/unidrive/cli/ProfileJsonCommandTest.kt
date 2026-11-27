@@ -616,7 +616,7 @@ class ProfileJsonCommandTest {
 
         val work = listed("work")
         assertFalse(work.getValue("xtra_encryption").jsonPrimitive.boolean)
-        assertEquals("aes-gcm-sym", work.getValue("xtra_algorithm").jsonPrimitive.content, "a new installation defaults to the symmetric chain")
+        assertEquals("aes-gcm", work.getValue("xtra_algorithm").jsonPrimitive.content)
     }
 
     @Test
@@ -649,7 +649,7 @@ class ProfileJsonCommandTest {
         val r = json()
         assertTrue(r.getValue("ok").jsonPrimitive.boolean)
         assertEquals("age-v1", r.getValue("value").jsonPrimitive.content)
-        assertEquals("aes-gcm-sym", r.getValue("previous").jsonPrimitive.content)
+        assertEquals("aes-gcm", r.getValue("previous").jsonPrimitive.content)
         assertTrue(r.getValue("restart_required").jsonPrimitive.boolean, "the daemon wraps the provider at start")
         assertEquals(twoProfiles.replace(withPoll, withPoll + "xtra_algorithm = \"age-v1\"\n"), config())
         assertEquals("age-v1", listed("work").getValue("xtra_algorithm").jsonPrimitive.content)
@@ -706,7 +706,7 @@ class ProfileJsonCommandTest {
         withState()
 
         assertEquals(0, run("profile", "set", "work", "xtra_encryption", "false", "--json"), stderr())
-        assertEquals(0, run("profile", "set", "work", "xtra_algorithm", "aes-gcm-sym", "--json"), stderr())
+        assertEquals(0, run("profile", "set", "work", "xtra_algorithm", "aes-gcm", "--json"), stderr())
         assertEquals(0, run("profile", "set", "work", "xtra_algorithm", "--unset", "--json"), stderr())
     }
 
