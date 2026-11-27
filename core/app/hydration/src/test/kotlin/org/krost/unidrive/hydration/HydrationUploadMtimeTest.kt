@@ -148,6 +148,21 @@ class HydrationUploadMtimeTest {
     }
 
     @Test
+    fun `a set time outside the years 0001 to 9999 is refused and never reaches the copy`() = runTest {
+        val env = HydrationTestEnv()
+        val copyTime = golden.toEpochMilli() + 60_000
+        val cachePath = copyInto(env, "/copy.txt", "copied bytes", copyTime)
+        val handler = HydrationIpcHandler(env.hydration)
+
+        for (millis in listOf(CLIENT_SET_TIME_RANGE.first - 1, CLIENT_SET_TIME_RANGE.last + 1, Long.MIN_VALUE, Long.MAX_VALUE)) {
+            val reply = handler.handle("c1", openWriteRequest(cachePath, "mtime_ms" to JsonPrimitive(millis)))
+            assertEquals("""{"ok":false,"error":"invalid_mtime_ms"}""", reply, "mtime_ms $millis")
+        }
+        assertEquals(copyTime, Files.getLastModifiedTime(cachePath).toMillis(), "no out-of-range time reached the copy")
+        assertNull(env.providerForTest.uploadMtimes["/copy.txt"], "nothing was uploaded behind the refusals")
+    }
+
+    @Test
     fun `a set time is never stamped on a cache path outside the cache folder`() = runTest {
         val env = HydrationTestEnv()
         copyInto(env, "/copy.txt", "copied bytes")
