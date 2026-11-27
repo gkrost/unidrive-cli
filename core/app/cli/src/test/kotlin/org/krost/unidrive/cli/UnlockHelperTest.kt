@@ -62,6 +62,32 @@ class UnlockHelperTest {
     }
 
     @Test
+    fun `an error text outside the code alphabet is reported as invalid_error_code`() {
+        for (text in listOf("two\nlines", "UPPER", "with space", "", "x".repeat(65), "café", "a-b")) {
+            val reply = """{"error":${JsonPrimitive(text)}}""".toByteArray()
+            assertEquals(UnlockHelper.Result.Hard("invalid_error_code"), UnlockHelper.parse(reply), "[$text]")
+        }
+        assertEquals(UnlockHelper.Result.Hard("witness_mismatch"), UnlockHelper.parse("""{"error":"witness_mismatch"}""".toByteArray()))
+        assertEquals(UnlockHelper.Result.Hard("a".repeat(64)), UnlockHelper.parse("""{"error":"${"a".repeat(64)}"}""".toByteArray()))
+    }
+
+    @Test
+    fun `the helper's stderr is discarded, not left as a pipe nobody reads`() {
+        val builder = UnlockHelper.helperProcessBuilder(dir.resolve("helper"))
+        assertEquals(ProcessBuilder.Redirect.DISCARD, builder.redirectError())
+    }
+
+    @Test
+    fun `the reply ends at the first newline, a helper that keeps stdout open does not stall`() {
+        val reply = """{"error":"declined"}""" + "\n"
+        val process = OpenStdoutProcess(java.io.ByteArrayInputStream(reply.toByteArray()))
+        val started = System.nanoTime()
+        val result = UnlockHelper.readReply(process)
+        assertEquals(UnlockHelper.Result.Soft("declined"), result)
+        assertTrue((System.nanoTime() - started) < 10_000_000_000L, "returned long before the 60 s timeout")
+    }
+
+    @Test
     fun `a malformed reply is the hard error invalid_reply`() {
         for (bytes in listOf("".toByteArray(), "not json".toByteArray(), "[1]".toByteArray(), "{}".toByteArray(), """{"secret":"not-base64!"}""".toByteArray())) {
             assertTrue(UnlockHelper.parse(bytes) is UnlockHelper.Result.Hard, String(bytes))
@@ -122,6 +148,26 @@ class UnlockHelperTest {
         Files.setPosixFilePermissions(script, java.nio.file.attribute.PosixFilePermissions.fromString("rwxr-x---"))
         return script
     }
+}
+
+/** A helper that answered one line and still holds its stdout open (a grandchild, a slow exit). */
+private class OpenStdoutProcess(
+    first: java.io.InputStream,
+) : Process() {
+    private val stdout: java.io.InputStream =
+        java.io.SequenceInputStream(first, java.io.PipedInputStream(java.io.PipedOutputStream()))
+
+    override fun getOutputStream(): java.io.OutputStream = java.io.OutputStream.nullOutputStream()
+
+    override fun getInputStream(): java.io.InputStream = stdout
+
+    override fun getErrorStream(): java.io.InputStream = java.io.InputStream.nullInputStream()
+
+    override fun waitFor(): Int = 0
+
+    override fun exitValue(): Int = 0
+
+    override fun destroy() {}
 }
 
 /**

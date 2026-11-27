@@ -56,7 +56,7 @@ internal object UnlockHelper {
     ): Result {
         val process =
             try {
-                childProcessBuilder(listOf(helperPath.toString())).start()
+                helperProcessBuilder(helperPath).start()
             } catch (_: Exception) {
                 return Result.Hard("spawn_failed")
             }
@@ -76,11 +76,22 @@ internal object UnlockHelper {
         }
     }
 
+    /**
+     * The helper's process builder: no passphrase variables ([childProcessBuilder]); stderr is discarded, since nothing
+     * reads it and a helper that fills the pipe buffer before it answers would stall until the timeout.
+     */
+    internal fun helperProcessBuilder(helperPath: Path): ProcessBuilder =
+        childProcessBuilder(listOf(helperPath.toString())).redirectError(ProcessBuilder.Redirect.DISCARD)
+
+    // The codes of the protocol are short snake-case tokens. Anything else is a helper bug or an attempt to forge a log
+    // line or smuggle text into a refusal, and never leaves this file.
+    private val ERROR_CODE = Regex("[a-z0-9_]{1,64}")
+
     private const val MAX_REPLY_BYTES = 64 * 1024
 
     // One daemon reader thread with bounded, preallocated reads (no available(): unreliable on Windows pipes), joined with
     // the timeout. The thread scrubs the buffer in its own finally; a timeout or an oversized reply kills the helper.
-    private fun readReply(process: Process): Result {
+    internal fun readReply(process: Process): Result {
         val buffer = ByteArray(MAX_REPLY_BYTES + 1)
         var count = 0
         var failed = false
@@ -91,6 +102,13 @@ internal object UnlockHelper {
                         while (count < buffer.size) {
                             val read = stream.read(buffer, count, buffer.size - count)
                             if (read < 0) break
+                            val newline = (count until count + read).firstOrNull { buffer[it] == '\n'.code.toByte() }
+                            if (newline != null) {
+                                // The protocol is one line: the reply ends here, whatever the helper still holds open.
+                                buffer.fill(0, newline, count + read)
+                                count = newline
+                                break
+                            }
                             count += read
                         }
                     }
@@ -129,7 +147,11 @@ internal object UnlockHelper {
         if (secret != null) return decodeSecret(secret)
         val error = (reply["error"] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content
             ?: return Result.Hard("invalid_reply")
-        return if (error in SOFT_CODES) Result.Soft(error) else Result.Hard(error)
+        return when {
+            error in SOFT_CODES -> Result.Soft(error)
+            ERROR_CODE.matches(error) -> Result.Hard(error)
+            else -> Result.Hard("invalid_error_code")
+        }
     }
 
     // The reply's base64 secret as a char array; every intermediate buffer is wiped.
