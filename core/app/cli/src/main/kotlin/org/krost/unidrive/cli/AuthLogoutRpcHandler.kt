@@ -19,7 +19,7 @@ import java.nio.file.Path
 /**
  * The `auth.logout` IPC verb (docs/dev/specs/unidrive-daemon-design.md §4.10): a front-end signs an
  * account out while its daemon is running. The daemon — the profile-lock holder — revokes the
- * provider's token where the provider has a revoke call, deletes the credential files and goes on running
+ * provider's token where the provider has a revoke call, deletes the credential files (not the account name, which belongs to the kept state) and goes on running
  * without credentials; the sync state is never touched (a front-end's sign-out must not lose it, and the
  * daemon holds state.db open). The reply says what happened; the CLI's `logout --json` wraps it.
  *
@@ -110,9 +110,10 @@ internal class AuthLogoutRpcHandler(
         // that stored its token before this is deleted with the rest below.
         forgetCredentials()
         var credentialsRemoved = false
-        for (name in StoragePermissions.CREDENTIAL_FILES) {
+        for (name in StoragePermissions.SIGN_OUT_FILES) {
             if (Files.deleteIfExists(profileDir.resolve(name))) credentialsRemoved = true
         }
+        logSignOut(VERB, profileDir.fileName.toString(), stateKept = true, scope = "full")
         return """{"ok":true,"revoked":${revocation.revokedJson()},"revocation":"${revocation.token}","credentials_removed":$credentialsRemoved}"""
     }
 

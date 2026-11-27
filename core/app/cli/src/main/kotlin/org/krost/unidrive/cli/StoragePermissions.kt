@@ -25,6 +25,13 @@ internal object StoragePermissions {
     val CREDENTIAL_FILES = listOf("token.json", "credentials.json", "device-flow.json", "pending_dropbox_flow.json", AccountName.FILE_NAME)
 
     /**
+     * What a sign-out deletes: the credential files without the account name. The name says whose account the kept sync
+     * state describes, so the next sign-in is compared with it and its email is pre-filled; it goes with the state
+     * (`--delete-state`, [STATE_FILES]) or with the profile, never with the credentials.
+     */
+    val SIGN_OUT_FILES = CREDENTIAL_FILES.filter { it != AccountName.FILE_NAME }
+
+    /**
      * The credential files of [profileDir] first, then the folder itself (it also holds state.db and
      * the journals). Throws when either cannot be restricted: the engine does not start on credentials
      * it cannot keep to the current user. A profile folder that does not exist yet is left alone (the

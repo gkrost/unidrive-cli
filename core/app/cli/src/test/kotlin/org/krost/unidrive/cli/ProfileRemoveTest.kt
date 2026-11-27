@@ -1104,6 +1104,16 @@ class ProfileRemoveTest {
     private fun defaultProfile() = SyncConfig.parseRaw(Files.readString(configFile)).general.default_profile
 
     @Test
+    fun `profile remove deletes the stored account name with the profile`() {
+        populate()
+        org.krost.unidrive.AccountName.write(goneDir, "ada@example.test")
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--json"), stderr())
+
+        assertFalse(Files.exists(goneDir.resolve(org.krost.unidrive.AccountName.FILE_NAME)), "the name goes with the profile")
+    }
+
+    @Test
     fun `profile remove deletes the profile's hydration and ignore-rules caches`() {
         populate()
         populateCaches()

@@ -92,7 +92,7 @@ class LogoutCommandTest {
     }
 
     @Test
-    fun `logout keeps the profile's stored user and logout --delete-state removes it`() {
+    fun `logout keeps the profile's stored user and name and logout --delete-state removes them`() {
         val root = Files.createDirectory(configDir.resolve("root"))
         writeLocalfsConfig(root)
         val profileDir = Files.createDirectory(configDir.resolve("work"))
@@ -101,12 +101,13 @@ class LogoutCommandTest {
 
         assertEquals(0, CommandLine(Main()).execute("-c", configDir.toString(), "-p", "work", "logout"))
 
-        assertFalse(Files.exists(profileDir.resolve(org.krost.unidrive.AccountName.FILE_NAME)), "the name goes with the credentials")
+        assertEquals("Ada", org.krost.unidrive.AccountName.read(profileDir), "a keep-state sign-out keeps the name: the next sign-in is compared with it")
         assertTrue(Files.exists(owner), "the stored user belongs to the kept state: the next sign-in is compared with it")
 
         assertEquals(0, CommandLine(Main()).execute("-c", configDir.toString(), "-p", "work", "logout", "--delete-state"))
 
         assertFalse(Files.exists(owner), "deleting the state deletes whose state it was")
+        assertFalse(Files.exists(profileDir.resolve(org.krost.unidrive.AccountName.FILE_NAME)), "a sign-out that deletes the state removes the name")
     }
 
     // An account (authType other than None) that cannot be built is not signed out: its credentials stay,

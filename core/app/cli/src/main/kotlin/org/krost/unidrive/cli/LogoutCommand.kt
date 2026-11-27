@@ -9,6 +9,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import org.krost.unidrive.AccountName
 import org.krost.unidrive.AccountOwner
 import org.krost.unidrive.UnprovenAccountId
 import org.krost.unidrive.AuthenticationException
@@ -196,7 +197,7 @@ internal suspend fun signOutProvider(provider: CloudProvider): Revocation {
 }
 
 internal fun deleteCredentialFiles(profileDir: Path): List<String> =
-    StoragePermissions.CREDENTIAL_FILES.mapNotNull { name ->
+    StoragePermissions.SIGN_OUT_FILES.mapNotNull { name ->
         val file = profileDir.resolve(name)
         if (Files.deleteIfExists(file)) file.toString() else null
     }
@@ -218,6 +219,7 @@ internal val STATE_FILES =
         listOf("state.db", "failures.jsonl", LocalFsProviderFactory.ROOT_SEEN_MARKER) +
         StateDatabase.sidecarNames() +
         AccountOwner.FILE_NAME +
+        AccountName.FILE_NAME +
         UnprovenAccountId.FILE_NAME
 
 @Suppress("TooGenericExceptionCaught")
@@ -407,6 +409,7 @@ private fun logoutStoppedProfile(
         removed += deleteStateFiles(target.profileDir)
         stateKept = false
     }
+    logSignOut("logout", target.name, stateKept, "local")
     val json =
         buildJsonObject {
             put("ok", true)
@@ -493,3 +496,15 @@ internal fun presenceRefusal(
 /** A JSON boolean member, or null when it is absent or not a boolean literal. */
 private fun JsonObject.optBoolean(key: String): Boolean? =
     (this[key] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toBooleanStrictOrNull()
+
+private val signOutLog = org.slf4j.LoggerFactory.getLogger("org.krost.unidrive.cli.SignOut")
+
+/** The one INFO line of a successful sign-out: what ran, for which profile, what was kept, who asked. No names, no secrets. */
+internal fun logSignOut(
+    verb: String,
+    profile: String,
+    stateKept: Boolean,
+    scope: String,
+) {
+    signOutLog.info("sign-out: verb={} profile={} state_kept={} account_name_kept={} scope={}", verb, profile, stateKept, stateKept, scope)
+}

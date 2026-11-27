@@ -1,5 +1,9 @@
 package org.krost.unidrive.cli
 
+import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.Logger
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -191,6 +195,34 @@ class AuthLogoutRpcHandlerTest {
         assertEquals(listOf(true), forgetCredentialsCalls, "the daemon's instance forgets once, before the files go")
         assertEquals(1, provider.logoutCalls)
         assertEquals(listOf("revoke", "logout"), provider.calls, "the token is revoked while it is still there")
+    }
+
+    @Test
+    fun `a sign-out keeps the account name and logs one INFO line without secrets`() {
+        Files.writeString(dir.resolve("credentials.json"), """{"secret":"x"}""")
+        Files.writeString(dir.resolve("token.json"), """{"secret":"y"}""")
+        org.krost.unidrive.AccountName.write(dir, "ada@example.test")
+        val logs = ListAppender<ILoggingEvent>().also { it.start() }
+        val root = org.slf4j.LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME) as Logger
+        val before = root.level
+        root.level = Level.TRACE
+        root.addAppender(logs)
+        try {
+            val r = call("""{"verb":"auth.logout"}""")
+            assertTrue(r.getValue("ok").jsonPrimitive.booleanOrNull == true)
+        } finally {
+            root.detachAppender(logs)
+            root.level = before
+        }
+
+        assertFalse(Files.exists(dir.resolve("credentials.json")))
+        assertFalse(Files.exists(dir.resolve("token.json")))
+        assertEquals("ada@example.test", org.krost.unidrive.AccountName.read(dir), "the account name outlives a keep-state sign-out")
+        val lines = logs.list.filter { it.level == Level.INFO && it.formattedMessage.startsWith("sign-out:") }
+        assertEquals(1, lines.size, logs.list.map { it.formattedMessage }.toString())
+        val line = lines.single().formattedMessage
+        assertTrue("verb=auth.logout" in line && "state_kept=true" in line && "account_name_kept=true" in line, line)
+        assertFalse("ada@example.test" in line || "secret" in line, line)
     }
 
     // archive#1052: a provider without a revoke call used to answer revoked:true because logout() returned.
