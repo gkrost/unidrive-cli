@@ -182,6 +182,9 @@ class IpcContractLevelTest {
                 // 18 (gkrost/unidrive-cli#948): a name_clash refusal names the other spelling (`sibling`) and, when the NFC spelling is
                 // refused because the decomposed twin holds unsynced bytes, the reason. Members of an existing reply, so no capability.
                 setOf("field:hydration.name_clash.sibling", "field:hydration.name_clash.reason"),
+                // 19 (gkrost/unidrive-cli#949): hydration.open_write takes `mtime_ms`, the client's set time, and re-stamps the
+                // cache copy with it before the upload is queued; an older engine ignores the member, so the capability names it.
+                setOf("capability:hydration.open_write_mtime"),
             )
     }
 }

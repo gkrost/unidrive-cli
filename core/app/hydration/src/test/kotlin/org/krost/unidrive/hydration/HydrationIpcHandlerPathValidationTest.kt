@@ -85,6 +85,7 @@ class HydrationIpcHandlerPathValidationTest {
             path: String,
             cachePath: Path,
             baseEtag: String?,
+            mtimeMillis: Long?,
         ): OpenResult {
             calls += Call("open_write", listOf(path))
             return OpenResult.Ok(cache)

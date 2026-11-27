@@ -30,8 +30,8 @@ internal class ScriptedHydration : Hydration {
         return open
     }
 
-    override suspend fun openForWrite(connectionId: String, handleId: String, path: String, cachePath: Path, baseEtag: String?): OpenResult {
-        calls += HydrationCall("open_write", listOf(connectionId, handleId, path, cachePath.toString(), baseEtag))
+    override suspend fun openForWrite(connectionId: String, handleId: String, path: String, cachePath: Path, baseEtag: String?, mtimeMillis: Long?): OpenResult {
+        calls += HydrationCall("open_write", listOf(connectionId, handleId, path, cachePath.toString(), baseEtag, mtimeMillis))
         return open
     }
 

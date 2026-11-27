@@ -1770,7 +1770,7 @@ class IpcContractCorpusTest {
             else -> OpenResult.Ok(cachePathFor(path))
         }
 
-        override suspend fun openForWrite(connectionId: String, handleId: String, path: String, cachePath: Path, baseEtag: String?): OpenResult =
+        override suspend fun openForWrite(connectionId: String, handleId: String, path: String, cachePath: Path, baseEtag: String?, mtimeMillis: Long?): OpenResult =
             when {
                 // A cache path outside the profile's hydration cache folder is refused before anything else.
                 !cachePath.startsWith(cacheDir) -> OpenResult.Failed(HydrationError.InvalidPath)

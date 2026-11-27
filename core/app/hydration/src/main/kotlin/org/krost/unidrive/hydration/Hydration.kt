@@ -28,7 +28,12 @@ interface Hydration {
      * row's token the write is refused with [HydrationError.Conflict] BEFORE
      * any upload starts — the remote is untouched and the client keeps both
      * copies. Null (or a row with no recorded token) skips the guard: a
-     * never-uploaded row has no remote version to lose.
+     * never-uploaded row has no remote version to lose. [mtimeMillis] is the
+     * client's modification time for the file (a copy tool's utimens, handed
+     * over with the write): the cache copy is re-stamped with it before any
+     * upload is queued, so the row's watermark and the provider's own time
+     * field carry the client's time even when the copy's own stamp raced the
+     * hand-over. Null keeps the cache copy's mtime as the carrier.
      */
     suspend fun openForWrite(
         connectionId: String,
@@ -36,6 +41,7 @@ interface Hydration {
         path: String,
         cachePath: Path,
         baseEtag: String? = null,
+        mtimeMillis: Long? = null,
     ): OpenResult
     suspend fun closeReadHandle(connectionId: String, handleId: String) {}
 

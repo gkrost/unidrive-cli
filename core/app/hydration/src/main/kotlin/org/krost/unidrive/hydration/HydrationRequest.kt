@@ -67,6 +67,16 @@ internal class HydrationRequest private constructor(private val members: JsonObj
         return digits.toLongOrNull()
     }
 
+    /**
+     * An OPTIONAL whole-number member as a Long, sign included (a file's modification time may predate the epoch); null
+     * when absent or anything else (a string, null, a fraction, an exponent, garbage, a number past Long).
+     */
+    fun signedWholeNumber(key: String): Long? {
+        val text = (members[key] as? JsonPrimitive)?.takeIf { !it.isString }?.content ?: return null
+        if (text.isEmpty() || text.length > MAX_LONG_DIGITS + 1) return null
+        return text.toLongOrNull()
+    }
+
     companion object {
         // A count longer than this cannot be an Int; read it no further.
         private const val MAX_COUNT_DIGITS = 10

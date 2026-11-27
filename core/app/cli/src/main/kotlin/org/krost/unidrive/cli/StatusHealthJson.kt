@@ -116,6 +116,9 @@ internal const val LIST_CHANGED_BY_CAPABILITY = "hydration.list_changed_by"
  */
 internal const val SWEEP_PROGRESS_CAPABILITY = "hydration.sweep_progress"
 
+/** gkrost/unidrive-cli#949: `hydration.open_write` takes `mtime_ms`, the client's set time, and stamps the cache copy with it. */
+internal const val OPEN_WRITE_MTIME_CAPABILITY = "hydration.open_write_mtime"
+
 /** The `daemon.status` capability that says `ignore.explain` answers a batch of `paths` (gkrost/unidrive-cli#445). */
 internal const val IGNORE_EXPLAIN_BATCH_CAPABILITY = "ignore.explain_batch"
 
@@ -422,6 +425,7 @@ internal fun ipcStatusJson(requestCounts: Map<String, Long>): JsonObject =
  * `hydration.list_changed_by` (gkrost/unidrive-cli#849): a hydration.list file entry names who last changed the row and when,
  * where the row knows.
  * `hydration.sweep_progress` (gkrost/unidrive-cli#851): unlink/rmdir take `sweep_total` and daemon.status carries `delete_sweep` while a released hold's sweep is under way.
+ * `hydration.open_write_mtime` (gkrost/unidrive-cli#949): open_write takes `mtime_ms` and re-stamps the cache copy with it.
  * `history.order.v1` and `history.retry.v1` (gkrost/unidrive-cli#848): `history.list` takes an `order` member, and a
  * failed upload row can be queued again through `history.retry` — where a history is open to serve them from.
  */
@@ -444,7 +448,7 @@ internal fun daemonCapabilitiesJson(
 ): String =
     (
         profileMode.capabilities + NOTIFICATIONS_STATUS_CAPABILITY +
-            (if (hydration) listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY, HYDRATION_STAT_CAPABILITY, CANCEL_READ_CAPABILITY, HANDLE_STATUS_CAPABILITY, HYDRATION_LOCATE_CAPABILITY, SUBSCRIBE_REPLAY_CAPABILITY, LIST_COMPLETE_CAPABILITY, RMDIR_DISCARD_LOCAL_CAPABILITY, OPEN_READ_ETAG_CAPABILITY, RMDIR_NOT_EMPTY_REASON_CAPABILITY, LIST_CHANGED_BY_CAPABILITY, SWEEP_PROGRESS_CAPABILITY) else emptyList()) +
+            (if (hydration) listOf(RUNNING_UPLOADS_CAPABILITY, MATCHES_LOCAL_CAPABILITY, REFUSE_NAME_CAPABILITY, LIST_LIVE_CAPABILITY, LIST_CONTENT_ID_CAPABILITY, HYDRATION_STAT_CAPABILITY, CANCEL_READ_CAPABILITY, HANDLE_STATUS_CAPABILITY, HYDRATION_LOCATE_CAPABILITY, SUBSCRIBE_REPLAY_CAPABILITY, LIST_COMPLETE_CAPABILITY, RMDIR_DISCARD_LOCAL_CAPABILITY, OPEN_READ_ETAG_CAPABILITY, RMDIR_NOT_EMPTY_REASON_CAPABILITY, LIST_CHANGED_BY_CAPABILITY, SWEEP_PROGRESS_CAPABILITY, OPEN_WRITE_MTIME_CAPABILITY) else emptyList()) +
             (if (historyOpen) listOf(HISTORY_ORDER_CAPABILITY, HISTORY_RETRY_CAPABILITY, HISTORY_REPORT_CAPABILITY, HISTORY_REPORT_COUNT_CAPABILITY) else emptyList()) +
             (if (uploadIgnore) listOf(IGNORE_EXPLAIN_BATCH_CAPABILITY) else emptyList()) +
             (if (viewNamespaces.isEmpty()) emptyList() else listOf("views", "view_page")) +
