@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
@@ -115,29 +116,29 @@ class StateDatabaseBatchWriteLockTest {
     fun `a manual batch waits out a foreign writer that holds the write lock past the busy timeout`() {
         val blocker = StateDatabase(dbFile, busyTimeoutMs = 100).also { it.initialize() }
         val waiter = StateDatabase(dbFile, busyTimeoutMs = 100).also { it.initialize() }
+        val defaultBackoff = sqliteBusyBackoff
+        val backoffs = mutableListOf<Long>()
         try {
             blocker.beginBatch()
             blocker.upsertEntry(entry("/held.txt"))
 
-            // The blocker releases the write lock while the waiter's BEGIN is in its retries: before
-            // the retry existed, the waiter's first BEGIN failed at its (short) busy timeout and the
-            // batch died with SQLITE_BUSY.
-            val releaser =
-                Thread {
-                    Thread.sleep(300)
-                    blocker.commitBatch()
-                }
-            releaser.start()
-            try {
-                waiter.beginBatch()
-                waiter.upsertEntry(entry("/retried.txt"))
-                waiter.commitBatch()
-            } finally {
-                releaser.join(10_000)
+            // The blocker holds the write lock, so the waiter's first BEGIN fails at its (short) busy
+            // timeout: before the retry existed, the batch died there with SQLITE_BUSY. The blocker lets
+            // go of the lock from inside the backoff, so the retry after it runs on a free lock, with no
+            // wall-clock race.
+            sqliteBusyBackoff = { ms ->
+                backoffs += ms
+                if (backoffs.size == 1) blocker.commitBatch()
             }
+            waiter.beginBatch()
+            waiter.upsertEntry(entry("/retried.txt"))
+            waiter.commitBatch()
 
+            assertEquals(listOf(SQLITE_BUSY_BACKOFF_MS), backoffs, "the first BEGIN must have failed busy and been retried once")
+            assertNotNull(waiter.getEntry("/held.txt"), "the foreign writer's batch must have committed")
             assertNotNull(waiter.getEntry("/retried.txt"), "the batch must land once the foreign writer releases the lock")
         } finally {
+            sqliteBusyBackoff = defaultBackoff
             runCatching { blocker.close() }
             runCatching { waiter.close() }
         }

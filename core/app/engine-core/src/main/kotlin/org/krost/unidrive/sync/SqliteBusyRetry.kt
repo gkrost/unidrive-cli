@@ -12,6 +12,9 @@ internal const val SQLITE_BUSY_ATTEMPTS: Int = 3
 /** The pause between two BEGIN attempts (a busy handler polls, it does not queue; see [retryOnSqliteBusy]). */
 internal const val SQLITE_BUSY_BACKOFF_MS: Long = 200L
 
+// Test seam: how the retry of [openTransaction] waits out a backoff. A test that replaces it restores it.
+internal var sqliteBusyBackoff: (Long) -> Unit = { Thread.sleep(it) }
+
 /**
  * A bounded retry on SQLITE_BUSY around [action], the wrapper the engine's transaction opens run under.
  *
@@ -30,7 +33,7 @@ internal const val SQLITE_BUSY_BACKOFF_MS: Long = 200L
  * first, so the report of a run that never landed shows all of its attempts.
  */
 internal fun <T> retryOnSqliteBusy(
-    sleeper: (Long) -> Unit = { Thread.sleep(it) },
+    sleeper: (Long) -> Unit = sqliteBusyBackoff,
     action: () -> T,
 ): T {
     var firstFailure: SQLException? = null
