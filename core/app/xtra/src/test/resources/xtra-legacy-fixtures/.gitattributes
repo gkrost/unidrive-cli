@@ -1,0 +1,2 @@
+# Frozen by the code of main before aes-gcm-sym existed; the tests read these bytes exactly.
+* binary
