@@ -2653,7 +2653,7 @@ class InternxtProvider(
                     MetaRowState.LIVE -> ItemRemoteState.Live(false)
                 }
             } catch (e: InternxtApiException) {
-                if (e.statusCode != 404) throw e
+                if (e.statusCode !in PERMANENT_ABSENCE_STATUSES) throw e
                 null
             }
         if (fileState != null) return fileState
@@ -5588,27 +5588,6 @@ class InternxtProvider(
 
         /** The server's own word for a folder in the trash: its items are still there, below it. */
         internal fun InternxtFolder.isTrashed(): Boolean = status == "TRASHED"
-
-        internal enum class MetaRowState { LIVE, TRASHED, GONE }
-
-        /**
-         * What a by-id meta row says. Internxt's server sets `deleted = true` when an item goes to the trash and
-         * `removed = true` when it is deleted for good (status `TRASHED` and `DELETED`). The status decides; the flags
-         * are read only when it says `EXISTS` (the models' default for a row without one), `removed` first because
-         * the stronger fact wins.
-         */
-        internal fun metaRowState(
-            status: String,
-            deleted: Boolean,
-            removed: Boolean,
-        ): MetaRowState =
-            when {
-                status == "DELETED" -> MetaRowState.GONE
-                status == "TRASHED" -> MetaRowState.TRASHED
-                removed -> MetaRowState.GONE
-                deleted -> MetaRowState.TRASHED
-                else -> MetaRowState.LIVE
-            }
 
         // A page of the folders stream into the listing: the live folders go into [folders], the rest leave it, and
         // the trashed ones among the rest become ancestor-only records in [ancestors] (a folder that is live again
