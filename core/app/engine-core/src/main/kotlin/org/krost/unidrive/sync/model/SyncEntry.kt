@@ -94,7 +94,24 @@ data class SyncEntry(
     // never a wrong one.
     val changedBy: String? = null,
     val changedAtMs: Long? = null,
+    // gkrost/unidrive-cli#1018 item 16: the SHA-256 of the plaintext this machine sent in an upload, with the key of the remote
+    // version that upload produced. Kept apart from [localHash], which a download overwrites and a row without local bytes
+    // drops: this one only an upload that sent bytes writes ([org.krost.unidrive.engine.Transfers.withSentHash]), it stays
+    // while the row is not hydrated, and a download of that version is refused when its plaintext differs. Null = no upload of
+    // this machine is known for the row (every row from before the column).
+    val uploadDigest: UploadDigest? = null,
 ) {
+    /** The key of the remote version this row records ([UploadDigest.keyOf]). A computed property, like [writeToken]. */
+    val remoteVersionKey: String
+        get() = UploadDigest.keyOf(remoteId, remoteHash, remoteVersion, remoteSize, remoteModified)
+
+    /**
+     * This row with the upload digest [before] carried, while it names the version this row records: a download of the
+     * version this machine uploaded is still that upload's, and a download of another version has no upload digest.
+     */
+    fun keepingUploadDigestOf(before: SyncEntry?): SyncEntry =
+        copy(uploadDigest = before?.uploadDigest?.takeIf { it.versionKey == remoteVersionKey })
+
     /**
      * The stored object a download of this row may be seeded with ([org.krost.unidrive.CloudProvider.seedStoredObject]):
      * [storedObject], but only while the row is alive. A trashed or deleted row leaves a fence — its columns stay, but

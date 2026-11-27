@@ -2968,6 +2968,7 @@ open class SyncEngine(
         // What the download keeps aside at its placement.
         var keptLocalEdit: String? = null
         val placementGuard = if (shouldDownload) placementGuard(action.path, localPath, keepNow, lostBytesBackedUp) else null
+        val before = if (shouldDownload) db.getEntry(action.path) else null // #1018 item 16: its upload digest
 
         withEchoSuppression(action.path) {
             if (item.isFolder) {
@@ -2990,7 +2991,7 @@ open class SyncEngine(
                     // destination is localPath (resolved from the real-local action.path).
                     // archive#491: in the provider's own spelling, which a name that is not NFC keeps at the provider.
                     val (receipt, keptAtPlacement) =
-                        downloadByIdOrPathWithHash(item, remoteGather.cloudPathOf(item), localPath, item.modified?.toEpochMilli(), placementGuard)
+                        downloadByIdOrPathWithHash(item, remoteGather.cloudPathOf(item), localPath, item.modified?.toEpochMilli(), placementGuard, before?.uploadDigest)
                     downloadReceipt = receipt
                     keptLocalEdit = keptAtPlacement
                     downloadedHash = stagedLocalHash(localPath, receipt)
@@ -3007,7 +3008,7 @@ open class SyncEngine(
         // archive#396: only bytes the engine just wrote get a local hash; an adopted file is not re-read.
         db.upsertEntry(
             if (shouldDownload) {
-                withDownloadedHash(entry, checkNotNull(downloadReceipt), downloadedHash)
+                withDownloadedHash(entry, checkNotNull(downloadReceipt), downloadedHash, before)
             } else {
                 entry
             },
@@ -3028,13 +3029,15 @@ open class SyncEngine(
         if (versionManager != null && action.wasHydrated && !item.isFolder) snapshotVersion(action.path, placeholder.resolveLocal(action.path))
         var downloadReceipt: DownloadReceipt? = null
         var downloadedHash: String? = null
+        val before = db.getEntry(action.path) // #1018 item 16: its upload digest
         withEchoSuppression(action.path) {
             if (action.wasHydrated && !item.isFolder) {
                 try {
                     // UD-225b: id-based dispatch (see applyCreatePlaceholder).
                     // archive#115: remote source = item.path (canonical); dest = real-local.
                     val localPath = placeholder.resolveLocal(action.path)
-                    val receipt = downloadByIdOrPathWithHash(item, remoteGather.cloudPathOf(item), localPath, item.modified?.toEpochMilli()).first
+                    val receipt =
+                        downloadByIdOrPathWithHash(item, remoteGather.cloudPathOf(item), localPath, item.modified?.toEpochMilli(), uploadDigest = before?.uploadDigest).first
                     downloadReceipt = receipt
                     downloadedHash = stagedLocalHash(localPath, receipt)
                     if (!receipt.mtimeAppliedBeforePlacement) placeholder.restoreMtime(action.path, item.modified)
@@ -3051,7 +3054,7 @@ open class SyncEngine(
         // archive#396: the hydrated branch above re-downloaded real bytes; metadata-only updates did not.
         db.upsertEntry(
             if (action.wasHydrated && !item.isFolder) {
-                withDownloadedHash(entry, checkNotNull(downloadReceipt), downloadedHash)
+                withDownloadedHash(entry, checkNotNull(downloadReceipt), downloadedHash, before)
             } else {
                 entry
             },
@@ -3103,6 +3106,8 @@ open class SyncEngine(
         destination: Path,
         targetMtimeMillis: Long?,
         guard: PreTransferGuard? = null,
+        // gkrost/unidrive-cli#1018 item 16: the upload digest of the row the download replaces (see Transfers.uploadDigestRefusal).
+        uploadDigest: UploadDigest? = null,
     ): Pair<DownloadReceipt, String?> {
         // Check the provider's result before it can replace the last good local copy. A broken provider may
         // return normally after writing short bytes; its own staging contract is not the mirror's safety net.
@@ -3111,6 +3116,10 @@ open class SyncEngine(
         try {
             val receipt = Transfers.downloadByIdOrPathWithHash(provider, item, remotePath, staging, targetMtimeMillis, fileTally, downloadEventRetries)
             requireCompleteDownload(remotePath, item, receipt)
+            // The version this machine uploaded must bring the bytes that were sent. A refusal leaves the destination as it
+            // is: the staged bytes go in the finally below, before anything was moved.
+            Transfers.uploadDigestRefusal(remotePath, uploadDigest, Transfers.readVersionKey(item, receipt), receipt, provider.hashAlgorithm())
+                ?.let { throw it }
             // gkrost/unidrive-cli#451: the transfer ran; the file may no longer be what the check cleared. A
             // save that landed mid-transfer moves aside as a conflict-local copy before the replace, the way
             // the pre-transfer check one scope earlier kept the edits that landed before it. Stats null (the
@@ -3196,8 +3205,9 @@ open class SyncEngine(
                 absent = preTransferStats == null && !Files.exists(localPath, java.nio.file.LinkOption.NOFOLLOW_LINKS),
             )
         snapshotVersion(action.path, localPath)
-        // UD-113: capture pre-action hash for the audit oldHash field.
-        val prevHash = db.getEntry(action.path)?.remoteHash
+        // UD-113: capture pre-action hash for the audit oldHash field. #1018 item 16: and the row's upload digest.
+        val before = db.getEntry(action.path)
+        val prevHash = before?.remoteHash
         try {
             var downloadReceipt: DownloadReceipt? = null
             var downloadedHash: String? = null
@@ -3212,6 +3222,7 @@ open class SyncEngine(
                     localPath,
                     action.remoteItem.modified?.toEpochMilli(),
                     guard = preTransferGuard,
+                    uploadDigest = before?.uploadDigest,
                 )
                 downloadReceipt = receipt
                 // A provider that reports no bytes while it downloads is charged once, for what it wrote.
@@ -3233,7 +3244,7 @@ open class SyncEngine(
             val entry = entryFromCloudItem(action.remoteItem, action.path, isHydrated = true)
             // #567: the row is committed off the event loop, with the commits of the transfers beside it; this call
             // returns only once it is durable, as the plain upsert did.
-            transferRows.upsertEntry(withDownloadedHash(entry, checkNotNull(downloadReceipt), downloadedHash))
+            transferRows.upsertEntry(withDownloadedHash(entry, checkNotNull(downloadReceipt), downloadedHash, before))
             // The bytes of a renamed item are at the row's path: the failed local move this mark remembers is made up.
             if (db.pendingLocalMarkAt(action.path)?.let { PendingLocal.moveFrom(it) } != null) db.clearPendingLocal(action.path)
             auditLog?.emit(
@@ -4730,10 +4741,13 @@ open class SyncEngine(
         }
     }
 
+    // gkrost/unidrive-cli#1018 item 16: the local hash becomes the downloaded bytes', but the upload digest of the row the download
+    // replaces ([before]) is never replaced by them: it stays while the row records the version it names.
     private suspend fun withDownloadedHash(
         entry: SyncEntry,
         receipt: DownloadReceipt,
         streamedHash: String?,
+        before: SyncEntry?,
     ): SyncEntry =
         if (receipt.plaintextSha256 != null) {
             if ((provider.hashAlgorithm() == null || entry.remoteHash.isNullOrEmpty()) && !entry.isFolder) {
@@ -4747,7 +4761,7 @@ open class SyncEngine(
             }
         } else {
             withLocalHash(entry.sizedByDownload(receipt))
-        }
+        }.keepingUploadDigestOf(before)
 
     // Same guard for a copy of the bytes that is not the sync-root file — the cache copy a
     // hydration downloaded or a write-back was uploaded from. The row records that copy's

@@ -683,6 +683,22 @@ class MountEngine private constructor(
         return refusal
     }
 
+    // gkrost/unidrive-cli#1018 item 16: the version this machine uploaded must bring the bytes that were sent (an item read by its
+    // live id is another item). Refused before the swap: the cache copy and the row stay as they are, and the same version is
+    // refused from memory until the row names another.
+    private fun refuseUnlessUploadedBytes(
+        path: String,
+        entry: SyncEntry,
+        item: CloudItem,
+        fetched: Fetched,
+    ) {
+        if (fetched.liveItem != null) return
+        val refusal =
+            Transfers.uploadDigestRefusal(path, entry.uploadDigest, Transfers.readVersionKey(item, fetched.receipt), fetched.receipt, provider.hashAlgorithm())
+                ?: return
+        throw remembered(path, entry, refusal, untilVersionChanges = true)
+    }
+
     /** How many cloud objects are remembered as truncated; `daemon.status.remote_incomplete.count` reports it. */
     fun remoteIncompleteCount(): Int = remoteIncomplete.count
 
@@ -866,6 +882,7 @@ class MountEngine private constructor(
                     }
                 }
             val downloadedSize = confirmedDownloadSize(path, entry, fetched)
+            refuseUnlessUploadedBytes(path, entry, remoteItem, fetched)
             remoteIncomplete.forget(entry)
             if (options.verifyIntegrity) {
                 // The bytes of an item read by its live id (archive#796) are checked against that item's hash, not the row's.
@@ -1564,7 +1581,8 @@ class MountEngine private constructor(
         // The row just adopted the cache copy's stats, and these are exactly the bytes the
         // write-back sent: hash the cache copy (guarded against a writer landing mid-hash)
         // so the touch shield covers mount-edited files too.
-        val rebaselined = withSentHash(uploaded, cachePath, sent, result.sentSha256, tally)
+        // gkrost/unidrive-cli#1018 item 16: only bytes this call sent are an upload digest; a skipped or adopted upload keeps the row's.
+        val rebaselined = withSentHash(uploaded, cachePath, sent, result.sentSha256, tally, sentBytes = wasSent)
         rowWriteWindow()
         if (!writeIfRowStays(path, existing, rebaselined)) {
             log.warn("uploadFromCache: row for {} moved while the upload was ending; the item landed at {} and is not written back", path, landedRemote)
@@ -2294,10 +2312,14 @@ class MountEngine private constructor(
         sent: Pair<Long, Long>?,
         sentSha256: String? = null,
         tally: FileEventTally? = null,
-    ): SyncEntry = Transfers.withSentHash(entry, local, sent, provider.hashAlgorithm(), log, sentSha256) { fromProvider, ms ->
-        FileEvents.event(FileEvents.Phase.HASH_DONE, entry.path, bytes = sent?.second, ms = ms, tally = tally,
-            extra = listOf("via" to if (fromProvider) "provider" else "file"))
-    }
+        // gkrost/unidrive-cli#1018 item 16: false when this call sent nothing (the cloud held the bytes already, or an earlier attempt
+        // had landed them): the row keeps its upload digest, since only bytes this machine sent are one.
+        sentBytes: Boolean = true,
+    ): SyncEntry =
+        Transfers.withSentHash(entry, local, sent, provider.hashAlgorithm(), log, sentSha256) { fromProvider, ms ->
+            FileEvents.event(FileEvents.Phase.HASH_DONE, entry.path, bytes = sent?.second, ms = ms, tally = tally,
+                extra = listOf("via" to if (fromProvider) "provider" else "file"))
+        }.let { if (sentBytes) it else it.copy(uploadDigest = entry.uploadDigest) }
 
     private fun isTracked(remotePath: String): Boolean = guard.isTracked(remotePath)
 
