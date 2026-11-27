@@ -1,0 +1,105 @@
+package org.krost.unidrive.engine
+
+import org.krost.unidrive.sync.StateDatabase
+import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.testing.TestScratch
+import java.nio.file.Path
+import java.sql.DriverManager
+import java.time.Instant
+import kotlin.test.AfterTest
+import kotlin.test.BeforeTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+/**
+ * The mount's merge moves a pending-upload row aside (`MergeDisplacement.relocate`) so a renamed item can take its path.
+ * The move must be in place: the same stored key gets the new path and the marks stay, so exactly one pending row exists
+ * afterwards and it replays under its marks. An upsert of a copy instead minted a second `local:` key at the target and
+ * left the old row alive, so two pending rows existed for one file and the copy lost `never_submitted`/`upload_refused`.
+ */
+class PendingRowRelocateTest {
+    private lateinit var dir: Path
+    private lateinit var file: Path
+
+    @BeforeTest
+    fun setUp() {
+        dir = TestScratch.directory("unidrive-pending-row-relocate")
+        file = dir.resolve("state.db")
+    }
+
+    @AfterTest
+    fun tearDown() {
+        dir.toFile().deleteRecursively()
+    }
+
+    private fun row(path: String) =
+        SyncEntry(
+            path = path,
+            remoteId = null,
+            remoteHash = null,
+            remoteSize = 3,
+            remoteModified = null,
+            localMtime = 1_700_000_000_000L,
+            localSize = 3L,
+            isFolder = false,
+            isPinned = false,
+            isHydrated = true,
+            lastSynced = Instant.parse("2026-01-01T00:00:00Z"),
+        )
+
+    private inline fun <T> StateDatabase.use(body: (StateDatabase) -> T): T =
+        try {
+            body(this)
+        } finally {
+            close()
+        }
+
+    private fun storedKey(path: String): String? {
+        val c = DriverManager.getConnection("jdbc:sqlite:$file")
+        var key: String? = null
+        try {
+            c.createStatement().use { s ->
+                s.executeQuery("SELECT remote_id FROM sync_entries WHERE path='$path' AND status='EXISTS'").use { rs ->
+                    rs.next()
+                    key = rs.getString(1)
+                }
+            }
+        } finally {
+            c.close()
+        }
+        return key
+    }
+
+    @Test
+    fun `relocating a pending row leaves one row at the target path with its key and marks`() {
+        val refusal = "1700000000000|3"
+        StateDatabase(file).also { it.initialize() }.use { db ->
+            db.upsertEntry(row("/p"))
+            assertTrue(db.markNeverSubmitted("/p"), "the row is queued as never submitted")
+            assertTrue(db.markUploadRefused("/p", refusal), "the upload was refused once")
+            val keyBefore = assertNotNull(storedKey("/p"))
+
+            val displacement =
+                MergeDisplacement(
+                    db = db,
+                    delivery = emptyMap(),
+                    localPathOf = { it },
+                    moved = mutableListOf(),
+                    changed = mutableSetOf(),
+                    keepPendingUploads = true,
+                )
+            val to = assertNotNull(displacement.movePendingUploadAside("/p"), "the pending row moved aside")
+
+            assertNull(db.getEntry("/p"), "the old path no longer holds a row")
+            assertEquals(listOf(to), db.pendingUploadPaths(), "exactly one pending row exists, at the target path")
+            assertEquals(keyBefore, storedKey(to), "the row kept its stored key")
+            val moved = assertNotNull(db.getEntry(to))
+            assertNull(moved.remoteId, "the moved row is still a pending upload")
+            assertTrue(db.neverSubmitted(to), "the never-submitted mark moved with the row")
+            assertEquals(refusal, db.uploadRefusal(to), "the upload-refusal mark moved with the row")
+        }
+    }
+}

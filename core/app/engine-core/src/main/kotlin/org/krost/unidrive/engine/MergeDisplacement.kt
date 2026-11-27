@@ -4,6 +4,7 @@ import org.krost.unidrive.CloudItem
 import org.krost.unidrive.sync.ConflictCopyNames
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.sync.movePendingUploadRow
 import java.time.Instant
 
 /**
@@ -117,7 +118,17 @@ internal class MergeDisplacement(
         to: String,
         remotePath: String?,
     ) {
-        db.upsertEntry(row.copy(path = to, remotePath = remotePath))
+        // A pending upload (Kotlin remoteId null, the key is a minted `local:`) moves in place: an upsert of the copy
+        // would mint a second `local:` key at the new path, leave the old row alive, and drop its marks
+        // (gkrost/unidrive-cli#1001). A row with a real id re-keys itself by the upsert's own primary key.
+        val movedRow =
+            if (row.remoteId == null) {
+                db.movePendingUploadRow(row.path, to, remotePath)
+            } else {
+                db.upsertEntry(row.copy(path = to, remotePath = remotePath))
+                true
+            }
+        if (!movedRow) return
         moved += RemoteGather.RemoteMerge.Move(from = row.path, to = to)
         changed += row.path
         changed += to
