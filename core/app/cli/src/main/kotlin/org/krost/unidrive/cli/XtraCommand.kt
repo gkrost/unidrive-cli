@@ -92,21 +92,6 @@ internal fun loadKeyFile(
     }
 }
 
-/**
- * The profile `xtra init` names the algorithm of: the one `-p` names (by its exact name; a `-p` that names no profile
- * names none, it never falls back to another), else `[general] default_profile`, else the only profile. Null when no
- * profile qualifies, or when that profile already names its algorithm or already runs encrypted (an unset encrypted
- * profile is aes-gcm and stays it, owner decision on #1006).
- */
-private fun initTarget(
-    raw: org.krost.unidrive.sync.RawSyncConfig,
-    named: String?,
-): String? {
-    val name = if (named != null) named.takeIf { it in raw.providers } else runCatching { SyncConfig.resolveDefaultProfile(raw) }.getOrNull()
-    val rp = name?.let { raw.providers[it] } ?: return null
-    return name.takeIf { rp.xtra_encryption != true && ProfileSettings.storedXtraAlgorithm(rp) == null }
-}
-
 private fun readConfig(configPath: java.nio.file.Path): Pair<String, org.krost.unidrive.sync.RawSyncConfig>? {
     if (!Files.exists(configPath)) return null
     val text = Files.readString(configPath)
@@ -114,55 +99,76 @@ private fun readConfig(configPath: java.nio.file.Path): Pair<String, org.krost.u
 }
 
 /**
- * Why `xtra init` must not name [algorithm] on the profile it would name, or null when it may: the profile has sync
- * state, so the algorithm it reads as (aes-gcm) may be the one its stored files were sealed with, and naming another
- * one would leave those files refused. [force] waives it, as for `profile set xtra_algorithm`.
+ * The profile `xtra init` acts on, resolved before any key is made. Without `-p`: `[general] default_profile`, else the
+ * only profile, else none (the key is the installation's, so `init` still makes it). With `-p`, the rules of the other
+ * commands ([Main.resolveCurrentProfile]): the profile of that exact name, else the one profile of that provider type
+ * (case-insensitive), and nothing else. An explicit selector that names no profile, or several of one type, is refused
+ * with [IllegalArgumentException]; it is never replaced by another profile. (Where [Main.resolveCurrentProfile] takes a
+ * lowercase type name with no section of its own as a section-less profile, there is nothing to name an algorithm on, so
+ * the one section of that type is the answer here.)
  */
-internal fun initRefusal(
+internal fun resolveInitProfile(
     configDir: java.nio.file.Path,
-    named: String?,
-    algorithm: XtraAlgorithm,
-    force: Boolean,
+    selector: String?,
 ): String? {
-    if (force) return null
-    val (_, raw) = readConfig(configDir.resolve("config.toml")) ?: return null
-    val name = initTarget(raw, named) ?: return null
-    if (!ProfileSettings.hasSyncState(configDir.resolve(name))) return null
-    val current = ProfileSettings.effectiveXtraAlgorithm(raw.providers.getValue(name))
-    return "profile '$name' already has sync state; naming its algorithm ${algorithm.configName} would change what it " +
-        "reads as ($current now), and files it already stored encrypted with $current would be refused until " +
-        "xtra_algorithm names $current again. Nothing was created. Pass --force to write it anyway, or -p another profile."
+    val raw = readConfig(configDir.resolve("config.toml"))?.second
+    if (selector == null) {
+        if (raw == null) return null
+        return runCatching { SyncConfig.resolveDefaultProfile(raw) }.getOrNull()?.takeIf { it in raw.providers }
+    }
+    require(raw != null && raw.providers.isNotEmpty()) {
+        "-p '$selector' names no profile: ${configDir.resolve("config.toml")} is missing, unreadable or has no profile."
+    }
+    if (selector in raw.providers) return selector
+    val ofType = profilesOfType(selector, raw)
+    require(ofType.isNotEmpty()) { "Unknown profile: $selector. Configured profiles: ${raw.providers.keys.joinToString(", ")}." }
+    require(ofType.size == 1) { "-p '$selector' matches several profiles of that type (${ofType.joinToString(", ")}); name one of them." }
+    System.err.println("Using profile '${ofType.single()}' (matched by type '$selector')")
+    return ofType.single()
 }
 
+/** The guarded command that names [algorithm] on [profile]: `--force` where the profile has sync state, as `profile set` asks. */
+private fun nameAlgorithmCommand(
+    configDir: java.nio.file.Path,
+    profile: String,
+    algorithm: XtraAlgorithm,
+): String =
+    "unidrive profile set $profile xtra_algorithm ${algorithm.configName}" +
+        if (ProfileSettings.hasSyncState(configDir.resolve(profile))) " --force" else ""
+
 /**
- * Owner decision (#1006): `xtra init` writes the algorithm it created a key for into the profile's section ([initTarget]),
- * so the profile names its algorithm explicitly. The line returned says what happened, null when there is no config.
+ * Owner decision (#1006): `xtra init` writes the algorithm it created a key for into [profile]'s section (the one
+ * [resolveInitProfile] chose), so the profile names its algorithm explicitly. It does not where the profile already names
+ * one or already runs encrypted (an unset encrypted profile is aes-gcm and stays it), nor where it has sync state and the
+ * algorithm would change what it reads as: the files it stored were sealed with what it reads as now, so that change
+ * stays the explicit, guarded `profile set ... --force`. The line returned says what happened, null when there is nothing
+ * to say (no profile, no config).
  */
 internal fun pinProfileAlgorithm(
     configDir: java.nio.file.Path,
-    named: String?,
+    profile: String?,
     algorithm: XtraAlgorithm,
 ): String? {
+    if (profile == null) return null
     val configPath = configDir.resolve("config.toml")
     if (!Files.exists(configPath)) return null
     return ConfigFileTransaction.withLock(configPath) {
         val (text, raw) = readConfig(configPath) ?: return@withLock null
-        if (named != null && named !in raw.providers) {
-            return@withLock "Note: -p '$named' names no profile; xtra_algorithm was written into none. " +
-                "Name it on a profile with: unidrive profile set <profile> xtra_algorithm ${algorithm.configName}"
+        val rp = raw.providers[profile] ?: return@withLock null
+        val effective = ProfileSettings.effectiveXtraAlgorithm(rp)
+        val command = nameAlgorithmCommand(configDir, profile, algorithm)
+        if (rp.xtra_encryption == true || ProfileSettings.storedXtraAlgorithm(rp) != null) {
+            return@withLock "Note: profile '$profile' keeps its algorithm ($effective); to write its new files with this key: $command"
         }
-        val name = initTarget(raw, named) ?: run {
-            val kept = (named ?: runCatching { SyncConfig.resolveDefaultProfile(raw) }.getOrNull())?.let { raw.providers[it]?.let { rp -> it to rp } }
-            return@withLock kept?.let { (n, rp) ->
-                "Note: profile '$n' keeps its algorithm (${ProfileSettings.effectiveXtraAlgorithm(rp)}); " +
-                    "to write its new files with this key: unidrive profile set $n xtra_algorithm ${algorithm.configName}"
-            }
+        if (effective != algorithm.configName && ProfileSettings.hasSyncState(configDir.resolve(profile))) {
+            return@withLock "Note: profile '$profile' has sync state and reads as $effective, which its stored files may be sealed with; " +
+                "xtra_algorithm was not written. To name ${algorithm.configName} anyway: $command"
         }
         val line = "${ProfileSettings.XTRA_ALGORITHM} = \"${algorithm.configName}\""
-        val edited = (editProfileKey(text, name, ProfileSettings.XTRA_ALGORITHM, line) as? ProfileKeyEdit.Edited)?.text
+        val edited = (editProfileKey(text, profile, ProfileSettings.XTRA_ALGORITHM, line) as? ProfileKeyEdit.Edited)?.text
             ?: return@withLock null
         writeConfigAtomically(configPath, edited)
-        "Set $line on profile '$name'."
+        "Set $line on profile '$profile'."
     }
 }
 
@@ -183,12 +189,6 @@ class XtraInitCommand : Callable<Int> {
     @Option(names = ["--algorithm"], description = ["aes-gcm-sym (default) or aes-gcm"])
     var algorithmName: String? = null
 
-    @Option(
-        names = ["--force"],
-        description = ["Name the algorithm on a profile that already has sync state (files it stored under another algorithm are then refused)"],
-    )
-    var force: Boolean = false
-
     override fun call(): Int {
         val algorithm = keyVerbAlgorithm(algorithmName, XtraAlgorithm.NEW_KEY_DEFAULT) ?: return 1
         val configDir = xtraCmd.parent.configBaseDir()
@@ -197,10 +197,14 @@ class XtraInitCommand : Callable<Int> {
             System.err.println("Key already exists at $keyPath. Use '${algorithm.changePassphraseCommand}' to update it.")
             return 1
         }
-        initRefusal(configDir, xtraCmd.parent.provider, algorithm, force)?.let {
-            System.err.println("Error: $it")
-            return 1
-        }
+        // An explicit -p that selects nothing, or several profiles, is refused here, before a key exists.
+        val profile =
+            try {
+                resolveInitProfile(configDir, xtraCmd.parent.provider)
+            } catch (e: IllegalArgumentException) {
+                System.err.println("Error: ${e.message} Nothing was created.")
+                return 1
+            }
         try {
             if (!generate(algorithm, keyPath)) return 1
         } catch (e: IllegalStateException) {
@@ -209,7 +213,7 @@ class XtraInitCommand : Callable<Int> {
             return 1
         }
         println(algorithmLine(algorithm))
-        pinProfileAlgorithm(configDir, xtraCmd.parent.provider, algorithm)?.let(::println)
+        pinProfileAlgorithm(configDir, profile, algorithm)?.let(::println)
         println()
         println("WARNING: If you lose this key, encrypted files CANNOT be recovered.")
         println("Back up immediately: unidrive xtra export-key --algorithm ${algorithm.configName} --output /safe/location/")

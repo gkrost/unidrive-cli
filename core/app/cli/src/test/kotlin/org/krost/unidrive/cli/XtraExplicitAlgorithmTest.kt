@@ -32,11 +32,14 @@ class XtraExplicitAlgorithmTest {
     private val dir: Path = TestScratch.directory("xtra-explicit")
     private val config: Path get() = dir.resolve("config.toml")
     private val out = ByteArrayOutputStream()
+    private val err = ByteArrayOutputStream()
     private val originalOut = System.out
+    private val originalErr = System.err
 
     @AfterTest
     fun tearDown() {
         System.setOut(originalOut)
+        System.setErr(originalErr)
         dir.toFile().deleteRecursively()
     }
 
@@ -45,7 +48,9 @@ class XtraExplicitAlgorithmTest {
 
     private fun run(vararg args: String): Int {
         out.reset()
+        err.reset()
         System.setOut(PrintStream(out, true, Charsets.UTF_8))
+        System.setErr(PrintStream(err, true, Charsets.UTF_8))
         val main = Main().also { m ->
             m.passphraseSourcesFactory = {
                 PassphraseSources(env = { if (it == XTRA_PASSPHRASE_ENV) pass else null }, consolePresent = { false })
@@ -53,9 +58,13 @@ class XtraExplicitAlgorithmTest {
         }
         val code = CommandLine(main).execute("-c", dir.toString(), *args)
         System.out.flush()
+        System.err.flush()
         System.setOut(originalOut)
+        System.setErr(originalErr)
         return code
     }
+
+    private fun errText(): String = err.toString(Charsets.UTF_8)
 
     private fun reply(): JsonObject = Json.parseToJsonElement(out.toString(Charsets.UTF_8).trim()).jsonObject
 
@@ -175,24 +184,71 @@ class XtraExplicitAlgorithmTest {
         assertEquals(null, raw.getValue("work").xtra_algorithm, "the default profile is not the one -p named")
     }
 
+    // A default profile of one type and a differently named profile of another, the shape of the selector findings.
+    private val twoProfiles =
+        "[general]\ndefault_profile = \"work\"\n\n" + section() + "\n[providers.cloud]\ntype = \"s3\"\nbucket = \"b\"\n"
+
     @Test
-    fun `xtra init with a -p that names no profile writes no profile`() {
-        Files.writeString(config, "[general]\ndefault_profile = \"work\"\n\n" + section())
-        run("-p", "nosuch", "xtra", "init")
-        assertEquals(null, storedAlgorithm(), "a -p that names no profile must not fall back to the default profile")
+    fun `xtra init with -p a provider type writes the one profile of that type, not the default`() {
+        Files.writeString(config, twoProfiles)
+
+        assertEquals(0, run("-p", "s3", "xtra", "init"), errText())
+        val raw = SyncConfig.parseRaw(Files.readString(config)).providers
+        assertEquals("aes-gcm-sym", raw.getValue("cloud").xtra_algorithm)
+        assertEquals(null, raw.getValue("work").xtra_algorithm, "the default profile is not the one -p selected")
     }
 
     @Test
-    fun `xtra init refuses to name the algorithm of a profile with sync state unless forced`() {
+    fun `xtra init with a -p that names no profile is refused before a key is made`() {
+        Files.writeString(config, twoProfiles)
+
+        assertEquals(1, run("-p", "nosuch", "xtra", "init"))
+        assertTrue(errText().contains("nosuch"), errText())
+        assertFalse(Files.exists(dir.resolve("xtra-sym.key")), "a refused init creates no key")
+        assertEquals(twoProfiles, Files.readString(config), "a refused init writes no config")
+    }
+
+    @Test
+    fun `xtra init with -p a type that several profiles have is refused before a key is made`() {
+        Files.writeString(config, twoProfiles + "\n[providers.home]\ntype = \"localfs\"\nroot_path = \"/tmp/home\"\n")
+
+        assertEquals(1, run("-p", "localfs", "xtra", "init"))
+        assertTrue(errText().contains("work") && errText().contains("home"), errText())
+        assertFalse(Files.exists(dir.resolve("xtra-sym.key")))
+        assertEquals(null, storedAlgorithm())
+    }
+
+    @Test
+    fun `xtra init with -p and no config is refused before a key is made`() {
+        assertEquals(1, run("-p", "work", "xtra", "init"))
+        assertFalse(Files.exists(dir.resolve("xtra-sym.key")))
+    }
+
+    @Test
+    fun `xtra init on a profile with sync state makes the key but leaves the profile's algorithm and names the guarded command`() {
         Files.writeString(config, section())
         Files.createDirectories(dir.resolve("work"))
         Files.write(dir.resolve("work").resolve("state.db"), byteArrayOf(1, 2, 3))
 
-        assertEquals(1, run("xtra", "init"))
-        assertEquals(null, storedAlgorithm(), "refused: the profile's algorithm is unchanged")
-        assertFalse(Files.exists(dir.resolve("xtra-sym.key")), "a refused init creates no key")
+        assertEquals(0, run("xtra", "init"), errText())
+        assertTrue(Files.exists(dir.resolve("xtra-sym.key")), "the installation's key is made")
+        assertEquals(null, storedAlgorithm(), "the profile keeps reading as aes-gcm: files it stored may be sealed with it")
+        assertTrue(
+            out.toString(Charsets.UTF_8).contains("unidrive profile set work xtra_algorithm aes-gcm-sym --force"),
+            out.toString(Charsets.UTF_8),
+        )
+        assertEquals("aes-gcm", listedAlgorithm())
+    }
 
-        assertEquals(0, run("xtra", "init", "--force"))
-        assertEquals("aes-gcm-sym", storedAlgorithm())
+    @Test
+    fun `naming the algorithm a profile with sync state already reads as is no change, so it is written`() {
+        Files.writeString(config, section())
+        Files.createDirectories(dir.resolve("work"))
+        Files.write(dir.resolve("work").resolve("state.db"), byteArrayOf(1, 2, 3))
+
+        val line = pinProfileAlgorithm(dir, "work", XtraAlgorithm.AES_GCM)
+
+        assertEquals("Set xtra_algorithm = \"aes-gcm\" on profile 'work'.", line)
+        assertEquals("aes-gcm", storedAlgorithm())
     }
 }
