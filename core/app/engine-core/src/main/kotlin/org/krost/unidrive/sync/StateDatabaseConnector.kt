@@ -53,13 +53,17 @@ object JdbcStateDatabaseConnector : StateDatabaseConnector {
 // with getAutoCommit() already false and no transaction open. Every later [StateDatabase.batch] on
 // that connection would then take the "already inside a transaction" shortcut and run its block
 // statement by statement, rollbacks undoing nothing. Put the flag back (its COMMIT fails: nothing is
-// open) and rethrow.
+// open) and retry the BEGIN when the failure is busy ([retryOnSqliteBusy]): the transaction is not
+// open and nothing of the caller's batch has run, so a foreign writer that held the write lock past
+// the busy timeout has merely delayed it. A non-busy failure propagates at once.
 internal fun Connection.openTransaction() {
-    try {
-        autoCommit = false
-    } catch (e: java.sql.SQLException) {
-        runCatching { autoCommit = true } // the flag is set before the failing COMMIT, so this restores it
-        throw e
+    retryOnSqliteBusy {
+        try {
+            autoCommit = false
+        } catch (e: java.sql.SQLException) {
+            runCatching { autoCommit = true } // the flag is set before the failing COMMIT, so this restores it
+            throw e
+        }
     }
 }
 
