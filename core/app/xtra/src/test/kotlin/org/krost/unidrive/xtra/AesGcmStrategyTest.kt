@@ -7,6 +7,8 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class AesGcmStrategyTest {
 
@@ -43,7 +45,11 @@ class AesGcmStrategyTest {
 
         for (length in intArrayOf(0, 16, 24, 31, 33, 64)) {
             val slot = keyed.wrapFileKey(ByteArray(length) { 7 })
-            assertFailsWith<XtraFileKeyRefusedException>("a $length-byte key") { keyed.unwrapFileKey(slot) }
+            val refused =
+                assertFailsWith<XtraFileKeyRefusedException>("a $length-byte key") { keyed.unwrapFileKey(slot) }
+            // The slot did unwrap: the message names the length, not a failed unwrap.
+            assertTrue(refused.message!!.contains("$length bytes"), refused.message)
+            assertFalse(refused.message!!.contains("does not unwrap"), refused.message)
         }
     }
 

@@ -67,11 +67,11 @@ class AesGcmStrategy private constructor(
         try {
             val fileKey = unwrap(wrapped)
             // The writer only makes 32-byte file keys; any other length would pick AES-128 or -192 (or fail late).
-            // Refused below like a slot that does not unwrap.
+            // Refused like a slot that does not unwrap, but named for what it is: the slot did unwrap.
             if (fileKey.size != FILE_KEY_BYTES) {
                 val length = fileKey.size
                 fileKey.fill(0)
-                throw BadPaddingException("the unwrapped file key is $length bytes, not $FILE_KEY_BYTES")
+                throw XtraFileKeyRefusedException("X-tra file key is $length bytes, not $FILE_KEY_BYTES")
             }
             return fileKey
         } catch (e: BadPaddingException) {
