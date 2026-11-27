@@ -1,6 +1,7 @@
 package org.krost.unidrive.cli
 
 import kotlinx.coroutines.runBlocking
+import org.krost.unidrive.http.Priority
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
@@ -183,7 +184,7 @@ class VerifyCommand : Callable<Int> {
         scope: List<String>,
     ): Map<String, CloudItem>? =
         try {
-            runBlocking {
+            runBlocking(Priority.Foreground) {
                 provider.authenticateAndLog()
                 listRemoteFiles(provider, excludes, scope)
             }
@@ -281,7 +282,7 @@ class VerifyCommand : Callable<Int> {
         }
         val report =
             try {
-                runBlocking {
+                runBlocking(Priority.Foreground) {
                     provider.authenticateAndLog()
                     val remoteFiles = listRemoteFiles(provider, excludes, scope).values.sortedBy { it.path }
                     auditor.auditRemoteObjects(remoteFiles)

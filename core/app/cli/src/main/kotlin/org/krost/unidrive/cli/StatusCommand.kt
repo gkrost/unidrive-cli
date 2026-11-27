@@ -338,7 +338,7 @@ class StatusCommand : Callable<Int> {
         // "0 B used" line or a pointless round-trip.
         val quota =
             if (Capability.QuotaExact in provider.capabilities()) {
-                runBlocking {
+                runBlocking(org.krost.unidrive.http.Priority.Foreground) {
                     provider.authenticateAndLog()
                     StatusAudit.quotaOrNull(provider)
                 }
@@ -592,7 +592,7 @@ class StatusCommand : Callable<Int> {
             }
         return try {
             if (Capability.QuotaExact !in provider.capabilities()) return null
-            runBlocking {
+            runBlocking(org.krost.unidrive.http.Priority.Foreground) {
                 provider.authenticateAndLog()
                 if (!provider.isAuthenticated) return@runBlocking null
                 provider.quota().used

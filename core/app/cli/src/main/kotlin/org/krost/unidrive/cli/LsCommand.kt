@@ -1,6 +1,7 @@
 package org.krost.unidrive.cli
 
 import kotlinx.coroutines.runBlocking
+import org.krost.unidrive.http.Priority
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -89,7 +90,7 @@ class LsCommand : Callable<Int> {
         val provider = parent.createProvider()
         val listing =
             try {
-                runBlocking {
+                runBlocking(Priority.Foreground) {
                     provider.authenticateAndLog()
                     listLive(provider, normalized)
                 }

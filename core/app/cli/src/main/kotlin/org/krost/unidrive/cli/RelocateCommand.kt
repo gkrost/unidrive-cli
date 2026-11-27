@@ -1,6 +1,7 @@
 package org.krost.unidrive.cli
 
 import kotlinx.coroutines.runBlocking
+import org.krost.unidrive.http.Priority
 import kotlinx.coroutines.slf4j.MDCContext
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.QuotaInfo
@@ -92,7 +93,7 @@ class RelocateCommand : Runnable {
 
         // UD-294: relocate touches TWO profiles, so Main.resolveCurrentProfile (sync's
         // profile-MDC anchor) doesn't apply here. Seed the `profile` and `scan` MDC keys
-        // explicitly so the runBlocking(MDCContext()) snapshots below capture a meaningful
+        // explicitly so the runBlocking(MDCContext() + Priority.Foreground) snapshots below capture a meaningful
         // [<sha>] [<from>+<to>] [<migId>] triplet. Without this every relocate log line
         // rendered [<sha>] [*] [-------] (132 k unfilterable lines on 2026-04-29 — see
         // docs/dev/log-feedback-loop-proposal.md). UD-284 fixed the relocate flow's
@@ -135,8 +136,8 @@ class RelocateCommand : Runnable {
         // CloudRelocator's coroutines render as `[???????] [*] [-------]`
         // (the logback fallback values from logback.xml line 31), making
         // postmortem against unidrive.log impossible.
-        runBlocking(MDCContext()) { fromProviderObj.authenticate() }
-        runBlocking(MDCContext()) { toProviderObj.authenticate() }
+        runBlocking(MDCContext() + Priority.Foreground) { fromProviderObj.authenticate() }
+        runBlocking(MDCContext() + Priority.Foreground) { toProviderObj.authenticate() }
 
         if (!fromProviderObj.isAuthenticated) {
             System.err.println("Error: source provider '$fromProvider' not authenticated")
@@ -165,14 +166,14 @@ class RelocateCommand : Runnable {
 
         println("Pre-flight checks...")
 
-        val sourceQuota: QuotaInfo = runBlocking(MDCContext()) { fromProviderObj.quota() }
+        val sourceQuota: QuotaInfo = runBlocking(MDCContext() + Priority.Foreground) { fromProviderObj.quota() }
 
         // UD-408: tail -f-style scrollback. Was: in-place rewrite via `\r...padEnd(72)`
         // mirroring CliProgressReporter's UD-735 behaviour. Now one heartbeat line per
         // 1 s of pre-flight scanning; the path is shown in full (no 45-char truncate).
         var lastEmit = 0L
         val (sourceSize, sourceCount) =
-            runBlocking(MDCContext()) {
+            runBlocking(MDCContext() + Priority.Foreground) {
                 relocator.preFlightCheck(sourcePath) { count, path ->
                     val now = System.currentTimeMillis()
                     if (now - lastEmit < 1000) return@preFlightCheck
@@ -182,7 +183,7 @@ class RelocateCommand : Runnable {
                 }
             }
 
-        val targetQuota: QuotaInfo = runBlocking(MDCContext()) { toProviderObj.quota() }
+        val targetQuota: QuotaInfo = runBlocking(MDCContext() + Priority.Foreground) { toProviderObj.quota() }
 
         // Guard: fail fast when target quota is known and insufficient
         if (targetQuota.total > 0 && targetQuota.remaining < sourceSize) {
@@ -236,7 +237,7 @@ class RelocateCommand : Runnable {
         // connection reset. The cap surfaces only when the user configured
         // `max_file_size_bytes` in the profile TOML; generic WebDAV servers
         // (Box / Nextcloud) without an explicit cap remain unaffected.
-        val oversized = runBlocking(MDCContext()) { relocator.preflightOversized(sourcePath) }
+        val oversized = runBlocking(MDCContext() + Priority.Foreground) { relocator.preflightOversized(sourcePath) }
         if (oversized.isNotEmpty()) {
             val cap = toProviderObj.maxFileSizeBytes() ?: 0L
             System.err.println()
@@ -301,7 +302,7 @@ class RelocateCommand : Runnable {
             }
         Runtime.getRuntime().addShutdownHook(shutdownHook)
         try {
-            runBlocking(MDCContext()) {
+            runBlocking(MDCContext() + Priority.Foreground) {
                 relocator.migrate(sourcePath, targetPath, sourceSize, sourceCount, manifest).collect { event ->
                     when (event) {
                         is MigrateEvent.Started -> {
@@ -358,7 +359,7 @@ class RelocateCommand : Runnable {
         sourcePath: String,
     ) {
         if (deleteSource) {
-            runBlocking(MDCContext()) {
+            runBlocking(MDCContext() + Priority.Foreground) {
                 deleteSourceAfterMigration(provider, manifest, outcome.completed, outcome.errors, sourcePath)
             }
         }

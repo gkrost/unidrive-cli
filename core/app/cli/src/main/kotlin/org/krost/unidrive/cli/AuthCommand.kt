@@ -1,6 +1,7 @@
 package org.krost.unidrive.cli
 
 import kotlinx.coroutines.runBlocking
+import org.krost.unidrive.http.Priority
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.authenticateAndLog
 import org.krost.unidrive.onedrive.OneDriveProvider
@@ -25,7 +26,7 @@ class AuthCommand : Runnable {
         val lock = parent.acquireProfileLock()
         val provider = parent.createProvider()
         try {
-            runBlocking {
+            runBlocking(Priority.Foreground) {
                 if (deviceCode && provider is OneDriveProvider) {
                     provider.authenticateWithDeviceCode()
                 } else {

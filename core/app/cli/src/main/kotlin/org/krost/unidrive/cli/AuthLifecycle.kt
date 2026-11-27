@@ -1,6 +1,7 @@
 package org.krost.unidrive.cli
 
 import kotlinx.coroutines.runBlocking
+import org.krost.unidrive.http.Priority
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -73,7 +74,7 @@ class AuthBeginCommand : Callable<Int> {
                 target,
                 viaDaemon = { endpoint -> askDaemonToSignIn(target, endpoint, buildJsonObject { put("verb", AuthLoginRpcHandler.BEGIN) }) },
             ) {
-                runBlocking { beginSignIn(target, factory) }
+                runBlocking(Priority.Foreground) { beginSignIn(target, factory) }
             }
         }
 }
@@ -123,7 +124,7 @@ class AuthCompleteCommand : Callable<Int> {
                     pollUntilDone(secret) { askDaemonToSignIn(target, endpoint, completeRequest(secret)) ?: return@daemon null }
                 },
             ) {
-                pollUntilDone(secret) { runBlocking { completeSignInOnce(target, factory, handle, secret) } }
+                pollUntilDone(secret) { runBlocking(Priority.Foreground) { completeSignInOnce(target, factory, handle, secret) } }
             }
         }
 
@@ -223,7 +224,7 @@ class AuthLoginCommand : Callable<Int> {
                     askDaemonToSignIn(target, endpoint, request)
                 },
             ) {
-                runBlocking { loginInternxt(target, account, password, code) }
+                runBlocking(Priority.Foreground) { loginInternxt(target, account, password, code) }
             }
         }
 

@@ -1,6 +1,7 @@
 package org.krost.unidrive.tracking
 
 import kotlinx.coroutines.runBlocking
+import org.krost.unidrive.http.Priority
 import org.krost.unidrive.authenticateAndLog
 import org.krost.unidrive.cli.ext.CliExtension
 import org.krost.unidrive.cli.ext.CliExtensionRegistrar
@@ -210,7 +211,7 @@ class TsSyncCommand : Runnable {
         tracking.initialize()
         try {
             val provider = ctx.services.createProvider(ctx.profileName)
-            runBlocking { provider.authenticateAndLog() }
+            runBlocking(Priority.Foreground) { provider.authenticateAndLog() }
             // The conflict journal follows the legacy convention the `unidrive conflicts`
             // command reads (same split as SyncCommand): conflicts.jsonl in the profile's
             // provider config dir, backups under the profile data dir.
@@ -304,7 +305,7 @@ class TsClaimCommand : Runnable {
         tracking.initialize()
         try {
             val provider = ctx.services.createProvider(ctx.profileName)
-            runBlocking { provider.authenticateAndLog() }
+            runBlocking(Priority.Foreground) { provider.authenticateAndLog() }
             val engine = TrackingEngine(provider, tracking, ctx.syncRoot)
             engine.claim(path)
             println("Claimed: $path")

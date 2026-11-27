@@ -1,6 +1,7 @@
 package org.krost.unidrive.cli
 
 import kotlinx.coroutines.runBlocking
+import org.krost.unidrive.http.Priority
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -420,7 +421,7 @@ private fun removeViaProvider(
     requireNoMountState(target)
     val provider = main.createProviderForName(target.name)
     return try {
-        runBlocking { deleteWithProvider(provider, path, request) }
+        runBlocking(Priority.Foreground) { deleteWithProvider(provider, path, request) }
             .let { isFolder -> RmResult(path, isFolder, route = "provider", deletedAs = deletedAs) }
     } catch (e: AuthenticationException) {
         throw LifecycleError("auth_required", "profile '${target.name}' is not signed in; run `unidrive -p ${target.name} auth`", e)
