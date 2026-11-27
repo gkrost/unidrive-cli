@@ -96,6 +96,12 @@ internal fun rekeyWarning(
             "a tracked cloud item was re-keyed to a different remote id at the same path"
     }
 
+/**
+ * gkrost/unidrive-cli#1000: a pending copy upserted after its upload completed. The write is refused and the completed row stays.
+ */
+internal fun org.slf4j.Logger.warnStalePendingCopy(path: String) =
+    warn("#1000: refused the upsert of a pending row at path $path: a cloud row with the same local bytes is already there (a copy read before its upload completed)")
+
 /** gkrost/unidrive-cli#845: a cloud id that equals the minted key of a pending row; the write is refused, the pending row stays. */
 internal fun org.slf4j.Logger.errorKeyCollision(
     path: String,
