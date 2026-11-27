@@ -113,7 +113,7 @@ internal class AuthLogoutRpcHandler(
         for (name in StoragePermissions.SIGN_OUT_FILES) {
             if (Files.deleteIfExists(profileDir.resolve(name))) credentialsRemoved = true
         }
-        logSignOut(VERB, profileDir.fileName.toString(), stateKept = true, scope = "full")
+        logSignOut(VERB, profileDir.fileName.toString(), profileDir, stateKept = true, via = "daemon")
         return """{"ok":true,"revoked":${revocation.revokedJson()},"revocation":"${revocation.token}","credentials_removed":$credentialsRemoved}"""
     }
 

@@ -1,5 +1,9 @@
 package org.krost.unidrive.cli
 
+import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.Logger
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.ProviderFactory
@@ -99,6 +103,11 @@ class LogoutCommandTest {
         val owner = Files.writeString(profileDir.resolve(org.krost.unidrive.AccountOwner.FILE_NAME), "id-ada")
         Files.writeString(profileDir.resolve(org.krost.unidrive.AccountName.FILE_NAME), "Ada")
 
+        val logs = ListAppender<ILoggingEvent>().also { it.start() }
+        val signOutLogger = org.slf4j.LoggerFactory.getLogger("org.krost.unidrive.cli.SignOut") as Logger
+        signOutLogger.level = Level.INFO
+        signOutLogger.addAppender(logs)
+
         assertEquals(0, CommandLine(Main()).execute("-c", configDir.toString(), "-p", "work", "logout"))
 
         assertEquals("Ada", org.krost.unidrive.AccountName.read(profileDir), "a keep-state sign-out keeps the name: the next sign-in is compared with it")
@@ -106,6 +115,14 @@ class LogoutCommandTest {
 
         assertEquals(0, CommandLine(Main()).execute("-c", configDir.toString(), "-p", "work", "logout", "--delete-state"))
 
+        signOutLogger.detachAppender(logs)
+        assertEquals(
+            listOf(
+                "sign-out: verb=logout profile=work state_kept=true account_name_kept=true via=cli",
+                "sign-out: verb=logout profile=work state_kept=false account_name_kept=false via=cli",
+            ),
+            logs.list.map { it.formattedMessage },
+        )
         assertFalse(Files.exists(owner), "deleting the state deletes whose state it was")
         assertFalse(Files.exists(profileDir.resolve(org.krost.unidrive.AccountName.FILE_NAME)), "a sign-out that deletes the state removes the name")
     }

@@ -221,7 +221,7 @@ class AuthLogoutRpcHandlerTest {
         val lines = logs.list.filter { it.level == Level.INFO && it.formattedMessage.startsWith("sign-out:") }
         assertEquals(1, lines.size, logs.list.map { it.formattedMessage }.toString())
         val line = lines.single().formattedMessage
-        assertTrue("verb=auth.logout" in line && "state_kept=true" in line && "account_name_kept=true" in line, line)
+        assertTrue("verb=auth.logout" in line && "state_kept=true" in line && "account_name_kept=true" in line && "via=daemon" in line, line)
         assertFalse("ada@example.test" in line || "secret" in line, line)
     }
 

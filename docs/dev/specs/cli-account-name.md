@@ -27,7 +27,8 @@ The reply carries the name only: no token, user id or tenant.
 The name is read once, at sign-in, and stored in the profile folder as `account_name` (next to the
 credentials, owner-only like them). `profile list` reads that file; it makes no network call. A sign-in
 whose lookup fails stores no name and removes an earlier one, so a list never shows the previous
-account. `auth logout` and `profile remove` delete the file with the credentials. A failed lookup never
+account. The name belongs to the state, like `account_id` below: a sign-out that keeps the state keeps it, and
+`logout --delete-state` and `profile remove` (without `--keep-data`) delete it. A failed lookup never
 fails the sign-in.
 
 ## Account owner
