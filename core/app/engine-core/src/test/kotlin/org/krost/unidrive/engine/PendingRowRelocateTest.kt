@@ -138,4 +138,34 @@ class PendingRowRelocateTest {
             assertEquals(listOf("/p", "/target").sorted(), db.pendingUploadPaths().sorted(), "both pending rows stayed put")
         }
     }
+
+    // A writer between the free-name check and the move (the upload completing, here) leaves no pending row for the
+    // move to take: the move refuses, and the merge must not report a new path the row never went to.
+    @Test
+    fun `a refused pending-row move reports no new path`() {
+        StateDatabase(file).also { it.initialize() }.use { db ->
+            db.upsertEntry(row("/p"))
+            val moved = mutableListOf<RemoteGather.RemoteMerge.Move>()
+            val changed = mutableSetOf<String>()
+            val displacement =
+                MergeDisplacement(
+                    db = db,
+                    delivery = emptyMap(),
+                    localPathOf = { it },
+                    moved = moved,
+                    changed = changed,
+                    keepPendingUploads = true,
+                    now = {
+                        db.upsertEntry(row("/p").copy(remoteId = "cloud-1"))
+                        Instant.parse("2026-01-02T00:00:00Z")
+                    },
+                )
+
+            assertNull(displacement.movePendingUploadAside("/p"), "no new path is reported")
+            assertTrue(moved.isEmpty(), "no move is reported")
+            assertTrue(changed.isEmpty(), "no path is reported changed")
+            assertEquals("cloud-1", db.getEntry("/p")?.remoteId, "the concurrent writer's row is untouched")
+        }
+    }
+
 }

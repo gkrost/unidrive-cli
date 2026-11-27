@@ -71,8 +71,8 @@ internal class MergeDisplacement(
         for (n in 1..PARK_ATTEMPTS) {
             val candidate = "$dir/${ConflictCopyNames.localCopyName(leaf, at, n)}"
             if (db.getEntry(candidate) != null || db.getEntryByRemotePath(candidate) != null) continue
-            relocate(row, to = candidate, remotePath = null)
-            return candidate
+            // The in-place move refuses when a writer took the name or the row since the check: then nothing moved.
+            if (relocate(row, to = candidate, remotePath = null)) return candidate
         }
         return null
     }
@@ -117,7 +117,7 @@ internal class MergeDisplacement(
         row: SyncEntry,
         to: String,
         remotePath: String?,
-    ) {
+    ): Boolean {
         // A pending upload (Kotlin remoteId null, the key is a minted `local:`) moves in place: an upsert of the copy
         // would mint a second `local:` key at the new path, leave the old row alive, and drop its marks
         // (gkrost/unidrive-cli#1001). A row with a real id re-keys itself by the upsert's own primary key.
@@ -128,10 +128,11 @@ internal class MergeDisplacement(
                 db.upsertEntry(row.copy(path = to, remotePath = remotePath))
                 true
             }
-        if (!movedRow) return
+        if (!movedRow) return false
         moved += RemoteGather.RemoteMerge.Move(from = row.path, to = to)
         changed += row.path
         changed += to
+        return true
     }
 
     private companion object {
