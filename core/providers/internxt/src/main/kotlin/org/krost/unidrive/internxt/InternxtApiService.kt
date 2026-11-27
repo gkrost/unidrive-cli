@@ -83,12 +83,10 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
     private val credentialsProvider: suspend (forceRefresh: Boolean, rejectedJwt: String?) -> InternxtCredentials,
     // Two budgets matching drive-desktop's audited `bottleneck` config:
     //   - Drive REST: maxConcurrency=2, minSpacing=500ms (storm widens to 1000ms), one slot reserved for
-    //     non-poll callers (reservedForUserSlots): the poll's two slow listings can never occupy both, so a
-    //     user's heavy listing never queues behind them (gkrost/unidrive-cli#74).
+    //     non-poll callers: the poll's two slow listings can never occupy both (gkrost/unidrive-cli#74).
     //   - Bridge upload: maxConcurrency=4, minSpacing=0 (concurrency-only).
-    // The spacing paces every call (awaitSlot). maxConcurrency is a real permit only where a caller takes it
-    // (withPermit): the heavy Drive listings in authenticatedGetReply do, so at most two of them are in flight and a
-    // throttle storm halves that; every other call, and the whole bridge budget, is paced but not counted.
+    // The spacing paces every call (awaitSlot). maxConcurrency is a real permit only where a caller takes it (withPermit):
+    // the heavy Drive listings do, so at most two are in flight and a storm halves that; every other call is paced, not counted.
     // Composition order on the Drive REST surface is
     // `retryOnTransient { withAuthRetry { budget.awaitSlot(); ... } }` — the
     // budget MUST stay the innermost wrapper so retries re-acquire a
