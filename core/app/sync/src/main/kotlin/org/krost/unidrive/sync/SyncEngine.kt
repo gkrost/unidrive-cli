@@ -3036,8 +3036,7 @@ open class SyncEngine(
                     // UD-225b: id-based dispatch (see applyCreatePlaceholder).
                     // archive#115: remote source = item.path (canonical); dest = real-local.
                     val localPath = placeholder.resolveLocal(action.path)
-                    val receipt =
-                        downloadByIdOrPathWithHash(item, remoteGather.cloudPathOf(item), localPath, item.modified?.toEpochMilli(), uploadDigest = before?.uploadDigest).first
+                    val receipt = downloadByIdOrPathWithHash(item, remoteGather.cloudPathOf(item), localPath, item.modified?.toEpochMilli(), uploadDigest = before?.uploadDigest).first
                     downloadReceipt = receipt
                     downloadedHash = stagedLocalHash(localPath, receipt)
                     if (!receipt.mtimeAppliedBeforePlacement) placeholder.restoreMtime(action.path, item.modified)
@@ -3106,8 +3105,7 @@ open class SyncEngine(
         destination: Path,
         targetMtimeMillis: Long?,
         guard: PreTransferGuard? = null,
-        // gkrost/unidrive-cli#1018 item 16: the upload digest of the row the download replaces (see Transfers.uploadDigestRefusal).
-        uploadDigest: UploadDigest? = null,
+        uploadDigest: UploadDigest? = null, // gkrost/unidrive-cli#1018 item 16: the replaced row's (Transfers.uploadDigestRefusal)
     ): Pair<DownloadReceipt, String?> {
         // Check the provider's result before it can replace the last good local copy. A broken provider may
         // return normally after writing short bytes; its own staging contract is not the mirror's safety net.
@@ -3116,10 +3114,8 @@ open class SyncEngine(
         try {
             val receipt = Transfers.downloadByIdOrPathWithHash(provider, item, remotePath, staging, targetMtimeMillis, fileTally, downloadEventRetries)
             requireCompleteDownload(remotePath, item, receipt)
-            // The version this machine uploaded must bring the bytes that were sent. A refusal leaves the destination as it
-            // is: the staged bytes go in the finally below, before anything was moved.
-            Transfers.uploadDigestRefusal(remotePath, uploadDigest, Transfers.readVersionKey(item, receipt), receipt, provider.hashAlgorithm())
-                ?.let { throw it }
+            // The version this machine uploaded must bring the bytes it sent; a refusal moves nothing (the finally drops the staging).
+            Transfers.uploadDigestRefusal(remotePath, uploadDigest, Transfers.readVersionKey(item, receipt), receipt, provider.hashAlgorithm())?.let { throw it }
             // gkrost/unidrive-cli#451: the transfer ran; the file may no longer be what the check cleared. A
             // save that landed mid-transfer moves aside as a conflict-local copy before the replace, the way
             // the pre-transfer check one scope earlier kept the edits that landed before it. Stats null (the
@@ -4741,8 +4737,7 @@ open class SyncEngine(
         }
     }
 
-    // gkrost/unidrive-cli#1018 item 16: the local hash becomes the downloaded bytes', but the upload digest of the row the download
-    // replaces ([before]) is never replaced by them: it stays while the row records the version it names.
+    // gkrost/unidrive-cli#1018 item 16: the downloaded bytes never replace the upload digest of [before], kept while it names the row's version.
     private suspend fun withDownloadedHash(
         entry: SyncEntry,
         receipt: DownloadReceipt,

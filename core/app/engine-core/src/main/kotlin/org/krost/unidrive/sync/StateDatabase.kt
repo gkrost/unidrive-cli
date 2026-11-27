@@ -843,13 +843,9 @@ class StateDatabase(
             if (!columnExists("sync_entries", "pending_local")) {
                 stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN pending_local TEXT")
             }
-            // gkrost/unidrive-cli#849: who last changed the row and when the engine saw it (SyncEntry.changedBy). Additive, no
-            // schema_version bump, no backfill: NULL = unknown, which is every older row; an older build's upsert resets them to it.
-            for (col in listOf("changed_by TEXT", "changed_at_ms INTEGER")) if (!columnExists("sync_entries", col.substringBefore(' '))) stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN $col")
-            // gkrost/unidrive-cli#1018 item 16: the digest of what this machine's upload sent (SyncEntry.uploadDigest). Additive, no
-            // schema_version bump: NULL = no upload known, which is every older row; an older build's upsert resets it to that,
-            // which turns the check off for the row, never on.
-            if (!columnExists("sync_entries", "upload_digest")) stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN upload_digest TEXT")
+            // gkrost/unidrive-cli#849: who last changed the row and when the engine saw it (SyncEntry.changedBy); #1018 item 16: what its upload sent
+            // (SyncEntry.uploadDigest). Additive, no schema_version bump, no backfill: NULL = unknown, every older row; an older build's upsert resets them to it.
+            for (col in listOf("changed_by TEXT", "changed_at_ms INTEGER", "upload_digest TEXT")) if (!columnExists("sync_entries", col.substringBefore(' '))) stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN $col")
             // gkrost/unidrive-cli#414: the download hint the row carries (SyncEntry.storedObject): the stored object of
             // the version the row records, so a download after a daemon restart seeds the provider's in-memory hint from
             // the row and skips the metadata call it would otherwise pay per file. Unlike the additive columns above,
@@ -1196,9 +1192,7 @@ class StateDatabase(
                 }
                 // The row never reached the cloud: the column says so, whatever the synthetic key looks like.
                 stmt.setInt(if (keepMarks) 36 else 32, if (entry.remoteId == null) 1 else 0)
-                // gkrost/unidrive-cli#1018 item 16: unlike the local hash, kept for a row without local bytes: a hydration of a copy
-                // that was evicted is the download it is compared for.
-                stmt.setString(if (keepMarks) 37 else 33, entry.uploadDigest?.encoded())
+                stmt.setString(if (keepMarks) 37 else 33, entry.uploadDigest?.encoded()) // #1018 item 16: kept without local bytes, unlike local_hash
                 stmt.executeUpdate()
             }
             // INSERT OR REPLACE swapped the row of this remote id (nothing, a tombstone or an alive row) for the new one.
@@ -3844,8 +3838,7 @@ class StateDatabase(
                 "local_mtime, local_size, is_folder, is_pinned, is_hydrated, last_synced, status, " +
                 "download_quarantined, last_error_at, local_hash, cache_backed, edit_base, remote_version, remote_content_id, " +
                 "hint_file_id, hint_bucket, hint_encrypt_version, hint_size, hint_modified, hint_updated_at, " +
-                "changed_by, changed_at_ms, " +
-                "pending_local, pending_upload, upload_digest) " +
+                "changed_by, changed_at_ms, pending_local, pending_upload, upload_digest) " +
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
                 "(SELECT pending_local FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'), ?, ?)"
 
@@ -3857,8 +3850,7 @@ class StateDatabase(
                 "local_mtime, local_size, is_folder, is_pinned, is_hydrated, last_synced, status, " +
                 "download_quarantined, last_error_at, local_hash, cache_backed, edit_base, remote_version, remote_content_id, " +
                 "hint_file_id, hint_bucket, hint_encrypt_version, hint_size, hint_modified, hint_updated_at, " +
-                "changed_by, changed_at_ms, " +
-                "pending_local, upload_refused, name_block, pending_upload, upload_digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
+                "changed_by, changed_at_ms, pending_local, upload_refused, name_block, pending_upload, upload_digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
                 "(SELECT pending_local FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'), " +
                 "(SELECT upload_refused FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'), " +
                 "(SELECT name_block FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'), ?, ?)"
