@@ -245,7 +245,7 @@ class XtraInitCommand : Callable<Int> {
 // ── xtra export-key ───────────────────────────────────────────────────────────
 
 @Command(name = "export-key", description = ["Export the encryption key for backup"], mixinStandardHelpOptions = true)
-class XtraExportCommand : Runnable {
+class XtraExportCommand : Callable<Int> {
     @ParentCommand
     lateinit var xtraCmd: XtraCommand
 
@@ -255,15 +255,15 @@ class XtraExportCommand : Runnable {
     @Option(names = ["--algorithm"], description = ["aes-gcm-sym or aes-gcm (default: aes-gcm where xtra.key exists, else aes-gcm-sym)"])
     var algorithmName: String? = null
 
-    override fun run() {
+    override fun call(): Int {
         val configDir = xtraCmd.parent.configBaseDir()
-        val algorithm = keyVerbAlgorithm(algorithmName, XtraAlgorithm.keyVerbDefault(configDir)) ?: return
+        val algorithm = keyVerbAlgorithm(algorithmName, XtraAlgorithm.keyVerbDefault(configDir)) ?: return 1
         val keyPath = configDir.resolve(algorithm.keyFileName)
-        if (!Files.exists(keyPath)) { System.err.println("No key found at $keyPath. Run '${algorithm.initCommand}' first."); return }
+        if (!Files.exists(keyPath)) { System.err.println("No key found at $keyPath. Run '${algorithm.initCommand}' first."); return 1 }
         val dest = Paths.get(output).resolve(algorithm.keyFileName)
         if (Files.exists(dest)) {
             System.err.println("A file already exists at $dest; remove it or export elsewhere — an export never overwrites one.")
-            return
+            return 1
         }
         Files.createDirectories(dest.parent)
         // The export is the backup that decrypts everything; it is written owner-only and atomically, like the
@@ -272,6 +272,7 @@ class XtraExportCommand : Runnable {
         println("Key exported to $dest")
         println(algorithmLine(algorithm))
         println("WARNING: this file decrypts everything the key encrypts — store it accordingly.")
+        return 0
     }
 }
 
@@ -382,18 +383,18 @@ class XtraChangePassphraseCommand : Callable<Int> {
         val configDir = xtraCmd.parent.configBaseDir()
         val algorithm = keyVerbAlgorithm(algorithmName, XtraAlgorithm.keyVerbDefault(configDir)) ?: return 1
         val keyPath = configDir.resolve(algorithm.keyFileName)
-        if (!Files.exists(keyPath)) { System.err.println("No key found at $keyPath. Run '${algorithm.initCommand}' first."); return 0 }
-        val console = System.console() ?: run { System.err.println("No console available"); return 0 }
-        val current = console.readPassword("Current passphrase: ") ?: return 0
+        if (!Files.exists(keyPath)) { System.err.println("No key found at $keyPath. Run '${algorithm.initCommand}' first."); return 1 }
+        val console = System.console() ?: run { System.err.println("No console available"); return 1 }
+        val current = console.readPassword("Current passphrase: ") ?: return 1
         val rewrap: (CharArray) -> Unit =
             when (algorithm) {
                 XtraAlgorithm.AES_GCM_SYM -> XtraSymmetricKeyStore(keyPath).also { it.load(current) }::changePassphrase
                 else -> XtraKeyManager(keyPath).also { it.load(current) }::changePassphrase
             }
         val newPass = console.readPassword("New passphrase (min ${XtraKeyManager.MIN_PASSPHRASE_LENGTH} chars): ")
-            ?: return 0
+            ?: return 1
         val confirm = console.readPassword("Confirm passphrase: ")
-        if (!newPass.contentEquals(confirm)) { System.err.println("Passphrases don't match"); return 0 }
+        if (!newPass.contentEquals(confirm)) { System.err.println("Passphrases don't match"); return 1 }
         // Re-wraps the same key under the new passphrase; a fresh generate would orphan every file already
         // encrypted with the old key.
         val newForVault = newPass.copyOf()
@@ -411,15 +412,15 @@ class XtraChangePassphraseCommand : Callable<Int> {
 // ── xtra init-age ─────────────────────────────────────────────────────────────
 
 @Command(name = "init-age", description = ["Generate the age-v1 encryption identity (xtra_algorithm = \"age-v1\") up front"], mixinStandardHelpOptions = true)
-class XtraInitAgeCommand : Runnable {
+class XtraInitAgeCommand : Callable<Int> {
     @ParentCommand
     lateinit var xtraCmd: XtraCommand
 
-    override fun run() {
+    override fun call(): Int {
         val keyPath = xtraCmd.parent.configBaseDir().resolve("xtra-age.key")
         if (Files.exists(keyPath)) {
             System.err.println("An identity already exists at $keyPath. Use 'xtra change-passphrase-age' to update it.")
-            return
+            return 1
         }
         // The identity's passphrase comes from the same chain the daemon loads it with, so what is generated here
         // decrypts there by construction — this is the first content operation's silent generate, made explicit.
@@ -428,6 +429,7 @@ class XtraInitAgeCommand : Runnable {
         println()
         println("WARNING: If you lose this identity, age-encrypted files CANNOT be recovered.")
         println("Back up immediately: unidrive xtra export-age --output /safe/location/")
+        return 0
     }
 }
 
@@ -438,20 +440,20 @@ class XtraInitAgeCommand : Runnable {
     description = ["Export the age identity for backup (standard age format; age decrypts the age file after the stored object's 266-byte XTRA header)"],
     mixinStandardHelpOptions = true,
 )
-class XtraExportAgeCommand : Runnable {
+class XtraExportAgeCommand : Callable<Int> {
     @ParentCommand
     lateinit var xtraCmd: XtraCommand
 
     @Option(names = ["--output"], required = true, description = ["Output directory (the file lands as xtra-age-identity.txt)"])
     lateinit var output: String
 
-    override fun run() {
+    override fun call(): Int {
         val keyPath = xtraCmd.parent.configBaseDir().resolve("xtra-age.key")
-        if (!Files.exists(keyPath)) { System.err.println("No age identity found. Run 'unidrive xtra init-age' first."); return }
+        if (!Files.exists(keyPath)) { System.err.println("No age identity found. Run 'unidrive xtra init-age' first."); return 1 }
         val dest = Paths.get(output).resolve("xtra-age-identity.txt")
         if (Files.exists(dest)) {
             System.err.println("A file already exists at $dest; remove it or export elsewhere — an export never overwrites one.")
-            return
+            return 1
         }
         Files.createDirectories(dest.parent)
         // The export is the identity itself — the file 'age -d -i' takes — so it is written owner-only and atomically,
@@ -460,13 +462,14 @@ class XtraExportAgeCommand : Runnable {
         println("Age identity exported to $dest")
         println("WARNING: this file decrypts everything the identity encrypts — store it accordingly.")
         println("It is the standard age identity. age -d -i '$dest' decrypts the age file that begins after the stored object's 266-byte XTRA header, not the raw object.")
+        return 0
     }
 }
 
 // ── xtra import-age ───────────────────────────────────────────────────────────
 
 @Command(name = "import-age", description = ["Import an age identity from another machine"], mixinStandardHelpOptions = true)
-class XtraImportAgeCommand : Runnable {
+class XtraImportAgeCommand : Callable<Int> {
     @ParentCommand
     lateinit var xtraCmd: XtraCommand
 
@@ -481,9 +484,9 @@ class XtraImportAgeCommand : Runnable {
 
     // Whatever the probe decode throws, the answer is the same: refuse, the local identity stays.
     @Suppress("TooGenericExceptionCaught")
-    override fun run() {
+    override fun call(): Int {
         val src = Paths.get(input).resolve("xtra-age-identity.txt")
-        if (!Files.exists(src)) { System.err.println("No identity file found at $src"); return }
+        if (!Files.exists(src)) { System.err.println("No identity file found at $src"); return 1 }
         val keyPath = xtraCmd.parent.configBaseDir().resolve("xtra-age.key")
         val encoded = Files.readString(src).trim()
         // The identity string carries no passphrase; the envelope it lands in uses this installation's — resolved
@@ -496,10 +499,11 @@ class XtraImportAgeCommand : Runnable {
             store.probeIdentity(encoded)
         } catch (e: Exception) {
             System.err.println("The imported file is not a usable age identity (${e.javaClass.simpleName}: ${e.message}); the local identity is untouched.")
-            return
+            return 1
         }
         store.importIdentity(encoded, passphrase, force)
         println("Age identity imported from $src")
+        return 0
     }
 }
 
@@ -512,13 +516,13 @@ class XtraChangePassphraseAgeCommand : Callable<Int> {
 
     override fun call(): Int {
         val keyPath = xtraCmd.parent.configBaseDir().resolve("xtra-age.key")
-        if (!Files.exists(keyPath)) { System.err.println("No age identity found. Run 'unidrive xtra init-age' first."); return 0 }
-        val console = System.console() ?: run { System.err.println("No console available"); return 0 }
-        val current = console.readPassword("Current passphrase: ") ?: return 0
+        if (!Files.exists(keyPath)) { System.err.println("No age identity found. Run 'unidrive xtra init-age' first."); return 1 }
+        val console = System.console() ?: run { System.err.println("No console available"); return 1 }
+        val current = console.readPassword("Current passphrase: ") ?: return 1
         val newPass = console.readPassword("New passphrase (min ${XtraKeyManager.MIN_PASSPHRASE_LENGTH} chars): ")
-            ?: return 0
+            ?: return 1
         val confirm = console.readPassword("Confirm passphrase: ")
-        if (!newPass.contentEquals(confirm)) { System.err.println("Passphrases don't match"); return 0 }
+        if (!newPass.contentEquals(confirm)) { System.err.println("Passphrases don't match"); return 1 }
         // Re-wraps the same identity under the new passphrase; a fresh generate would orphan every file already
         // encrypted to the old one.
         val newForVault = newPass.copyOf()
@@ -536,15 +540,15 @@ class XtraChangePassphraseAgeCommand : Callable<Int> {
 // ── xtra init-tink ────────────────────────────────────────────────────────────
 
 @Command(name = "init-tink", description = ["Generate the tink-aes-gcm encryption keyset (xtra_algorithm = \"tink-aes-gcm\") up front"], mixinStandardHelpOptions = true)
-class XtraInitTinkCommand : Runnable {
+class XtraInitTinkCommand : Callable<Int> {
     @ParentCommand
     lateinit var xtraCmd: XtraCommand
 
-    override fun run() {
+    override fun call(): Int {
         val keyPath = xtraCmd.parent.configBaseDir().resolve(XtraAlgorithm.TINK_AES_GCM.keyFileName)
         if (Files.exists(keyPath)) {
             System.err.println("A keyset already exists at $keyPath. Use 'xtra change-passphrase-tink' to update it.")
-            return
+            return 1
         }
         // The keyset's passphrase comes from the same chain the daemon loads it with, so what is generated here
         // decrypts there by construction — the same up-front generate the other algorithms' init verbs make.
@@ -554,6 +558,7 @@ class XtraInitTinkCommand : Runnable {
         println("WARNING: If you lose this keyset, tink-encrypted files CANNOT be recovered.")
         println("Unlike age-v1 there is no external recovery tool: only this engine's keyset decrypts the stored files.")
         println("Back up xtra-tink.key itself (it decrypts only under its passphrase).")
+        return 0
     }
 }
 
@@ -566,13 +571,13 @@ class XtraChangePassphraseTinkCommand : Callable<Int> {
 
     override fun call(): Int {
         val keyPath = xtraCmd.parent.configBaseDir().resolve(XtraAlgorithm.TINK_AES_GCM.keyFileName)
-        if (!Files.exists(keyPath)) { System.err.println("No tink keyset found. Run 'unidrive xtra init-tink' first."); return 0 }
-        val console = System.console() ?: run { System.err.println("No console available"); return 0 }
-        val current = console.readPassword("Current passphrase: ") ?: return 0
+        if (!Files.exists(keyPath)) { System.err.println("No tink keyset found. Run 'unidrive xtra init-tink' first."); return 1 }
+        val console = System.console() ?: run { System.err.println("No console available"); return 1 }
+        val current = console.readPassword("Current passphrase: ") ?: return 1
         val newPass = console.readPassword("New passphrase (min ${XtraKeyManager.MIN_PASSPHRASE_LENGTH} chars): ")
-            ?: return 0
+            ?: return 1
         val confirm = console.readPassword("Confirm passphrase: ")
-        if (!newPass.contentEquals(confirm)) { System.err.println("Passphrases don't match"); return 0 }
+        if (!newPass.contentEquals(confirm)) { System.err.println("Passphrases don't match"); return 1 }
         // Re-wraps the same keyset under the new passphrase; a fresh generate would orphan every file it sealed.
         val newForVault = newPass.copyOf()
         XtraTinkKeyStore(keyPath).changePassphrase(current, newPass)
