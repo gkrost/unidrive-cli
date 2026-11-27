@@ -1,6 +1,6 @@
 # Mount delete queue: durable write-behind deletes and subtree coalescing (design)
 
-**Status:** proposal, no code. The owner answered questions 1 and 8 (section 5.4): no queue before a live re-measure, and G1a is built now. It covers the three parts of the mount-delete throughput work that were left open on
+**Status:** proposal, no code. The owner answered questions 1 and 8 (section 5.4): no queue before a live re-measure, and G1a (S1) is dropped, because its evidence is not a cloud listing (section 4). It covers the three parts of the mount-delete throughput work that were left open on
 purpose: a durable write-behind delete queue, one folder trash in place of its children's jobs, and the folder guard's
 per-folder recursive listing. The throughput part that is already built (the kind hint, one trash call per listed item,
 the batch SPI, the synchronous coalescing window) is described in section 1 as the baseline.
@@ -146,14 +146,15 @@ A user moves `/A/x` to `/B/x`. The local move succeeds, but the cloud move is re
 
 **Option G1: read state.db instead of the cloud.** That is free, but it proves only what the engine already knows, which is the opposite of the guard's purpose (`MountDelete.kt:158-161`: the poll lags other devices). It is acceptable only where a fresher statement than the rows exists:
 
-- **G1a: whole-listing freshness.** `lastWholeListing(folder)` (`MountDelete.kt:176`) already records when a client last saw the folder whole. If that is within a short window (seconds) *and* no delta since then touched the subtree, the rows are as good as a listing. Saves the listings of an `rm -rf` issued right after a directory walk, which is the common case for a file manager.
+- **G1a: whole-listing freshness (dropped).** The idea was to skip the walk when `lastWholeListing(folder)` (`MountDelete.kt:176`) is within a short window and no delta touched the subtree since. That is not fail-safe, because `lastWholeListing` (`LiveFolderList.kt:124-128`) is not a cloud listing in normal use. It is the later of a live cloud listing (`listedAt`), which only happens before the first scan completes (`rowsOrNull` returns null once a delta cursor exists, `:135`), and of the time a client was told the folder whole (`listedToClient`, set in `coverage`, `:92-99`). After the first scan, `coverage` marks a folder whole from the delta cursor, so that answer is the engine's own state.db rows. Those rows can lag another device's writes, the case the guard exists for (`MountDelete.kt:158-161`). G1a needs a **real cloud listing** as its evidence.
+- **G1a' (noted for after S0):** skip re-listing a folder only when the guard's **own** cloud listing of it (or a pre-scan live listing, `listedAt`) is younger than about 10 s and no row below changed since. It is safe, but it only saves repeat walks (a retried `rmdir`, nested `rmdir`s inside the window). A plain bottom-up `rm -rf` already lists each folder about once, so the gain there is small.
 - **G1b: delta-cursor freshness.** For providers whose delta is prompt (OneDrive, Dropbox), a delta poll after the delete was accepted proves the subtree unchanged. Internxt's delta lags by minutes, so this does not help there.
 
 **Option G2: list once per operation, not once per folder delete.** For a coalesced subtree (section 3), one walk at drain time is the evidence for the single folder trash. The per-folder walks of a bottom-up `rm -rf` then collapse into one. This is the natural pairing with coalescing.
 
 **Option G3: keep the walk as it is** for non-coalesced folder deletes. It is the safe default.
 
-Recommendation: G2 with coalescing, G1a as a measured optimisation behind a short freshness window, G3 everywhere else. G1b is not worth building while Internxt is the main workload.
+Recommendation: G2 with coalescing, G3 everywhere else, G1a' only if S0 shows repeat walks are a real cost. G1b is not worth building while Internxt is the main workload.
 
 ---
 
@@ -161,14 +162,14 @@ Recommendation: G2 with coalescing, G1a as a measured optimisation behind a shor
 
 ### 5.1 Recommendation
 
-Build the queue **only** if a single-threaded bulk delete (Linux `rm -rf`, a scripted cleanup) of thousands of entries is a real workload after a live re-measure. The synchronous window already serves parallel deleters such as Explorer and released holds that drain in parallel. If the queue is built: J1 (state.db), opt-in IPC, file jobs first, then folder jobs, then coalescing with G2. Do G1a apart from the queue: it helps the synchronous path too.
+Build the queue **only** if a single-threaded bulk delete (Linux `rm -rf`, a scripted cleanup) of thousands of entries is a real workload after a live re-measure. The synchronous window already serves parallel deleters such as Explorer and released holds that drain in parallel. If the queue is built: J1 (state.db), opt-in IPC, file jobs first, then folder jobs, then coalescing with G2. G1a is not built (section 4); G1a' is an option after S0.
 
 ### 5.2 Slices
 
 | # | Slice | Size | Depends on |
 |---|---|---|---|
 | S0 | Live re-measure of the 622-entry `rm -rf` (calls, wall time) on the current engine | S (no code) | none |
-| S1 | G1a: skip the guard's walk when a whole listing is fresh and no delta touched the subtree | S-M (~80 lines + tests) | none |
+| S1 | ~~G1a~~ dropped (section 4). Option after S0: G1a', skip re-listing on the guard's own cloud listing younger than ~10 s with no row change below | S-M (~80 lines + tests) | S0 |
 | S2 | S3 `BatchDeleteProvider` over `DeleteObjects` (per-key answers) | S (~60 lines) | none |
 | S3 | `delete_jobs` table, schema bump, `markDeleted` + job in one transaction, start-up settle, drainer over `DeleteCoalescer`; **file jobs only**, opt-in `deferred` | L (~300 lines + crash matrix) | S0 decision |
 | S4 | Status counts, failed-ops list/retry/cancel verbs and CLI | M (~200 lines) | S3 |
@@ -186,8 +187,8 @@ Build the queue **only** if a single-threaded bulk delete (Linux `rm -rf`, a scr
 
 ### 5.4 Questions for the owner
 
-Answered so far: question 1 (A: no queue now; the live re-measure S0 comes first) and question 8 (A: G1a is built now as
-slice S1). Questions 2 to 7 wait for the outcome of S0.
+Answered so far: question 1 (A: no queue now; the live re-measure S0 comes first) and question 8 (first A, then
+revised: S1 dropped, see section 4). Questions 2 to 7 wait for the outcome of S0.
 
 1. **Build the queue at all?** A: only after S0 shows that a single-threaded bulk delete is a real, slow workload. B: build it now as an opt-in capability. **Answer: A.**
 2. **Journal:** A: a `delete_jobs` table in state.db with a schema bump. B: a separate append-only file journal.
@@ -196,4 +197,4 @@ slice S1). Questions 2 to 7 wait for the outcome of S0.
 5. **Create below a queued folder delete:** A: answer `busy` until the job is done. B: accept it and split the folder job into child jobs.
 6. **A failed job after OK:** A: the row stays deleted and the failure goes to the failed-ops list until the user retries or cancels. B: the row comes back to life automatically, with a notice.
 7. **Subtree coalescing:** A: build it (S6) for Internxt, OneDrive and Dropbox, never S3. B: leave it out and rely on 50-item batches.
-8. **The guard's walk:** A: G1a (fresh whole listing) now, apart from the queue. B: keep the walk unchanged until the queue lands with G2. **Answer: A.**
+8. **The guard's walk:** A: G1a (fresh whole listing) now, apart from the queue. B: keep the walk unchanged until the queue lands with G2. **Answer: A, then revised: S1 dropped,** because G1a's evidence is normally state.db, not a cloud listing (section 4). G1a' stays an option after S0.
