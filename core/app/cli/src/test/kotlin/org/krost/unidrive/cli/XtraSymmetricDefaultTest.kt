@@ -93,7 +93,7 @@ class XtraSymmetricDefaultTest {
         assertTrue(XtraSymmetricKeyStore(dir.resolve("xtra-sym.key")).opens(pass.toCharArray()), "under the chain's passphrase")
 
         val again = dir.resolve("xtra-sym.key").let { Files.readAllBytes(it) }
-        assertEquals(0, runCli("xtra", "init"))
+        assertEquals(1, runCli("xtra", "init"), "a second init refuses")
         assertContentEquals(again, Files.readAllBytes(dir.resolve("xtra-sym.key")), "a second init never replaces the key")
     }
 
@@ -122,7 +122,7 @@ class XtraSymmetricDefaultTest {
     fun `import-key refuses a key file the passphrase does not open and leaves the local key alone`() {
         val foreign = TestScratch.directory("xtra-sym-foreign")
         XtraSymmetricKeyStore(foreign.resolve("xtra-sym.key")).generate("another-passphrase".toCharArray())
-        assertEquals(0, runCli("xtra", "import-key", "--input", foreign.toString()))
+        assertEquals(1, runCli("xtra", "import-key", "--input", foreign.toString()))
         assertFalse(Files.exists(dir.resolve("xtra-sym.key")))
     }
 
