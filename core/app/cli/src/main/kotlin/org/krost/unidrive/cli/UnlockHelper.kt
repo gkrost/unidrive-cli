@@ -90,9 +90,15 @@ internal object UnlockHelper {
     private const val MAX_REPLY_BYTES = 64 * 1024
 
     // One daemon reader thread with bounded, preallocated reads (no available(): unreliable on Windows pipes), joined with
-    // the timeout. The thread scrubs the buffer in its own finally; a timeout or an oversized reply kills the helper.
-    internal fun readReply(process: Process): Result {
-        val buffer = ByteArray(MAX_REPLY_BYTES + 1)
+    // the timeout. The caller wipes the buffer once the thread is done. On a timeout the thread may still sit in a read
+    // (a child of the helper holds stdout); it then wipes the buffer itself when that read returns. [timeoutMs] and
+    // [buffer] are parameters for the tests only.
+    internal fun readReply(
+        process: Process,
+        timeoutMs: Long = TIMEOUT_MS,
+        buffer: ByteArray = ByteArray(MAX_REPLY_BYTES + 1),
+    ): Result {
+        val abandoned = java.util.concurrent.atomic.AtomicBoolean(false)
         var count = 0
         var failed = false
         val reader =
@@ -114,14 +120,18 @@ internal object UnlockHelper {
                     }
                 } catch (_: java.io.IOException) {
                     failed = true
+                } finally {
+                    if (abandoned.get()) buffer.fill(0)
                 }
             }.apply { isDaemon = true }
         reader.start()
-        reader.join(TIMEOUT_MS)
+        reader.join(timeoutMs)
         if (reader.isAlive) {
+            abandoned.set(true)
             process.destroyForcibly()
             reader.join(1_000)
-            if (!reader.isAlive) buffer.fill(0)
+            // A read that is still blocked writes nothing before it returns, and then wipes in its finally.
+            buffer.fill(0)
             return Result.Hard("timeout")
         }
         return try {
