@@ -181,6 +181,9 @@ class HttpRetryBudget @Suppress("LongParameterList") constructor(
             if (waiter.isForeground()) foregroundWaiters.addLast(waiter) else backgroundWaiters.addLast(waiter)
             admitLocked()
         }
+        // A promotion moves this waiter to the user lane, whose bound may hold a free reserved slot: admit at once,
+        // not at the next release (gkrost/unidrive-cli#74).
+        val promotion = (priority as? Priority.Promotable)?.promoted?.invokeOnCompletion { synchronized(permitLock) { admitLocked() } }
         try {
             waiter.granted.await()
         } catch (e: CancellationException) {
@@ -190,6 +193,8 @@ class HttpRetryBudget @Suppress("LongParameterList") constructor(
                 admitLocked()
             }
             throw e
+        } finally {
+            promotion?.dispose()
         }
         try {
             return block()

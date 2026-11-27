@@ -84,7 +84,7 @@ class InFlightDedup<K : Any, V>(
 
     private data class Entry<V>(
         val deferred: Deferred<V>,
-        val priority: AtomicReference<Priority>,
+        val priority: Priority.Promotable,
     )
 
     private val inFlight = ConcurrentHashMap<K, Entry<V>>()
@@ -150,10 +150,10 @@ class InFlightDedup<K : Any, V>(
             // gets awaited. The shared AtomicReference is installed on the
             // loader's coroutine context as a Promotable Priority so any
             // later caller's promotion is observable from inside the loader.
-            val sharedPriority = AtomicReference(priority)
+            val sharedPriority = Priority.Promotable(AtomicReference(priority))
             val deferred =
                 async(
-                    context = Priority.Promotable(sharedPriority),
+                    context = sharedPriority,
                     start = CoroutineStart.LAZY,
                 ) {
                     loader()
@@ -216,16 +216,17 @@ class InFlightDedup<K : Any, V>(
     internal fun inFlightCount(): Int = inFlight.size
 
     private fun promote(
-        ref: AtomicReference<Priority>,
+        lane: Priority.Promotable,
         candidate: Priority,
     ) {
         // Monotonic: Foreground > Background. Background candidates never
         // demote an already-Foreground entry.
         if (candidate.resolve() != Priority.Foreground) return
         while (true) {
-            val cur = ref.get()
-            if (cur.resolve() == Priority.Foreground) return
-            if (ref.compareAndSet(cur, Priority.Foreground)) return
+            val cur = lane.ref.get()
+            if (cur.resolve() == Priority.Foreground) break
+            if (lane.ref.compareAndSet(cur, Priority.Foreground)) break
         }
+        lane.promoted.complete(Unit)
     }
 }

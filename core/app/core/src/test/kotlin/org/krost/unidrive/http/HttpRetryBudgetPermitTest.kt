@@ -398,6 +398,30 @@ class HttpRetryBudgetPermitTest {
             pollSecond.await()
         }
 
+    // A poll listing parked on the background share while the reserved slot is free: no permit event follows the
+    // promotion, so the promotion itself must run the admission pass, or the user waits for the other poll listing.
+    @Test
+    fun `a parked poll listing a user-driven caller joins takes the reserved slot at once`() =
+        runTest {
+            val budget = budget(maxConcurrency = 2, reservedForUserSlots = 1)
+            val dedup = InFlightDedup<String, String>()
+            val hungPoll = CompletableDeferred<Unit>()
+            val pollFirst = async { budget.withPermit { hungPoll.await() } }
+            runCurrent()
+            val pollSecond = async { dedup.load("folder", Priority.Background) { budget.withPermit { "listed" } } }
+            runCurrent()
+            assertEquals(1, budget.freeSlots(), "the poll's second listing parks on the poll's share")
+
+            val user = async { dedup.load("folder", Priority.Foreground) { error("joins the in-flight load") } }
+            runCurrent()
+
+            assertTrue(user.isCompleted, "the promoted listing went out on the reserved slot, not behind the hung poll listing")
+            assertEquals("listed", user.await())
+            assertEquals("listed", pollSecond.await())
+            hungPoll.complete(Unit)
+            pollFirst.await()
+        }
+
     @Test
     fun `with the concurrency at its storm floor the poll still gets the one permit left`() =
         runTest {
