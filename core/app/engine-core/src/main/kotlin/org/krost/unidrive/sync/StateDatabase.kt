@@ -1052,7 +1052,7 @@ class StateDatabase(
      * has the connection's transaction open, closes it so this write is not part of it; if this thread
      * owns a batch whose transaction was closed that way, reopens it. A no-op when no batch is open.
      */
-    private fun beginWrite() {
+    internal fun beginWrite() {
         val owner = batchOwner ?: return
         if (owner === Thread.currentThread()) {
             if (batchSuspended) {
@@ -3769,7 +3769,7 @@ class StateDatabase(
          * [resetKeepingPending] share it. the `pending_upload` column (gkrost/unidrive-cli#845), not the spelling
          * of the key: an S3 key may start with `local:`. `idx_sync_entries_pending_upload` serves it without a table walk.
          */
-        private const val PENDING_UPLOAD_ROWS = "status='EXISTS' AND pending_upload=1 AND is_folder=0 AND is_hydrated<>0"
+        internal const val PENDING_UPLOAD_ROWS = "status='EXISTS' AND pending_upload=1 AND is_folder=0 AND is_hydrated<>0"
 
         /**
          * The rows blocked by name, ordered by path. `ORDER BY path` alone lets SQLite walk the whole path index to
