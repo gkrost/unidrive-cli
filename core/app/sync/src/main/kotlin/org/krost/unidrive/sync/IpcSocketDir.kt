@@ -108,7 +108,11 @@ internal object IpcSocketDir {
         }
         val facts = ops.facts(dir) ?: throw IllegalStateException("Could not create the IPC socket folder $dir")
         fallbackDirProblem(facts, uid)?.let {
-            throw IllegalStateException("Refusing to use $dir as the IPC socket folder: $it. Remove it so it can be recreated.")
+            // A folder of another user in a sticky temp folder cannot be removed by this one: say the way out that always works.
+            throw IllegalStateException(
+                "Refusing to use $dir as the IPC socket folder: $it. Remove it so it can be recreated, " +
+                    "or set $OVERRIDE_ENV to a folder of your own (an absolute path, the same for the daemon and its clients).",
+            )
         }
         return dir
     }
