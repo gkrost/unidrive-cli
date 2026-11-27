@@ -230,7 +230,23 @@ open class DropboxProviderFactory(
     override fun describeConnection(
         properties: Map<String, String?>,
         profileDir: Path,
-    ): String = if (isAuthenticated(properties, profileDir)) "dropbox (signed in)" else "dropbox (no token)"
+    ): String {
+        if (!isAuthenticated(properties, profileDir)) return "dropbox (no token)"
+        // #964: a sealed token.json read in a process without the key is locked, not signed in (as OneDrive says it).
+        return try {
+            org.krost.unidrive.auth.CredentialStore(
+                profileDir,
+                DropboxAuth.TOKEN_FILE,
+                DropboxToken.serializer(),
+                protector = credentialProtector,
+            ).load()
+            "dropbox (signed in)"
+        } catch (e: org.krost.unidrive.auth.CredentialLockedException) {
+            "dropbox (token locked: ${e.message})"
+        } catch (_: Exception) {
+            "dropbox (token unreadable)"
+        }
+    }
 
     override fun credentialPrompts(): List<PromptSpec> =
         listOf(PromptSpec(key = "client_id", label = "Dropbox app key (from the Dropbox App Console)"))

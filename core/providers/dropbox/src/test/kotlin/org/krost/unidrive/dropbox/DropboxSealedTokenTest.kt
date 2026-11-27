@@ -93,6 +93,25 @@ class DropboxSealedTokenTest {
     }
 
     @Test
+    fun `a sealed token json read locked is described as locked, not signed in (#964)`() {
+        writeSealedToken()
+        current = null
+
+        val text = factory().describeConnection(profile, dir)
+
+        assertTrue("token locked" in text && "token.json" in text && "vault" in text, "names the lock, the file and the vault: $text")
+        assertFalse("signed in" in text, text)
+    }
+
+    @Test
+    fun `a sealed token json read unlocked is described as signed in (#964)`() {
+        writeSealedToken()
+
+        assertEquals("dropbox (signed in)", factory().describeConnection(profile, dir))
+        assertEquals("dropbox (no token)", factory().describeConnection(profile, dir.resolve("none")))
+    }
+
+    @Test
     fun `a profile with a sealed token json needs the vault`() {
         tokenStore(platform).save(token())
         assertFalse(factory().needsCredentialSeal(dir))
