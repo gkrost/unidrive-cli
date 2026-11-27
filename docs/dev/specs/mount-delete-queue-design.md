@@ -1,6 +1,6 @@
 # Mount delete queue: durable write-behind deletes and subtree coalescing (design)
 
-**Status:** proposal, no code. It covers the three parts of the mount-delete throughput work that were left open on
+**Status:** proposal, no code. The owner answered questions 1 and 8 (section 5.4): no queue before a live re-measure, and G1a is built now. It covers the three parts of the mount-delete throughput work that were left open on
 purpose: a durable write-behind delete queue, one folder trash in place of its children's jobs, and the folder guard's
 per-folder recursive listing. The throughput part that is already built (the kind hint, one trash call per listed item,
 the batch SPI, the synchronous coalescing window) is described in section 1 as the baseline.
@@ -186,11 +186,14 @@ Build the queue **only** if a single-threaded bulk delete (Linux `rm -rf`, a scr
 
 ### 5.4 Questions for the owner
 
-1. **Build the queue at all?** A: only after S0 shows that a single-threaded bulk delete is a real, slow workload. B: build it now as an opt-in capability.
+Answered so far: question 1 (A: no queue now; the live re-measure S0 comes first) and question 8 (A: G1a is built now as
+slice S1). Questions 2 to 7 wait for the outcome of S0.
+
+1. **Build the queue at all?** A: only after S0 shows that a single-threaded bulk delete is a real, slow workload. B: build it now as an opt-in capability. **Answer: A.**
 2. **Journal:** A: a `delete_jobs` table in state.db with a schema bump. B: a separate append-only file journal.
 3. **IPC default:** A: opt in per request (`deferred`), with synchronous deletes as the default. B: deferred by default for clients that advertise the capability.
 4. **Permanent deletes:** A: always synchronous. B: queueable like trash deletes.
 5. **Create below a queued folder delete:** A: answer `busy` until the job is done. B: accept it and split the folder job into child jobs.
 6. **A failed job after OK:** A: the row stays deleted and the failure goes to the failed-ops list until the user retries or cancels. B: the row comes back to life automatically, with a notice.
 7. **Subtree coalescing:** A: build it (S6) for Internxt, OneDrive and Dropbox, never S3. B: leave it out and rely on 50-item batches.
-8. **The guard's walk:** A: G1a (fresh whole listing) now, apart from the queue. B: keep the walk unchanged until the queue lands with G2.
+8. **The guard's walk:** A: G1a (fresh whole listing) now, apart from the queue. B: keep the walk unchanged until the queue lands with G2. **Answer: A.**
