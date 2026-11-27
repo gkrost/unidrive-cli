@@ -62,6 +62,9 @@ class TinkStreamingStrategy(
     // provider turns into a permanent content refusal. Checked here, a wrong or replaced keyset is a key problem
     // of this installation instead — the file itself is fine and decrypts once the right keyset is back.
     override fun unwrapFileKey(wrapped: ByteArray): ByteArray {
+        // The keyset loads first, magic or not: a key file the passphrase does not open fails its own GCM tag, and
+        // inside the decrypt that AEADBadTagException would be refused as damaged content (#1037).
+        val keyset = handle.value
         // A slot without the magic names no keyset; the decrypt then answers for the file (a damaged slot is a
         // damaged header, and Tink refuses the stream either way).
         val prefix = FINGERPRINT_MAGIC.size + Int.SIZE_BYTES
@@ -69,7 +72,7 @@ class TinkStreamingStrategy(
             return ByteArray(0)
         }
         val sealedBy = ByteBuffer.wrap(wrapped, FINGERPRINT_MAGIC.size, Int.SIZE_BYTES).getInt()
-        val held = (0 until handle.value.size()).map { handle.value.getAt(it).id }
+        val held = (0 until keyset.size()).map { keyset.getAt(it).id }
         if (sealedBy !in held) {
             throw XtraKeysetMismatchException(
                 "X-tra Tink file was sealed by key id ${sealedBy.toUInt()}, which the keyset in ${keyStore.value.path} " +

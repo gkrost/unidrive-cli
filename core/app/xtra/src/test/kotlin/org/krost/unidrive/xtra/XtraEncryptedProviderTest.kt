@@ -833,6 +833,53 @@ class XtraEncryptedProviderTest {
         assertEquals("the previous content", Files.readString(dest))
     }
 
+    // #1037: the same rule for the algorithms whose key file loads lazily. A key file the passphrase does not open
+    // fails its own GCM tag, the same AEADBadTagException a failed content seal raises, so the load must not run
+    // where the provider reads that exception as damaged content.
+    private fun assertWrongPassphraseIsAKeyError(
+        storage: MutableMap<String, ByteArray>,
+        wrong: XtraEncryptionStrategy,
+        dest: Path,
+    ) {
+        Files.writeString(dest, "the previous content")
+        val failure = runCatching {
+            kotlinx.coroutines.runBlocking { provider(InMemoryProvider(storage), wrong).download("/f.txt", dest) }
+        }.exceptionOrNull()
+        checkNotNull(failure) { "a wrong passphrase decrypted the file" }
+        assertTrue(failure !is org.krost.unidrive.RemoteContentRefusedDownloadException, "wrong passphrase quarantines content: $failure")
+        assertEquals("the previous content", Files.readString(dest))
+    }
+
+    @Test
+    fun `an age-v1 wrong passphrase stays a key error, never a content refusal`() {
+        val tmpDir = TestScratch.directory("xtra-age-passphrase-test")
+        val storage = mutableMapOf<String, ByteArray>()
+        seedThrough(ageStrategy(tmpDir), storage, tmpDir, "aged")
+        val store = XtraAgeKeyStore(tmpDir.resolve("xtra-age.key"))
+
+        assertWrongPassphraseIsAKeyError(storage, AgeV1Strategy(lazy { store }, { "not-the-passphrase".toCharArray() }), tmpDir.resolve("dl.txt"))
+    }
+
+    // The slot without its "TKID" magic names no keyset, so the unwrap has nothing to check; the keyset still loads
+    // there, not in the decrypt. With the right passphrase such a slot is a damaged header and stays a refusal.
+    @Test
+    fun `a tink wrong passphrase stays a key error, never a content refusal, with or without the key id`() {
+        val tmpDir = TestScratch.directory("xtra-tink-passphrase-test")
+        val storage = mutableMapOf<String, ByteArray>()
+        val stored = seedThrough(tinkStrategy(tmpDir), storage, tmpDir, "tinked")
+        val store = XtraTinkKeyStore(tmpDir.resolve("xtra-tink.key"))
+        val wrong = { TinkStreamingStrategy(lazy { store }, { "not-the-passphrase".toCharArray() }) }
+        val dest = tmpDir.resolve("dl.txt")
+
+        assertWrongPassphraseIsAKeyError(storage, wrong(), dest)
+        storage["/f.txt"] = stored.copyOf().also { it.fill(0, 8, 12) }
+        assertWrongPassphraseIsAKeyError(storage, wrong(), dest)
+        assertIs<org.krost.unidrive.RemoteContentRefusedDownloadException>(
+            runCatching { kotlinx.coroutines.runBlocking { provider(InMemoryProvider(storage), tinkStrategy(tmpDir)).download("/f.txt", dest) } }
+                .exceptionOrNull(),
+        )
+    }
+
     @Test
     fun `a changed IV byte of an aes-gcm file is a content refusal, the bytes the nonce overwrites included`() {
         val tmpDir = TestScratch.directory("xtra-header-binding-test")
