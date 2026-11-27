@@ -32,6 +32,29 @@ private fun fillsOrBelow(
 }
 
 /**
+ * The streamed actions joined with scan-end's, as the buffered gather would plan them. Pages that each carried the
+ * renamed item planned its move and its download once per page, while the buffered gather plans the newest version
+ * once: only the last move of a pair of names and the last download of a name are kept (pages arrive in order). A
+ * delete planned at the old name of a move is dropped, as the buffered rename detection drops it: it addresses the item
+ * that now lives at the new name.
+ */
+internal fun asBufferedPlan(actions: List<SyncAction>): MutableList<SyncAction> {
+    val moves = actions.filterIsInstance<SyncAction.MoveLocal>()
+    if (moves.isEmpty()) return actions.toMutableList()
+    val movedFrom = moves.mapTo(HashSet()) { it.fromPath }
+    val lastMove = moves.associateBy { it.fromPath to it.path }
+    val lastDownload = actions.filterIsInstance<SyncAction.DownloadContent>().associateBy { it.path }
+    return actions.filterTo(ArrayList()) { action ->
+        when (action) {
+            is SyncAction.MoveLocal -> lastMove[action.fromPath to action.path] === action
+            is SyncAction.DownloadContent -> lastDownload[action.path] === action
+            is SyncAction.DeleteRemote, is SyncAction.DeleteLocal -> action.path !in movedFrom
+            else -> true
+        }
+    }
+}
+
+/**
  * The old names a streamed move carries away with a local edit not yet uploaded, while the cloud changed the content
  * too. The slice planned a conflict at the new name for each, as the buffered gather does, so scan-end must not plan
  * the edit's upload at the old name as a local-only change: after the move there is no file there to upload.

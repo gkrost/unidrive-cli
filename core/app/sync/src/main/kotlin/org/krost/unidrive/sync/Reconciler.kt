@@ -692,7 +692,7 @@ class Reconciler(
         // fullLocal is real-local-keyed; the remote keys are reverse-mapped like reconcile does.
         val fullRemoteLocal =
             if (alias.isEmpty) fullRemote else fullRemote.entries.associate { (k, v) -> alias.remoteToLocal(k) to v }
-        val actions = (streamedActions + resolveLocalOnly(alias, fullRemoteLocal.keys + movedAwayWithLocalEdit(streamedActions, fullLocal, entryByRemoteId, ::renamedContentChanged), fullLocal, syncPaths, downloadOnly)).toMutableList()
+        val actions = asBufferedPlan(streamedActions + resolveLocalOnly(alias, fullRemoteLocal.keys + movedAwayWithLocalEdit(streamedActions, fullLocal, entryByRemoteId, ::renamedContentChanged), fullLocal, syncPaths, downloadOnly))
         val coveredPaths = actions.mapTo(mutableSetOf()) { it.path }
 
         // Case-collision detection on new local files — see [reconcile] for rationale.
