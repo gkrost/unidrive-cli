@@ -2,6 +2,7 @@ package org.krost.unidrive.engine
 
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.movePendingUploadRow
+import org.krost.unidrive.sync.model.EntryStatus
 import org.krost.unidrive.sync.model.SyncEntry
 import org.krost.unidrive.testing.TestScratch
 import java.nio.file.Path
@@ -72,6 +73,20 @@ class PendingRowRelocateTest {
             c.close()
         }
         return key
+    }
+
+    private fun rowsAt(path: String): Int {
+        val c = DriverManager.getConnection("jdbc:sqlite:$file")
+        try {
+            c.createStatement().use { s ->
+                s.executeQuery("SELECT COUNT(*) FROM sync_entries WHERE path='$path'").use { rs ->
+                    rs.next()
+                    return rs.getInt(1)
+                }
+            }
+        } finally {
+            c.close()
+        }
     }
 
     @Test
@@ -168,4 +183,27 @@ class PendingRowRelocateTest {
         }
     }
 
+    // Only an alive row holds a path (the partial unique index): a tombstone at the target does not block the move.
+    @Test
+    fun `a tombstone at the target path does not block the pending-row move`() {
+        StateDatabase(file).also { it.initialize() }.use { db ->
+            db.upsertEntry(row("/p"))
+            db.upsertEntry(row("/target").copy(remoteId = "remote-1", status = EntryStatus.DELETED))
+
+            assertTrue(db.movePendingUploadRow("/p", "/target", null), "the move went through")
+            assertEquals(listOf("/target"), db.pendingUploadPaths(), "the pending row is at the target")
+            assertEquals(2, rowsAt("/target"), "the tombstone stayed beside it")
+        }
+    }
+
+    // Rows are stored NFC: an NFD spelling of both paths (a FUSE op from macOS) finds the row and stores the target NFC.
+    @Test
+    fun `an NFD spelling of the paths moves the NFC-stored pending row`() {
+        StateDatabase(file).also { it.initialize() }.use { db ->
+            db.upsertEntry(row("/café"))
+
+            assertTrue(db.movePendingUploadRow("/café", "/résumé", null), "the move went through")
+            assertEquals(listOf("/résumé"), db.pendingUploadPaths(), "the row is at the NFC target")
+        }
+    }
 }
