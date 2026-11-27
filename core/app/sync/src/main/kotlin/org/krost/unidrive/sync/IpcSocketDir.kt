@@ -91,13 +91,18 @@ internal object IpcSocketDir {
         tmpDir: Path,
         uid: Int,
         ops: PosixDirOps = RealPosixDirOps,
-    ): Path = ensurePosixFolder(tmpDir.resolve(posixFallbackName(uid)), uid, ops)
+    ): Path = ensurePosixFolder(tmpDir.resolve(posixFallbackName(uid)), uid, ops, suggestOverride = true)
 
-    /** Makes [dir] (its parent must exist) or checks the one that is there: a real directory of [uid], mode 700. */
+    /**
+     * Makes [dir] (its parent must exist) or checks the one that is there: a real directory of [uid], mode 700.
+     * [suggestOverride]: the refusal points at [OVERRIDE_ENV]; only the fallback folder sets it (for a folder
+     * that variable already names, the hint would tell the user to set what is set).
+     */
     fun ensurePosixFolder(
         dir: Path,
         uid: Int,
         ops: PosixDirOps = RealPosixDirOps,
+        suggestOverride: Boolean = false,
     ): Path {
         if (ops.facts(dir) == null) {
             try {
@@ -108,11 +113,15 @@ internal object IpcSocketDir {
         }
         val facts = ops.facts(dir) ?: throw IllegalStateException("Could not create the IPC socket folder $dir")
         fallbackDirProblem(facts, uid)?.let {
-            // A folder of another user in a sticky temp folder cannot be removed by this one: say the way out that always works.
-            throw IllegalStateException(
-                "Refusing to use $dir as the IPC socket folder: $it. Remove it so it can be recreated, " +
-                    "or set $OVERRIDE_ENV to a folder of your own (an absolute path, the same for the daemon and its clients).",
-            )
+            // A folder of another user in a sticky temp folder cannot be removed by this one: name the way out that
+            // needs no removal (the override folder still has to pass these checks and fit a socket path).
+            val wayOut =
+                if (suggestOverride) {
+                    "Remove it so it can be recreated, or set $OVERRIDE_ENV to a folder of your own (an absolute path, the same for the daemon and its clients)."
+                } else {
+                    "Remove it so it can be recreated."
+                }
+            throw IllegalStateException("Refusing to use $dir as the IPC socket folder: $it. $wayOut")
         }
         return dir
     }
