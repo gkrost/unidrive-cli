@@ -51,12 +51,12 @@ class IpcVerbUserLaneTest {
             try {
                 val budget = HttpRetryBudget(maxConcurrency = 2, reservedForUserSlots = 1, minSpacingMs = 0, stormSpacingMs = 0)
                 val hung = CompletableDeferred<Unit>()
-                val firstPollHolds = CompletableDeferred<Unit>()
-                // The poll's two listings: unmarked, so on the background lane. The first holds the poll's share and
-                // hangs; the second parks behind it.
-                scope.launch { budget.withPermit { firstPollHolds.complete(Unit); hung.await() } }
-                scope.launch { budget.withPermit { hung.await() } }
-                withTimeout(30_000) { firstPollHolds.await() }
+                val aPollHolds = CompletableDeferred<Unit>()
+                // The poll's two listings: unmarked, so on the background lane. Whichever is dispatched first holds the
+                // poll's share and hangs; the other parks behind it (either may run first, so both signal the hold).
+                scope.launch { budget.withPermit { aPollHolds.complete(Unit); hung.await() } }
+                scope.launch { budget.withPermit { aPollHolds.complete(Unit); hung.await() } }
+                withTimeout(30_000) { aPollHolds.await() }
 
                 val listed = CompletableDeferred<Unit>()
                 val s = IpcServer(socketPath)

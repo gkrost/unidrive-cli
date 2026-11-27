@@ -25,10 +25,10 @@ class HydrationUploadScopeUserLaneTest {
             try {
                 val budget = HttpRetryBudget(maxConcurrency = 2, reservedForUserSlots = 1, minSpacingMs = 0, stormSpacingMs = 0)
                 val hung = CompletableDeferred<Unit>()
-                val firstPollHolds = CompletableDeferred<Unit>()
-                polls.launch { budget.withPermit { firstPollHolds.complete(Unit); hung.await() } }
-                polls.launch { budget.withPermit { hung.await() } }
-                withTimeout(30_000) { firstPollHolds.await() }
+                val aPollHolds = CompletableDeferred<Unit>()
+                polls.launch { budget.withPermit { aPollHolds.complete(Unit); hung.await() } }
+                polls.launch { budget.withPermit { aPollHolds.complete(Unit); hung.await() } }
+                withTimeout(30_000) { aPollHolds.await() }
 
                 val listed = CompletableDeferred<Unit>()
                 uploads.launch { budget.withPermit { listed.complete(Unit) } }
