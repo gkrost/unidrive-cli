@@ -105,6 +105,44 @@ class StateDatabaseBatchWriteLockTest {
         assertNotNull(db1.getEntry("/own.txt"))
     }
 
+    // The BEGIN IMMEDIATE of a batch waits the busy timeout once, and a foreign writer that holds the
+    // write lock longer than that (a CLI command's own batch in another process) failed the whole batch
+    // with SQLITE_BUSY: no call site retried it. The BEGIN is now retried a bounded number of times with
+    // a small backoff (SqliteBusyRetry), so the batch waits the foreign writer out instead of dying on a
+    // contention window. A batch whose BEGIN never lands still fails, and its connection stays usable
+    // and atomic (the next test).
+    @Test
+    fun `a manual batch waits out a foreign writer that holds the write lock past the busy timeout`() {
+        val blocker = StateDatabase(dbFile, busyTimeoutMs = 100).also { it.initialize() }
+        val waiter = StateDatabase(dbFile, busyTimeoutMs = 100).also { it.initialize() }
+        try {
+            blocker.beginBatch()
+            blocker.upsertEntry(entry("/held.txt"))
+
+            // The blocker releases the write lock while the waiter's BEGIN is in its retries: before
+            // the retry existed, the waiter's first BEGIN failed at its (short) busy timeout and the
+            // batch died with SQLITE_BUSY.
+            val releaser =
+                Thread {
+                    Thread.sleep(300)
+                    blocker.commitBatch()
+                }
+            releaser.start()
+            try {
+                waiter.beginBatch()
+                waiter.upsertEntry(entry("/retried.txt"))
+                waiter.commitBatch()
+            } finally {
+                releaser.join(10_000)
+            }
+
+            assertNotNull(waiter.getEntry("/retried.txt"), "the batch must land once the foreign writer releases the lock")
+        } finally {
+            runCatching { blocker.close() }
+            runCatching { waiter.close() }
+        }
+    }
+
     // sqlite-jdbc flips its auto-commit flag before it runs BEGIN, and the connector opens with
     // transaction_mode=IMMEDIATE: a BEGIN that waits past the busy timeout throws SQLITE_BUSY with
     // getAutoCommit() == false and no transaction open. Every later batch {} on that connection then
