@@ -180,7 +180,8 @@ class InternxtCryptoTest {
         val salted = "Salted__".toByteArray(Charsets.US_ASCII)
         // Empty, shorter than the prefix, the bare prefix and prefix plus part of the salt: all end in the one
         // exception the callers handle, never an IndexOutOfBoundsException from the header slicing.
-        for (data in listOf(ByteArray(0), salted.copyOf(3), salted, salted + ByteArray(7))) {
+        // The header alone (prefix and the full salt, no ciphertext) decrypts to an empty value and is refused as well.
+        for (data in listOf(ByteArray(0), salted.copyOf(3), salted, salted + ByteArray(7), salted + ByteArray(8))) {
             val base64 = java.util.Base64.getEncoder().encodeToString(data)
             assertFailsWith<IllegalArgumentException>("${data.size} bytes") { crypto.cryptoJsDecrypt(base64, "password") }
         }
