@@ -97,6 +97,10 @@ private fun Main.readVaultForDaemon(
     } catch (e: java.security.GeneralSecurityException) {
         System.err.println("Error: Vault decryption failed: ${e.message}")
         kotlin.system.exitProcess(1)
+    } catch (e: IllegalStateException) {
+        // A truncated vault.enc (#1046).
+        System.err.println("Error: ${e.message}")
+        kotlin.system.exitProcess(1)
     }
 
 /**
@@ -117,6 +121,9 @@ internal fun Main.daemonUnlockVault(passphrase: CharArray): VaultUnlockOutcome {
     } catch (_: javax.crypto.AEADBadTagException) {
         VaultUnlockOutcome.BadPassphrase
     } catch (e: java.security.GeneralSecurityException) {
+        VaultUnlockOutcome.Failed(e.message ?: "vault read failed")
+    } catch (e: IllegalStateException) {
+        // #1046: a truncated vault.enc is a failed read (vault_unlock_failed), not an exception out of the handler.
         VaultUnlockOutcome.Failed(e.message ?: "vault read failed")
     }
 }
@@ -176,6 +183,8 @@ internal fun Main.rewriteDaemonVault(
         VaultUnlockOutcome.Failed(e.javaClass.simpleName)
     } catch (e: java.io.IOException) {
         VaultUnlockOutcome.Failed(e.javaClass.simpleName)
+    } catch (e: IllegalStateException) {
+        VaultUnlockOutcome.Failed(e.javaClass.simpleName)
     }
 }
 
@@ -185,6 +194,8 @@ internal fun Main.vaultPassphraseMatches(passphrase: CharArray): Boolean =
         Vault(baseConfigDir.resolve("vault.enc")).read(passphrase)
         true
     } catch (_: java.security.GeneralSecurityException) {
+        false
+    } catch (_: IllegalStateException) {
         false
     }
 
