@@ -88,6 +88,21 @@ class VaultStdinTest {
         }
     }
 
+    // #1038: a vault write that lands while change-passphrase waits for the new passphrase survives the re-key.
+    @Test
+    fun `vault change-passphrase keeps a vault write made while it read the new passphrase`() {
+        assertEquals(0, run("vault", "init", "--passphrase-stdin", stdin = "old-pass-123\n"))
+        System.setIn(
+            WriteBeforeSecondLine("old-pass-123\nnew-pass-456\n") {
+                ConfigFileTransaction.withLock(dir.resolve("config.toml")) {
+                    vault.write("old-pass-123".toCharArray(), mapOf("written-meanwhile" to mapOf("k" to "v")))
+                }
+            },
+        )
+        assertEquals(0, CommandLine(Main()).execute("-c", dir.toString(), "vault", "change-passphrase", "--passphrase-stdin", "--new-passphrase-stdin"))
+        assertEquals(mapOf("k" to "v"), vault.read("new-pass-456".toCharArray())["written-meanwhile"])
+    }
+
     @Test
     fun `vault xtra-set reads both passphrases from standard input and xtra-clear drops the entry`() {
         assertEquals(0, run("vault", "init", "--passphrase-stdin", stdin = "vault-pass-123\n"))

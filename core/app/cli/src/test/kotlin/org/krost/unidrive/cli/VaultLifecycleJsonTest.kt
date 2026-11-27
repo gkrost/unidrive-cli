@@ -245,4 +245,37 @@ class VaultLifecycleJsonTest {
         assertError("invalid_request")
         vault.read(pass.toCharArray())
     }
+
+    // #1038: a vault write that lands while change-passphrase waits for the new passphrase survives the re-key.
+    @Test
+    fun `vault change-passphrase --json keeps a vault write made while it read the new passphrase`() {
+        initVault()
+        out.reset()
+        System.setIn(
+            WriteBeforeSecondLine("$pass\nnew-pass-4567\n") {
+                ConfigFileTransaction.withLock(dir.resolve("config.toml")) {
+                    vault.write(pass.toCharArray(), vault.read(pass.toCharArray()) + ("written-meanwhile" to mapOf("k" to "v")))
+                }
+            },
+        )
+        val code = CommandLine(Main()).execute("-c", dir.toString(), "vault", "change-passphrase", "--json", "--passphrase-stdin", "--new-passphrase-stdin")
+        assertEquals(0, code)
+        assertOk()
+        assertEquals(mapOf("k" to "v"), vault.read("new-pass-4567".toCharArray())["written-meanwhile"])
+    }
+}
+
+/** Standard input that runs [beforeSecondLine] once, when the first byte past the first line is read. */
+internal class WriteBeforeSecondLine(
+    text: String,
+    private val beforeSecondLine: () -> Unit,
+) : InputStream() {
+    private val bytes = text.toByteArray(Charsets.UTF_8)
+    private val firstLineEnd = bytes.indexOf('\n'.code.toByte()) + 1
+    private var pos = 0
+
+    override fun read(): Int {
+        if (pos == firstLineEnd) beforeSecondLine()
+        return if (pos < bytes.size) bytes[pos++].toInt() and 0xff else -1
+    }
 }

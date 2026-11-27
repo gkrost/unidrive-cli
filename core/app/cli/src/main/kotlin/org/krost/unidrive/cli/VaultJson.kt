@@ -170,10 +170,15 @@ internal fun vaultChangePassphraseJson(
         val oldPass = requireStdinSecret("--passphrase-stdin")
         var newPass: CharArray? = null
         try {
-            val data = badPassphraseAsRefusal { vault.read(oldPass) }
-            newPass = requireStdinSecret("--new-passphrase-stdin")
-            requireLongEnough(newPass)
-            vault.write(newPass, data)
+            // #1038: both secrets first, then read and write under the config lock, so no other vault writer's entry is lost.
+            val fresh = requireStdinSecret("--new-passphrase-stdin")
+            newPass = fresh
+            requireLongEnough(fresh)
+            badPassphraseAsRefusal {
+                ConfigFileTransaction.withLock(configDir.resolve("config.toml")) {
+                    vault.write(fresh, vault.read(oldPass))
+                }
+            }
             buildJsonObject { put("ok", true) }
         } finally {
             oldPass.fill('\u0000')
