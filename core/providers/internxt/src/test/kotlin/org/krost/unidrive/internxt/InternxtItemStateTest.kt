@@ -12,8 +12,8 @@ import kotlin.test.assertFails
 
 /**
  * gkrost/unidrive-cli#632: [InternxtProvider.itemStateById] asks the file's meta first, then the folder's. The same
- * words as [InternxtProvider.folderStateById] reads: `TRASHED`/`removed` is the trash, `DELETED`/`deleted` is gone
- * for good, everything else is live; a call that failed (a 5xx) is not an answer and propagates.
+ * words as [InternxtProvider.folderStateById] reads: `TRASHED`/`deleted` is the trash, `DELETED`/`removed` is gone
+ * for good (permanently deleted), everything else is live; a call that failed (a 5xx) is not an answer and propagates.
  */
 class InternxtItemStateTest {
     private val json = headersOf("Content-Type", "application/json")
@@ -51,25 +51,35 @@ class InternxtItemStateTest {
     }
 
     @Test
-    fun `a trashed file is Trashed, by status or by the removed flag`() = runTest {
-        val p = providerAnswering(HttpStatusCode.OK, fileMeta(status = "TRASHED"), HttpStatusCode.OK, folderMeta())
+    fun `a trashed file is Trashed as the server sends it, TRASHED with deleted=true, or by the deleted flag alone`() = runTest {
+        val p = providerAnswering(HttpStatusCode.OK, fileMeta(status = "TRASHED", deleted = true), HttpStatusCode.OK, folderMeta())
         assertEquals(ItemRemoteState.Trashed(false), p.itemStateById(fileId))
-        val p2 = providerAnswering(HttpStatusCode.OK, fileMeta(removed = true), HttpStatusCode.OK, folderMeta())
+        val p2 = providerAnswering(HttpStatusCode.OK, fileMeta(deleted = true), HttpStatusCode.OK, folderMeta())
         assertEquals(ItemRemoteState.Trashed(false), p2.itemStateById(fileId))
     }
 
     @Test
-    fun `a file deleted for good is NotFound`() = runTest {
-        val p = providerAnswering(HttpStatusCode.OK, fileMeta(deleted = true), HttpStatusCode.OK, folderMeta())
+    fun `a file deleted for good is NotFound, DELETED with removed=true, or by the removed flag alone`() = runTest {
+        val p = providerAnswering(HttpStatusCode.OK, fileMeta(status = "DELETED", removed = true), HttpStatusCode.OK, folderMeta())
         assertEquals(ItemRemoteState.NotFound, p.itemStateById(fileId))
+        val p2 = providerAnswering(HttpStatusCode.OK, fileMeta(removed = true), HttpStatusCode.OK, folderMeta())
+        assertEquals(ItemRemoteState.NotFound, p2.itemStateById(fileId))
+    }
+
+    @Test
+    fun `a 410 on the file meta falls through to the folder like a 404`() = runTest {
+        val p = providerAnswering(HttpStatusCode.Gone, """{"error":"gone"}""", HttpStatusCode.OK, folderMeta(status = "TRASHED", deleted = true))
+        assertEquals(ItemRemoteState.Trashed(true), p.itemStateById(folderId))
     }
 
     @Test
     fun `a 404 file falls through to the folder, live and trashed`() = runTest {
         val live = providerAnswering(HttpStatusCode.NotFound, """{"error":"no file"}""", HttpStatusCode.OK, folderMeta())
         assertEquals(ItemRemoteState.Live(true), live.itemStateById(folderId))
-        val trashed = providerAnswering(HttpStatusCode.NotFound, """{"error":"no file"}""", HttpStatusCode.OK, folderMeta(status = "TRASHED"))
+        val trashed = providerAnswering(HttpStatusCode.NotFound, """{"error":"no file"}""", HttpStatusCode.OK, folderMeta(status = "TRASHED", deleted = true))
         assertEquals(ItemRemoteState.Trashed(true), trashed.itemStateById(folderId))
+        val gone = providerAnswering(HttpStatusCode.NotFound, """{"error":"no file"}""", HttpStatusCode.OK, folderMeta(status = "DELETED", removed = true))
+        assertEquals(ItemRemoteState.NotFound, gone.itemStateById(folderId))
     }
 
     @Test

@@ -50,7 +50,7 @@ class InternxtFolderStateTest {
     @Test
     fun `a trashed folder is TRASHED and leaves the folder cache`() =
         runTest {
-            val provider = providerAnswering(HttpStatusCode.OK, meta(status = "TRASHED", removed = true))
+            val provider = providerAnswering(HttpStatusCode.OK, meta(status = "TRASHED", deleted = true))
             provider.folderCache.seed()
 
             assertEquals(FolderState.TRASHED, provider.folderStateById(FOLDER))
@@ -60,16 +60,22 @@ class InternxtFolderStateTest {
         }
 
     @Test
-    fun `a folder with only the removed flag is TRASHED`() =
+    fun `a folder with only the deleted flag is TRASHED, the server's word for the trash`() =
         runTest {
-            assertEquals(FolderState.TRASHED, providerAnswering(HttpStatusCode.OK, meta(removed = true)).folderStateById(FOLDER))
+            assertEquals(FolderState.TRASHED, providerAnswering(HttpStatusCode.OK, meta(deleted = true)).folderStateById(FOLDER))
+        }
+
+    @Test
+    fun `a folder with only the removed flag is gone for good`() =
+        runTest {
+            assertEquals(FolderState.NOT_FOUND, providerAnswering(HttpStatusCode.OK, meta(removed = true)).folderStateById(FOLDER))
         }
 
     @Test
     fun `a 404 or a folder deleted for good is NOT_FOUND`() =
         runTest {
             assertEquals(FolderState.NOT_FOUND, providerAnswering(HttpStatusCode.NotFound, """{"error":"Not Found"}""").folderStateById(FOLDER))
-            assertEquals(FolderState.NOT_FOUND, providerAnswering(HttpStatusCode.OK, meta(status = "DELETED", deleted = true)).folderStateById(FOLDER))
+            assertEquals(FolderState.NOT_FOUND, providerAnswering(HttpStatusCode.OK, meta(status = "DELETED", removed = true)).folderStateById(FOLDER))
         }
 
     @Test
