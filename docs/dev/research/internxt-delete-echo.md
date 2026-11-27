@@ -11,8 +11,9 @@ Read against engine main `8551c7f4`. Line numbers are of that commit.
 
 - **Internxt, engine-sent deletes of fresh fixtures (one test profile, 75 one-minute rounds):** the parent's folder contents, by-id
   meta, the provider trash and the incremental `/files` / `/folders` listing (`status=ALL`) all showed the delete by the first poll
-  that began after the delete returned: within 10-30 s for trash (cases a, b), within one further poll (about 60 s) for a permanent
-  delete. No reversal, no regression, no read error in 75 rounds. The data cannot rank the sources against each other (the poll
+  that began after the delete returned: every engine-sent delete, trash or permanent, was visible in all four sources by the first
+  poll that began after it returned (6 to 63 s; these are upper bounds set by the poll timing, not a difference between trash and
+  permanent delete). No reversal, no regression, no read error in 75 rounds. The data cannot rank the sources against each other (the poll
   period is 60 s); it does not show any of them lagging. The 60-minute lag of the specs (a web-UI trash, one observation, a lower
   bound) was **not reproduced and not refuted**: no UI trash was run.
 - **The listing measured is the poll's fallback**, `/files?status=ALL` (`InternxtProvider.kt:3397-3404`). The primary incremental
@@ -21,7 +22,9 @@ Read against engine main `8551c7f4`. Line numbers are of that commit.
 - **Wire semantics proven by the capture:** a trashed item is `status=TRASHED`, `deleted=true`, `removed=false`; a permanent delete
   is `status=DELETED`, `deleted=false`, `removed=true`. The engine's `itemStateById` and `folderStateById` read the two flags the
   other way round (`InternxtProvider.kt:2628-2629`, `:2651-2652`): on the live wire a trashed item answers `NotFound`, and
-  `Trashed` never comes back. Filed as gkrost/unidrive-cli#1019. Until it is fixed, a ledger built on `itemStateById` cannot tell
+  `Trashed` never comes back. Filed as gkrost/unidrive-cli#1019; the fix is the open gkrost/unidrive-cli#1020, and the places that
+  say the flags are read wrong until it is fixed (the 1.2 table, 2.4, the estimate notes of 3.2 and risk 2 of section 4) can say it is fixed once it merges, and N3 and N5 lose that
+  prerequisite. Until it is fixed, a ledger built on `itemStateById` cannot tell
   trash from permanent deletion on Internxt (2.4, N3, N5).
 - **A folder trash marks only the folder row.** `POST /storage/trash/add` updates the folder alone; the children's rows stay
   `EXISTS` in listing, by-id meta and feed for as long as the parent is trashed. That is the server's data model, not a lag with a
@@ -51,6 +54,7 @@ bound for the others.
 | A trashed folder was still listed live 40-160 s (`InternxtTrashLag.kt:9-12`, "test drive 2") | folder | trash by this client | folder listing / create 409 path | not recorded | interval (observed range) |
 | `/files` status lagged a web-UI trash by 60 min or more (`mount-view-refresh-design.md` 3.2) | file | trash in the provider's web UI | incremental `/files` status | one observation | **lower bound** |
 | A folder trash does not change its children's feed rows: they keep `EXISTS` with the dead folder as parent (`RemoteGather.kt:2047-2056`, archive#601) | file children of a folder | folder trash | incremental feed | qualitative | qualitative |
+| A listing returns the items this mount has just trashed, for minutes (gkrost/unidrive-cli#635; the code comments say "minutes" at `MountDelete.kt:163-164`, "an hour or more" at `RemoteGather.kt:2030-2032`; `ownDeletesRemoved` and the folder guard exist for it) | files, then their folder | trash by this client | folder listing / incremental `/files` | not recorded | code claim, not a measurement. Section 1.4 measured this case and saw it for at most one poll |
 
 ### 1.2 Endpoints and fields (from code)
 
@@ -113,6 +117,10 @@ Nothing was censored except the trash column of case e (a permanent delete never
 | | | folder contents stops listing it | 6 | 59 | 63 | 0 | 0 |
 | | | incremental `/files` row `DELETED` | 6 | 59 | 63 | 0 | 0 |
 | | | provider trash lists it | n/a | n/a | n/a | n/a | 5 (expected) |
+
+Which cells the scripts produce: `analyze.py` and `analyze2.py` compute the later reversals for the **listing** (`reversals_listed`, `analyze.py:47-52`)
+and for the **feed** (`analyze2.py:36-46`) only. The by-id and trash cells of "later reversals" (and their min / median / max) are read from the
+raw poll lines by hand; no script produces them, and none was added here.
 
 Per-item raw rows (`item`, first-seen interval in seconds; `-` = still old at the last poll before):
 
@@ -237,6 +245,11 @@ without `--all`, was run.
 loop) and `analyze.py` / `analyze2.py` (tables above from the JSON-lines it writes; `analyze.py` discards a round that began before the delete
 returned, scores `TRASHED` and `DELETED` explicitly, and counts read errors per source). Environment: profile, test root, output file,
 minutes, parents, feed time window. Fixtures are created through the mount folder and deleted through `unidrive rm`.
+
+These files are a **record of this run**, not a tool: both scripts read fixed names (`echo-4.jsonl`, `actions.jsonl`, `rm-c%d-%d.out`, the
+fixture names, the dated root at `analyze2.py:61`), and nothing compiles or tests `harness.jsh`, which reaches the provider's internals by
+reflection. The run did not record the commit of the engine jar it used; the harness is read against `8551c7f4`, the base of this report,
+and is not maintained. A rename in the engine can break it silently.
 
 
 ## 2. Ledger design notes (revised after review)
@@ -415,6 +428,12 @@ by-id state) is a prerequisite of N3 and N5 on Internxt and is its own issue, no
 | N9 | Docs, spec updates, failure-injection suite | M | 2 | 3 | 4 | all |
 | N10 | *Optional, separable:* recoverable hold of unexpected mass deletions (2.11) | L | 4 | 5 | 8 | N8 |
 
+Do-minimum estimate beside N1 to N10 (asked in the second review for questions 4 and 8): **left open.** The alternative is the intent
+before dispatch with the reconciliation at start (2.3) plus the folder guard's by-id probe allowed for a `TRASHED` row as well, with the
+window and no new table. Putting days on it means re-slicing N2 and N3 into a part that needs no table and a part that does, and its
+by-id half rests on #1019 and on what L1 finds on the primary listing. A number given before that would be a guess and would steer
+questions 4 and 8, so none is given here.
+
 Core (N1-N9) sums to **low 20, base 29, high 40 engineer-days** (one engineer doing everything). Elapsed: with every slice serial except
 N8, which is off the path, the chain N1, N2, N3, N4, N5, N6, N7, N9 is 19 / 27 / 37 days (N3 and N5 are in series for one engineer, and N4
 and N6 need them). With a second engineer on N5 and N8 (3 / 5 / 7 days, N5 before N6) the first engineer keeps N1, N2, N3, N4, N6, N7,
@@ -442,6 +461,10 @@ separate issue in the client repo and is not counted.
 
 Total ≈ **low 9, base 14, high 20 days**, gated by L1.
 
+Stop rule for L1 (folded in from the second review): if a second run again finds no engine-sent delete echoed later than one poll,
+L2 to L6 are dropped, the window stays, and 2.1 keeps only the contradiction rule. L2 to L6 stay if L1 sees an echo that outlives one
+poll, or a sync listing that still reports an item that by-id state says is gone.
+
 ## 4. Risks and owner questions
 
 Risks:
@@ -460,6 +483,26 @@ Open questions found while writing (unverified here, none filed from this report
 - **A.** Why did about 13% of the `rm` calls (20 of 150) answer `daemon_not_answering` when ten ran at once? `askDaemon` gives up on a
   missing socket file, an I/O error or a request not written in full (`RmCommand.kt:387-405`); the daemon log can say which. The question
   is whether about one `rm` in eight should fail at that concurrency.
+
+  **Likely mechanism (from the code, not from the log).** `IpcServer.admit` (`IpcServer.kt:854-869`) takes a connection that has not
+  finished its handshake only while fewer than four are waiting (`IpcClientSlots.MAX_PENDING_HANDSHAKES = 4`, `IpcClientSlots.kt:14`,
+  `admission` at `:27-39`). The fifth closes the oldest waiting one without sending a line (`IpcServer.kt:866-867`). On the client that
+  closed connection is `IpcAuthException("the daemon closed the connection during the IPC handshake")` (`IpcAuthClient.kt:152`), an
+  `IOException` (`:23-25`), which `ipcRequest` lets through (its KDoc, `IpcRequest.kt:35-36`; the `connect` call at `:44` has no
+  catch) and `askDaemon` maps to `NotReached` (`RmCommand.kt:396-397`), that is `daemon_not_answering` with "nothing was deleted"
+  (`RmCommand.kt:321-326`). Ten `rm` started at once is that burst. The other refusal path, no free slot, answers `too_many_clients`
+  with a line (`IpcServer.kt:863`, `:961`), so it would not look like this. Every cited line holds at `8551c7f4`. Connections waiting in
+  the socket backlog are accepted faster than any of them can finish a handshake, so one wave may evict earlier members of the same
+  wave: that step is an inference from the code, not an observation.
+  **Check:** the daemon log of the run should hold `IPC: 4 connections wait for their handshake; closing the oldest id=` (`:866`)
+  about twenty times across the five repetitions; the run's daemon log was not read for this report.
+  **Fixes, either or both:** (1) server: evict by age, not by rank. A real handshake takes milliseconds and one that never sends a line
+  waits for `IpcAuthClient.HANDSHAKE_TIMEOUT_MS` (5 s, `:45`); `IpcClientSlots.admission` would take the age of each waiting connection,
+  name one for eviction only past a grace period, and admit a new connection inside the grace whatever the count. (2) CLI: in
+  `askDaemon`, an I/O failure before the request was written is a retry, not a verdict: try twice more after a short jittered pause
+  before answering `daemon_not_answering` (today a closed handshake is terminal, `IpcAuthClient.kt:34`). This is an engine defect and `rm`
+  is not its only caller: any one-shot verb that starts in a burst gets the same closed handshake, and the message sends the user to
+  `daemon status` for a daemon that is well. It deserves its own issue; none is filed from this report.
 - **B.** What does the provider's purge of a trashed folder do with the children's rows (still `EXISTS` under a trashed parent)?
 - **C.** The OneDrive daemon's "no token stored" episode (1.5) is part of gkrost/unidrive-windows#1596.
 - **D.** After a daemon-routed delete of 622 rows the mounted folder still showed 227 entries while the daemon's view no longer listed the
