@@ -22,9 +22,19 @@ concurrency:
 # serve the build is #183, and is not changed here.
 #
 # gkrost/unidrive-cli#596: the local build cache is on in CI (org.gradle.caching). setup-gradle saves ~/.gradle/caches,
-# build-cache-1 included, from jobs on main and restores it read-only on pull requests, so a pull request compiles only
-# the modules it changes and the ones that depend on them. Test tasks are never cached (core/build.gradle.kts): every
-# job still runs its whole test set. core/gradle.properties turns the cache on for developer machines too.
+# build-cache-1 included, from the check and windows-security jobs on main and restores it read-only on pull requests,
+# so a pull request compiles only the modules it changes and the ones that depend on them. Test tasks are never cached
+# (core/build.gradle.kts): every job still runs its whole test set. core/gradle.properties turns the cache on for
+# developer machines too.
+#
+# gkrost/unidrive-cli#983: the Gradle User Home cache covers the plugin classpath too — buildscript and plugin
+# dependencies download into ~/.gradle/caches/modules-2 like every other artifact — so what makes a job resolve the
+# full classpath from Maven Central is a restore that finds nothing: setup-gradle's restore is best-effort, and every
+# job of this workflow used to write its own full Gradle User Home entry on main (one per job, per matrix leg, keyed
+# with the commit), churning the 10 GB store GitHub evicts least-recently-used. Several branches pushing at once then
+# sent several cold jobs against Central together. The policy is explicit now: check (Linux) and windows-security
+# (Windows) are the only cache writers of this workflow, so a push to main records one entry per OS that every other
+# job — on main and on pull requests alike — restores, and every job off main is read-only.
 #
 # gkrost/unidrive-cli#726: the workers cap left core/gradle.properties, so developer machines keep Gradle's default
 # of one worker per core (a clean testClasses measured 10 m 43 s with 2 workers against 5 m 27 s with 6 on a 12-core
@@ -199,8 +209,16 @@ jobs:
       # Cache ~/.gradle so runs do not re-download dependencies — repeated
       # fresh downloads from the shared CI egress IPs are what draw Maven
       # Central's 429s (see core/settings.gradle.kts for the mirror set).
+      # This job and windows-security are the only cache writers of this
+      # workflow (see the gkrost/unidrive-cli#983 note at the top): they are
+      # the two required checks and run on every push to main, so a push
+      # records one entry per OS that every other job restores. Off main the
+      # job is read-only — setup-gradle's default, made explicit so it
+      # survives action upgrades.
       - name: Set up Gradle dependency cache
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
 
       - name: Set up JDK 25
         uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
@@ -319,9 +337,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Cache ~/.gradle (see the comment in the check job).
+      # Cache ~/.gradle (see the comment in the check job). Read-only: the
+      # check job writes this cache.
       - name: Set up Gradle dependency cache
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          cache-read-only: true
 
       - name: Set up runtime JDK
         uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
@@ -382,7 +403,10 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Cache ~/.gradle (see the comment in the check job). Read-only: the check job writes this cache.
       - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          cache-read-only: true
       - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
           distribution: temurin
@@ -423,9 +447,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Cache ~/.gradle (see the comment in the check job).
+      # Cache ~/.gradle (see the comment in the check job). Read-only: the
+      # check job writes this cache.
       - name: Set up Gradle dependency cache
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          cache-read-only: true
 
       # The compile toolchain (25) and the runtime toolchain the image is jlinked from (27,
       # the current release train). Gradle itself ends up on the 27, as in check-runtime-jdk.
@@ -503,9 +530,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Cache ~/.gradle (see the comment in the check job).
+      # Cache ~/.gradle (see the comment in the check job): this job is the
+      # Windows writer of the two, so the Windows jobs of a pull request have
+      # a Windows entry to restore. Off main the job is read-only.
       - name: Set up Gradle dependency cache
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
 
       - name: Set up JDK 25
         uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
@@ -544,9 +575,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Cache ~/.gradle (see the comment in the check job).
+      # Cache ~/.gradle (see the comment in the check job). Read-only: the
+      # windows-security job writes the Windows cache.
       - name: Set up Gradle dependency cache
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          cache-read-only: true
 
       - name: Set up JDK 25
         uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
@@ -614,9 +648,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Cache ~/.gradle (see the comment in the check job).
+      # Cache ~/.gradle (see the comment in the check job). Read-only: the
+      # check job writes this cache.
       - name: Set up Gradle dependency cache
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          cache-read-only: true
 
       - name: Set up JDK 25
         uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
@@ -663,8 +700,12 @@ jobs:
           version: ${{ matrix.git }}
           commit: ${{ matrix.commit }}
 
+      # Cache ~/.gradle (see the comment in the check job). Read-only: the
+      # check job writes this cache.
       - name: Set up Gradle dependency cache
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          cache-read-only: true
 
       - name: Set up JDK 25
         uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
