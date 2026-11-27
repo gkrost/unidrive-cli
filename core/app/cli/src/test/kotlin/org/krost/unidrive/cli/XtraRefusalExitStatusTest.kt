@@ -120,4 +120,15 @@ class XtraRefusalExitStatusTest {
         assertEquals(1, run("xtra", "change-passphrase-age"), errText())
         assertEquals(1, run("xtra", "change-passphrase-tink"), errText())
     }
+
+    @Test
+    fun `change-passphrase verbs with a key but no usable console exit non-zero`() {
+        // The test JVM has no terminal: the console is absent, or reads nothing. Either refusal must end non-zero.
+        XtraSymmetricKeyStore(dir.resolve("xtra-sym.key")).generate(pass.toCharArray())
+        XtraAgeKeyStore(dir.resolve("xtra-age.key")).generate(pass.toCharArray())
+        Files.writeString(dir.resolve(XtraAlgorithm.TINK_AES_GCM.keyFileName), "k")
+        assertEquals(1, run("xtra", "change-passphrase", "--algorithm", "aes-gcm-sym"), errText())
+        assertEquals(1, run("xtra", "change-passphrase-age"), errText())
+        assertEquals(1, run("xtra", "change-passphrase-tink"), errText())
+    }
 }
