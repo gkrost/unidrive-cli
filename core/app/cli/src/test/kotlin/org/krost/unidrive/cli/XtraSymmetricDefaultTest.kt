@@ -1,9 +1,6 @@
 package org.krost.unidrive.cli
 
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.io.XTRA_PASSPHRASE_ENV
 import org.krost.unidrive.sync.FakeCloudProvider
@@ -94,7 +91,6 @@ class XtraSymmetricDefaultTest {
         assertTrue(Files.exists(dir.resolve("xtra-sym.key")))
         assertFalse(Files.exists(dir.resolve("xtra.key")), "no RSA pair is created")
         assertTrue(XtraSymmetricKeyStore(dir.resolve("xtra-sym.key")).opens(pass.toCharArray()), "under the chain's passphrase")
-        assertEquals(XtraAlgorithm.AES_GCM_SYM, XtraAlgorithm.implicitDefault(dir))
 
         val again = dir.resolve("xtra-sym.key").let { Files.readAllBytes(it) }
         assertEquals(0, runCli("xtra", "init"))
@@ -131,11 +127,14 @@ class XtraSymmetricDefaultTest {
     }
 
     @Test
-    fun `a profile without xtra_algorithm on a new installation runs aes-gcm-sym and no RSA or X25519 lookup happens`() {
+    fun `a new profile turned encrypted runs aes-gcm-sym and no RSA or X25519 lookup happens`() {
         XtraSymmetricKeyStore(dir.resolve("xtra-sym.key")).generate(pass.toCharArray())
+        Files.writeString(dir.resolve("config.toml"), "[providers.work]\ntype = \"localfs\"\nmode = \"mount\"\nroot_path = \"/tmp/w\"\n")
+        assertEquals(0, runCli("profile", "set", "work", "xtra_encryption", "true", "--json"))
+        val written = org.krost.unidrive.sync.SyncConfig.parseRaw(Files.readString(dir.resolve("config.toml"))).providers.getValue("work")
         val spy = PublicKeyLookupSpy.install()
 
-        assertEquals(4, roundTrip(profile()).toInt(), "the header names aes-gcm-sym")
+        assertEquals(4, roundTrip(written).toInt(), "the header names aes-gcm-sym")
         assertEquals(4, roundTrip(profile("aes-gcm-sym")).toInt())
 
         assertEquals(emptyList(), spy.lookups.toList(), "no RSA, OAEP, X25519 or XDH algorithm was looked up")
@@ -147,7 +146,7 @@ class XtraSymmetricDefaultTest {
         XtraKeyManager(dir.resolve("xtra.key")).generate(pass.toCharArray())
         val spy = PublicKeyLookupSpy.install()
 
-        assertEquals(1, roundTrip(profile()).toInt(), "an installation with xtra.key keeps aes-gcm for an unset profile")
+        assertEquals(1, roundTrip(profile()).toInt(), "an unset profile is aes-gcm")
         assertTrue(spy.lookups.any { it.contains("RSA", ignoreCase = true) }, "lookups: ${spy.lookups}")
     }
 
@@ -162,51 +161,6 @@ class XtraSymmetricDefaultTest {
 
         assertEquals(4, roundTrip(profile("aes-gcm-sym")).toInt())
         assertEquals(emptyList(), spy.lookups.toList())
-    }
-
-    private fun profileJson(vararg args: String): Pair<Int, kotlinx.serialization.json.JsonObject> {
-        val code = runCli("profile", *args, "--json")
-        return code to kotlinx.serialization.json.Json.parseToJsonElement(out.toString(Charsets.UTF_8).trim()).jsonObject
-    }
-
-    private fun listedAlgorithm(): String =
-        profileJson("list").second.getValue("profiles").jsonArray
-            .first { it.jsonObject.getValue("name").jsonPrimitive.content == "work" }
-            .jsonObject.getValue("xtra_algorithm").jsonPrimitive.content
-
-    // `profile list` and `profile set` answer the algorithm the daemon will run, so a front-end shows what the
-    // wiring does: aes-gcm-sym on a new installation, aes-gcm where the RSA key file exists.
-    @Test
-    fun `profile list and set answer the installation's default, and xtra_encryption on it needs xtra-sym key`() {
-        val config = dir.resolve("config.toml")
-        Files.writeString(config, "[providers.work]\ntype = \"localfs\"\nmode = \"mount\"\nroot_path = \"/tmp/work\"\n")
-        assertEquals("aes-gcm-sym", listedAlgorithm())
-
-        val (refused, reply) = profileJson("set", "work", "xtra_encryption", "true")
-        assertEquals(1, refused)
-        assertEquals("key_missing", reply.getValue("error").jsonPrimitive.content)
-        assertTrue(reply.getValue("message").jsonPrimitive.content.let { it.contains("xtra-sym.key") && it.contains("unidrive xtra init") })
-
-        XtraSymmetricKeyStore(dir.resolve("xtra-sym.key")).generate(pass.toCharArray())
-        assertEquals(0, profileJson("set", "work", "xtra_encryption", "true").first)
-        val (named, set) = profileJson("set", "work", "xtra_algorithm", " AES-GCM-SYM ")
-        assertEquals(0, named)
-        assertEquals("aes-gcm-sym", set.getValue("previous").jsonPrimitive.content)
-        assertTrue(Files.readString(config).contains("xtra_algorithm = \"aes-gcm-sym\""))
-        assertEquals(0, profileJson("set", "work", "xtra_algorithm", "--unset").first)
-
-        Files.write(dir.resolve("xtra.key"), ByteArray(1))
-        assertEquals("aes-gcm", listedAlgorithm(), "an installation with the RSA key file keeps aes-gcm")
-    }
-
-    @Test
-    fun `the implicit default is aes-gcm exactly where the RSA key file exists`() {
-        assertEquals(XtraAlgorithm.AES_GCM_SYM, XtraAlgorithm.implicitDefault(dir))
-        assertEquals("aes-gcm-sym", ProfileSettings.effectiveXtraAlgorithm(profile(), dir))
-        Files.write(dir.resolve("xtra.key"), ByteArray(1))
-        assertEquals(XtraAlgorithm.AES_GCM, XtraAlgorithm.implicitDefault(dir))
-        assertEquals("aes-gcm", ProfileSettings.effectiveXtraAlgorithm(profile(), dir))
-        assertEquals("aes-gcm-sym", ProfileSettings.effectiveXtraAlgorithm(profile(" AES-GCM-SYM "), dir), "a named algorithm wins")
     }
 }
 

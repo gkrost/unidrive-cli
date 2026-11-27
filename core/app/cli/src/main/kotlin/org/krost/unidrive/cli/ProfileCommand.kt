@@ -512,7 +512,7 @@ class ProfileListCommand : Callable<Int> {
                             put("sync_root", root)
                             // #65 P9: a mount profile's root under its mount name; sync_root stays for one contract version.
                             if (rp.mode == "mount") put("mount_root", root)
-                            for (spec in ProfileSettings.SPECS) put(spec.key, spec.valueOf(rp, main.configBaseDir()))
+                            for (spec in ProfileSettings.SPECS) put(spec.key, spec.read(rp))
                             val auth = authState(main, name, rp, useVault = false)
                             put("auth", auth)
                             // unidrive-cli#387: why it is not "ok" and the profile folder the check looked in (additive; same reading as daemon.status auth).

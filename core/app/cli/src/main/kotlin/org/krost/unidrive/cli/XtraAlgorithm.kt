@@ -36,11 +36,19 @@ internal enum class XtraAlgorithm(
         val NEW_KEY_DEFAULT: XtraAlgorithm get() = AES_GCM_SYM
 
         /**
-         * The algorithm of a profile that sets no `xtra_algorithm`: aes-gcm on an installation that already holds the
-         * RSA key file (every profile that ran before aes-gcm-sym existed keeps its algorithm and its files), the
-         * symmetric [NEW_KEY_DEFAULT] otherwise. A profile that names its algorithm never depends on this.
+         * The algorithm of a profile that sets no `xtra_algorithm`: aes-gcm, the default before aes-gcm-sym existed, so a
+         * profile that already runs encrypted keeps its algorithm and its files. New profiles never rely on it: turning
+         * encryption on and `xtra init` write [NEW_KEY_DEFAULT] into the profile (owner decision, #1006), and no key file
+         * ever changes what a profile reads as.
          */
-        fun implicitDefault(configDir: Path): XtraAlgorithm =
+        val UNSET_DEFAULT: XtraAlgorithm get() = AES_GCM
+
+        /**
+         * The key file `export-key`, `import-key` and `change-passphrase` act on without `--algorithm`: xtra.key where it
+         * exists (the commands an existing installation used act on what they always did), xtra-sym.key otherwise. It
+         * picks a file for one command and never a profile's algorithm.
+         */
+        fun keyVerbDefault(configDir: Path): XtraAlgorithm =
             if (Files.exists(configDir.resolve(AES_GCM.keyFileName))) AES_GCM else NEW_KEY_DEFAULT
 
         /**

@@ -31,7 +31,7 @@ internal fun Main.wrapWithXtra(
     tokenPath: Path,
 ): CloudProvider {
     if (rp == null || rp.xtra_encryption != true) return provider
-    val name = ProfileSettings.effectiveXtraAlgorithm(rp, tokenPath.parent)
+    val name = ProfileSettings.effectiveXtraAlgorithm(rp)
     val algorithm = XtraAlgorithm.named(name) ?: run {
         val known = XtraAlgorithm.entries.joinToString(", ") { it.configName }
         val line = "unknown xtra_algorithm \"$name\" (known: $known)."

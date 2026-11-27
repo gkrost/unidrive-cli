@@ -1,5 +1,8 @@
 package org.krost.unidrive.cli
 
+import org.krost.unidrive.sync.ProfileKeyEdit
+import org.krost.unidrive.sync.SyncConfig
+import org.krost.unidrive.sync.editProfileKey
 import org.krost.unidrive.xtra.XtraAgeKeyStore
 import org.krost.unidrive.xtra.XtraKeyManager
 import org.krost.unidrive.xtra.XtraSymmetricKeyStore
@@ -51,9 +54,9 @@ class XtraCommand : Runnable {
 /**
  * `init`, `export-key`, `import-key` and `change-passphrase` manage the key file of [XtraAlgorithm.AES_GCM_SYM] (the
  * symmetric master key, what `init` creates when no `--algorithm` is named) or of [XtraAlgorithm.AES_GCM] (the RSA
- * pair). Without `--algorithm`, `init` creates the symmetric key and the other three take the key file a profile
- * without `xtra_algorithm` runs with ([XtraAlgorithm.implicitDefault]), so the commands an installation used before
- * the symmetric default still act on its RSA key file. age-v1 and tink-aes-gcm keep their own verbs.
+ * pair). Without `--algorithm`, `init` creates the symmetric key and the other three take xtra.key where it exists
+ * ([XtraAlgorithm.keyVerbDefault]), so the commands an installation used before the symmetric default still act on
+ * its RSA key file. age-v1 and tink-aes-gcm keep their own verbs.
  */
 internal fun keyVerbAlgorithm(
     option: String?,
@@ -90,28 +93,32 @@ internal fun loadKeyFile(
 }
 
 /**
- * What a new key means for the profiles that set no `xtra_algorithm`: they run aes-gcm while xtra.key exists
- * ([XtraAlgorithm.implicitDefault]), so a symmetric key beside it is used only by a profile that names it, and a new
- * RSA key moves every such profile from aes-gcm-sym to aes-gcm.
+ * Owner decision (#1006): `xtra init` writes the algorithm it created a key for into the profile's section
+ * (`-p`, else `[general] default_profile`, else the only profile), so the profile names its algorithm explicitly.
+ * Never over a profile that already names one or already runs encrypted (an unset encrypted profile is aes-gcm and
+ * stays it); the line returned says what happened, null when there is no config or no profile to name.
  */
-internal fun initNotes(
+internal fun pinProfileAlgorithm(
     configDir: java.nio.file.Path,
-    created: XtraAlgorithm,
-): List<String> {
-    val hasRsa = Files.exists(configDir.resolve(XtraAlgorithm.AES_GCM.keyFileName))
-    val hasSym = Files.exists(configDir.resolve(XtraAlgorithm.AES_GCM_SYM.keyFileName))
-    return when {
-        created == XtraAlgorithm.AES_GCM_SYM && hasRsa ->
-            listOf(
-                "Note: this installation also holds xtra.key, so profiles without xtra_algorithm keep running aes-gcm. " +
-                    "To use the new key on a profile: unidrive profile set <profile> xtra_algorithm aes-gcm-sym",
-            )
-        created == XtraAlgorithm.AES_GCM && hasSym ->
-            listOf(
-                "Note: with xtra.key present, profiles without xtra_algorithm now run aes-gcm instead of aes-gcm-sym. " +
-                    "Keep such a profile on its key: unidrive profile set <profile> xtra_algorithm aes-gcm-sym",
-            )
-        else -> emptyList()
+    named: String?,
+    algorithm: XtraAlgorithm,
+): String? {
+    val configPath = configDir.resolve("config.toml")
+    if (!Files.exists(configPath)) return null
+    return ConfigFileTransaction.withLock(configPath) {
+        val text = Files.readString(configPath)
+        val raw = runCatching { SyncConfig.parseRaw(text, configPath.toString()) }.getOrNull() ?: return@withLock null
+        val name = named?.takeIf { it in raw.providers } ?: runCatching { SyncConfig.resolveDefaultProfile(raw) }.getOrNull()
+        val rp = name?.let { raw.providers[it] } ?: return@withLock null
+        if (rp.xtra_encryption == true || ProfileSettings.storedXtraAlgorithm(rp) != null) {
+            return@withLock "Note: profile '$name' keeps its algorithm (${ProfileSettings.effectiveXtraAlgorithm(rp)}); " +
+                "to write its new files with this key: unidrive profile set $name xtra_algorithm ${algorithm.configName}"
+        }
+        val line = "${ProfileSettings.XTRA_ALGORITHM} = \"${algorithm.configName}\""
+        val edited = (editProfileKey(text, name, ProfileSettings.XTRA_ALGORITHM, line) as? ProfileKeyEdit.Edited)?.text
+            ?: return@withLock null
+        writeConfigAtomically(configPath, edited)
+        "Set $line on profile '$name'."
     }
 }
 
@@ -155,7 +162,7 @@ class XtraInitCommand : Runnable {
             println("Key pair generated at $keyPath")
         }
         println(algorithmLine(algorithm))
-        initNotes(configDir, algorithm).forEach(::println)
+        pinProfileAlgorithm(configDir, xtraCmd.parent.provider, algorithm)?.let(::println)
         println()
         println("WARNING: If you lose this key, encrypted files CANNOT be recovered.")
         println("Back up immediately: unidrive xtra export-key --algorithm ${algorithm.configName} --output /safe/location/")
@@ -172,12 +179,12 @@ class XtraExportCommand : Runnable {
     @Option(names = ["--output"], required = true, description = ["Output directory (the file lands under the key file's name: xtra-sym.key or xtra.key)"])
     lateinit var output: String
 
-    @Option(names = ["--algorithm"], description = ["aes-gcm-sym or aes-gcm (default: the key a profile without xtra_algorithm uses)"])
+    @Option(names = ["--algorithm"], description = ["aes-gcm-sym or aes-gcm (default: aes-gcm where xtra.key exists, else aes-gcm-sym)"])
     var algorithmName: String? = null
 
     override fun run() {
         val configDir = xtraCmd.parent.configBaseDir()
-        val algorithm = keyVerbAlgorithm(algorithmName, XtraAlgorithm.implicitDefault(configDir)) ?: return
+        val algorithm = keyVerbAlgorithm(algorithmName, XtraAlgorithm.keyVerbDefault(configDir)) ?: return
         val keyPath = configDir.resolve(algorithm.keyFileName)
         if (!Files.exists(keyPath)) { System.err.println("No key found at $keyPath. Run '${algorithm.initCommand}' first."); return }
         val dest = Paths.get(output).resolve(algorithm.keyFileName)
@@ -205,7 +212,7 @@ class XtraImportCommand : Runnable {
     @Option(names = ["--input"], required = true, description = ["Directory that holds the key file (xtra-sym.key or xtra.key)"])
     lateinit var input: String
 
-    @Option(names = ["--algorithm"], description = ["aes-gcm-sym or aes-gcm (default: the key a profile without xtra_algorithm uses)"])
+    @Option(names = ["--algorithm"], description = ["aes-gcm-sym or aes-gcm (default: aes-gcm where xtra.key exists, else aes-gcm-sym)"])
     var algorithmName: String? = null
 
     @Option(
@@ -218,7 +225,7 @@ class XtraImportCommand : Runnable {
     @Suppress("TooGenericExceptionCaught")
     override fun run() {
         val configDir = xtraCmd.parent.configBaseDir()
-        val algorithm = keyVerbAlgorithm(algorithmName, XtraAlgorithm.implicitDefault(configDir)) ?: return
+        val algorithm = keyVerbAlgorithm(algorithmName, XtraAlgorithm.keyVerbDefault(configDir)) ?: return
         val src = Paths.get(input).resolve(algorithm.keyFileName)
         if (!Files.exists(src)) { System.err.println("No key found at $src"); return }
         val keyPath = configDir.resolve(algorithm.keyFileName)
@@ -254,12 +261,12 @@ class XtraChangePassphraseCommand : Callable<Int> {
     @ParentCommand
     lateinit var xtraCmd: XtraCommand
 
-    @Option(names = ["--algorithm"], description = ["aes-gcm-sym or aes-gcm (default: the key a profile without xtra_algorithm uses)"])
+    @Option(names = ["--algorithm"], description = ["aes-gcm-sym or aes-gcm (default: aes-gcm where xtra.key exists, else aes-gcm-sym)"])
     var algorithmName: String? = null
 
     override fun call(): Int {
         val configDir = xtraCmd.parent.configBaseDir()
-        val algorithm = keyVerbAlgorithm(algorithmName, XtraAlgorithm.implicitDefault(configDir)) ?: return 1
+        val algorithm = keyVerbAlgorithm(algorithmName, XtraAlgorithm.keyVerbDefault(configDir)) ?: return 1
         val keyPath = configDir.resolve(algorithm.keyFileName)
         if (!Files.exists(keyPath)) { System.err.println("No key found at $keyPath. Run '${algorithm.initCommand}' first."); return 0 }
         val console = System.console() ?: run { System.err.println("No console available"); return 0 }
