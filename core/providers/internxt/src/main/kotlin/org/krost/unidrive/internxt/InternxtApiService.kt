@@ -82,11 +82,11 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
     // auth layer can take a stored jwt that already differs from it as fresh instead of rotating again.
     private val credentialsProvider: suspend (forceRefresh: Boolean, rejectedJwt: String?) -> InternxtCredentials,
     // Two budgets matching drive-desktop's audited `bottleneck` config:
-    //   - Drive REST: maxConcurrency=2, minSpacing=500ms (storm widens to 1000ms).
+    //   - Drive REST: maxConcurrency=2, minSpacing=500ms (storm widens to 1000ms), one slot reserved for
+    //     non-poll callers: the poll's two slow listings can never occupy both (gkrost/unidrive-cli#74).
     //   - Bridge upload: maxConcurrency=4, minSpacing=0 (concurrency-only).
-    // The spacing paces every call (awaitSlot). maxConcurrency is a real permit only where a caller takes it
-    // (withPermit): the heavy Drive listings in authenticatedGetReply do, so at most two of them are in flight and a
-    // throttle storm halves that; every other call, and the whole bridge budget, is paced but not counted.
+    // The spacing paces every call (awaitSlot). maxConcurrency is a real permit only where a caller takes it (withPermit):
+    // the heavy Drive listings do, so at most two are in flight and a storm halves that; every other call is paced, not counted.
     // Composition order on the Drive REST surface is
     // `retryOnTransient { withAuthRetry { budget.awaitSlot(); ... } }` — the
     // budget MUST stay the innermost wrapper so retries re-acquire a
@@ -96,7 +96,7 @@ class InternxtApiService @Suppress("LongParameterList") constructor(
     // Basic auth and do not 401 on JWT expiry, so they remain unwrapped.
     // internal so a test can read the budget of a provider's service; nothing else outside this class uses it.
     internal val driveBudget: HttpRetryBudget =
-        HttpRetryBudget(maxConcurrency = 2, minSpacingMs = 500, stormSpacingMs = 1_000),
+        HttpRetryBudget(maxConcurrency = 2, minSpacingMs = 500, stormSpacingMs = 1_000, reservedForUserSlots = 1),
     private val bridgeBudget: HttpRetryBudget =
         HttpRetryBudget(maxConcurrency = 4, minSpacingMs = 0, stormSpacingMs = 0),
     // The socket timeout of the listings, whose answers can need over a minute on a large account (see

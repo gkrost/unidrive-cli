@@ -55,6 +55,10 @@ import kotlin.coroutines.coroutineContext
  *     read from recent-throttle state at each call so the fast path has no artificial cap:
  *     no throttle in [noThrottleWindowMs] → 0 ms; at least one recent throttle → [minSpacingMs];
  *     circuit open or within [postStormRecoveryMs] of closing → [stormSpacingMs].
+ *  4. **Reserved user slots.** [reservedForUserSlots] of the bound only [Priority.Foreground] callers
+ *     may take (gkrost/unidrive-cli#74): the background lane fills the bound minus those slots, so the poll's
+ *     slow listings can never occupy every permit and a user-driven caller never queues behind all of
+ *     them. The default 0 keeps every permit open to both lanes.
  *
  * Recovery: every [recoveryCleanIntervalMs] of no new throttle events, concurrency is
  * restored by +1 permit, up to [maxConcurrency].
@@ -63,8 +67,19 @@ import kotlin.coroutines.coroutineContext
  * wall-clock step (sleep resume, time sync) must not stretch an open circuit or shrink one. The clock is
  * injectable so tests stay deterministic.
  */
-class HttpRetryBudget(
+// LongParameterList: every knob is a distinct tuning parameter of the throttle coordinator (the KDoc names what
+// each coordinates) and every call site passes named arguments.
+class HttpRetryBudget @Suppress("LongParameterList") constructor(
     private val maxConcurrency: Int,
+    /**
+     * The slots of [maxConcurrency] only a [Priority.Foreground] caller may take (gkrost/unidrive-cli#74: the
+     * reserved user-op slot). Background callers — the poll's listings — can fill only the concurrency minus
+     * these slots (floored at 1 permit), so their slow listings can never occupy every slot and a user-driven
+     * call never queues behind all of them. 0 (the default) reserves nothing: every caller competes for the
+     * whole bound as before. A storm that halves the concurrency floors the background share at 1 permit, so
+     * the poll still runs on the last one.
+     */
+    private val reservedForUserSlots: Int = 0,
     private val stormThreshold: Int = 4,
     private val stormWindowMs: Long = 20_000L,
     private val stormBackoffFactor: Double = 1.2,
@@ -149,7 +164,10 @@ class HttpRetryBudget(
      * granted-then-cancelled race, where the permit was counted but the block never ran. The wait keeps the lanes of
      * [awaitSlot]: while a [Priority.Foreground] caller is parked, no [Priority.Background] caller is admitted, so a
      * user-driven call is not queued behind a scan's listings; a parked waiter's lane is re-read at every admission
-     * pass, so a [Priority.Promotable] waiter moves up the moment it is promoted. A throttle storm that halves the
+     * pass, so a [Priority.Promotable] waiter moves up the moment it is promoted — and a promoted waiter may take one
+     * of the reserved slots, because a user-driven caller now waits on that load. The background lane fills only the
+     * bound minus [reservedForUserSlots], so where it is above 0 the poll's listings can never occupy every
+     * slot and a user-driven caller never queues behind all of them. A throttle storm that halves the
      * concurrency lowers the bound at once: permits already held run to completion and parked callers wait until fewer
      * than the new bound are held, so shrinking never deadlocks or starves anyone. Only callers that go through here
      * are counted; [awaitSlot] alone (pacing and the circuit breaker) takes no permit, so cheap calls on the same
@@ -163,6 +181,9 @@ class HttpRetryBudget(
             if (waiter.isForeground()) foregroundWaiters.addLast(waiter) else backgroundWaiters.addLast(waiter)
             admitLocked()
         }
+        // A promotion moves this waiter to the user lane, whose bound may hold a free reserved slot: admit at once,
+        // not at the next release (gkrost/unidrive-cli#74).
+        val promotion = (priority as? Priority.Promotable)?.promoted?.invokeOnCompletion { synchronized(permitLock) { admitLocked() } }
         try {
             waiter.granted.await()
         } catch (e: CancellationException) {
@@ -172,6 +193,8 @@ class HttpRetryBudget(
                 admitLocked()
             }
             throw e
+        } finally {
+            promotion?.dispose()
         }
         try {
             return block()
@@ -183,13 +206,23 @@ class HttpRetryBudget(
         }
     }
 
-    // Under [permitLock]: hands free permits to the head of the foreground queue first; the background
-    // lane is admitted only while no foreground waiter is parked. A granted waiter is resumed by
-    // completing its deferred — a plain resume, never inline on this thread.
+    // Under [permitLock]: hands free permits to the head of the foreground queue first, up to the whole bound;
+    // the background lane is admitted only while no foreground waiter is parked, and never into the slots
+    // [reservedForUserSlots] reserves for user-driven callers. A granted waiter is resumed by completing its
+    // deferred — a plain resume, never inline on this thread.
     private fun admitLocked() {
         promoteLaneFlipsLocked()
-        while (permitsHeld.get() < concurrency.get()) {
-            val next = foregroundWaiters.removeFirstOrNull() ?: backgroundWaiters.removeFirstOrNull() ?: return
+        while (true) {
+            // The user lane first, at the whole bound; the background lane only while no foreground waiter is
+            // parked, at the concurrency minus the reserved user slots (floored at 1 permit, so a storm that
+            // shrinks the bound to its floor leaves the poll one to run on). The bound is re-read each pass so a
+            // storm's halving or a recovery's restore lands at once, as it did before the reservation.
+            val foreground = foregroundWaiters.isNotEmpty()
+            val waiters = if (foreground) foregroundWaiters else backgroundWaiters
+            if (waiters.isEmpty()) return
+            val bound = if (foreground) concurrency.get() else maxOf(1, concurrency.get() - reservedForUserSlots)
+            if (permitsHeld.get() >= bound) return
+            val next = waiters.removeFirst()
             next.admitted = true
             permitsHeld.incrementAndGet()
             next.granted.complete(Unit)

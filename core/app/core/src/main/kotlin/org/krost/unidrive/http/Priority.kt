@@ -1,5 +1,6 @@
 package org.krost.unidrive.http
 
+import kotlinx.coroutines.CompletableDeferred
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
@@ -48,6 +49,10 @@ sealed class Priority : AbstractCoroutineContextElement(Key) {
      *  each iteration of its yield loop. */
     class Promotable(val ref: AtomicReference<Priority>) : Priority() {
         override fun resolve(): Priority = ref.get().resolve()
+
+        // Completed by [InFlightDedup] when it promotes this lane, so a [HttpRetryBudget.withPermit] waiter parked on
+        // the background share re-runs admission at once: a reserved user slot may be free for it (gkrost/unidrive-cli#74).
+        internal val promoted = CompletableDeferred<Unit>()
     }
 
     companion object Key : CoroutineContext.Key<Priority>
