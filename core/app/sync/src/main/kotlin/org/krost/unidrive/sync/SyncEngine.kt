@@ -2639,7 +2639,7 @@ open class SyncEngine(
                                 )
                             val safeNow = buffer.classify(pageActions)
                             safeNow.filterTo(safeAccumulator) { accumulatedOnce.add(it) }
-                            for (action in safeNow) {
+                            for (action in streamableNow(safeNow)) {
                                 if (action is SyncAction.DownloadContent || action is SyncAction.Upload) {
                                     // archive#200(b): a NEW-local upload must NOT dispatch mid-gather —
                                     // enumeration completeness isn't known until scan-end. It stays in
