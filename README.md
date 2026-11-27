@@ -196,9 +196,10 @@ Daemon log: `~/.local/share/unidrive/unidrive.log`. Quick triage: `scripts/dev/l
   | `aes-gcm` (`xtra init --algorithm aes-gcm`) | RSA-2048-OAEP | no (Shor recovers the RSA key) |
   | `age-v1` (`xtra init-age`; an offline `age` tool decrypts the files) | X25519 | no (Shor recovers the X25519 key) |
 
-  A profile that names no algorithm runs `aes-gcm` on an installation that already holds `xtra.key`, so existing
-  profiles and their files stay as they are, and `aes-gcm-sym` everywhere else. Nothing is re-encrypted: set
-  `xtra_algorithm = "aes-gcm-sym"` to write a profile's new files with it. See
+  Every profile names its algorithm: `profile set <p> xtra_encryption true` on a new profile and `xtra init` write
+  `xtra_algorithm = "aes-gcm-sym"` into it. A profile that already runs encrypted without `xtra_algorithm` keeps
+  reading as `aes-gcm` and is never rewritten, and no key file created later switches a profile. Nothing is
+  re-encrypted: set `xtra_algorithm = "aes-gcm-sym"` to write a profile's new files with it. See
   [`config.example.toml`](docs/config-schema/config.example.toml).
 
 ### Front-ends and `--json`

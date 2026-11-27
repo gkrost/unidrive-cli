@@ -475,8 +475,8 @@ data class RawProvider(
     val xtra_encryption: Boolean? = null,
     // The X-tra content algorithm when xtra_encryption is on: "aes-gcm-sym" (4, file keys under a symmetric master
     // key), "aes-gcm" (1, RSA-2048-wrapped file keys), "age-v1" (2, standard age files an offline `age` tool decrypts)
-    // or "tink-aes-gcm" (3, Tink AES-GCM-HKDF streaming). Absent = "aes-gcm" on an installation that holds the RSA
-    // key file xtra.key, "aes-gcm-sym" otherwise (the CLI resolves it; see docs/config-schema/config.example.toml).
+    // or "tink-aes-gcm" (3, Tink AES-GCM-HKDF streaming). Absent = "aes-gcm" (the old default); the CLI writes
+    // "aes-gcm-sym" when it turns encryption on for a new profile (see docs/config-schema/config.example.toml).
     val xtra_algorithm: String? = null,
     // UD-223: skip first-sync enumeration by adopting the provider's current cursor.
     // OneDrive / Graph: `?token=latest`. Other providers: flag is a warn+no-op.

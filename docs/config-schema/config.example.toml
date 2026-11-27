@@ -94,8 +94,8 @@ sync_root = "~/Internxt"
 # is symmetric, so it is QUANTUM-RESISTANT (AES-256 keeps its margin against Grover's algorithm).
 # aes-gcm is the same segment format with each file key wrapped with RSA-2048 (xtra.key, `xtra init --algorithm
 # aes-gcm`): NOT quantum-resistant, a quantum computer running Shor's algorithm recovers the RSA key and with it every
-# stored file key. An installation that already holds xtra.key keeps aes-gcm for every profile that names no
-# algorithm, so nothing stored changes; set xtra_algorithm = "aes-gcm-sym" to move a profile's new files over.
+# stored file key. Absent = aes-gcm (the old default), so a profile that already runs encrypted keeps its files;
+# turning xtra_encryption on for a new profile (`unidrive profile set`) and `unidrive xtra init` write aes-gcm-sym.
 # age-v1 stores each file's content as a standard age-encryption.org/v1 body, which an offline `age` tool
 # decrypts from the identity alone (`unidrive xtra init-age` writes it, `xtra export-age` backs it up);
 # age-v1 wraps its file keys with X25519, so it is NOT quantum-resistant either.
