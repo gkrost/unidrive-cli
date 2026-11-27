@@ -65,7 +65,10 @@ class KeyedCredentialProtectorPlatformTest {
         assertTrue(reference.startsWith(platformPrefix), "the keyed marker is followed by the platform reference: ${reference.take(24)}")
         val held = platformView(platform)
         assertFalse(held.contains(value.mnemonic), "the platform layer must hold only the sealed value")
-        assertFalse(held.contains("jwt"), "the platform layer must hold no JSON at all")
+        // base64 of the sealed bytes can hold "jwt" by chance (1 run in about 2,000), so the check looks for what base64 cannot
+        // hold: the quoted JSON key and the value itself (a quote and a hyphen are not base64 characters).
+        assertFalse(held.contains("\"jwt\""), "the platform layer must hold no JSON at all")
+        assertFalse(held.contains(value.jwt), "the platform layer must hold no JWT value")
         assertEquals(value, store(KeyedCredentialProtector(platform) { seal }).load(), "the keyed reader opens it")
     }
 
