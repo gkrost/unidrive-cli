@@ -4,6 +4,9 @@ import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.Logger
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.ProviderFactory
@@ -58,6 +61,32 @@ class LogoutCommandTest {
 
         assertEquals(0, exitCode)
         assertFalse(Files.exists(pendingFlow))
+    }
+
+    @Test
+    fun `profile list --json still shows the account name after a keep-state sign-out`() {
+        val root = Files.createDirectory(configDir.resolve("root"))
+        writeLocalfsConfig(root)
+        val profileDir = Files.createDirectory(configDir.resolve("work"))
+        org.krost.unidrive.AccountName.write(profileDir, "Ada Lovelace")
+        val token = Files.writeString(profileDir.resolve("token.json"), "{}")
+
+        assertEquals(0, CommandLine(Main()).execute("-c", configDir.toString(), "-p", "work", "logout", "--keep-state"))
+        assertFalse(Files.exists(token), "the credentials are gone")
+
+        val captured = ByteArrayOutputStream()
+        val realOut = System.out
+        System.setOut(PrintStream(captured, true, Charsets.UTF_8))
+        val code =
+            try {
+                CommandLine(Main()).execute("-c", configDir.toString(), "profile", "list", "--json")
+            } finally {
+                System.setOut(realOut)
+            }
+        assertEquals(0, code)
+        val profiles = kotlinx.serialization.json.Json.parseToJsonElement(captured.toString(Charsets.UTF_8)).jsonObject.getValue("profiles").jsonArray
+        val work = profiles.map { it.jsonObject }.first { it.getValue("name").jsonPrimitive.content == "work" }
+        assertEquals("Ada Lovelace", work.getValue("account").jsonPrimitive.content)
     }
 
     @Test
