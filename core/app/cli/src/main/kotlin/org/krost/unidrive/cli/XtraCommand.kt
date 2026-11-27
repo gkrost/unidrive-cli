@@ -2,6 +2,7 @@ package org.krost.unidrive.cli
 
 import org.krost.unidrive.xtra.XtraAgeKeyStore
 import org.krost.unidrive.xtra.XtraKeyManager
+import org.krost.unidrive.xtra.XtraSymmetricKeyStore
 import org.krost.unidrive.xtra.XtraTinkKeyStore
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
@@ -12,7 +13,8 @@ import java.util.concurrent.Callable
 
 /**
  * Key management of the X-tra layer (client-side encryption of a profile's file content, config key
- * `xtra_encryption`). One key per installation, beside config.toml: export it to a second machine with `export-key`
+ * `xtra_encryption`). One key per installation and algorithm, beside config.toml: `init` creates the symmetric
+ * aes-gcm-sym master key (`--algorithm aes-gcm` the older RSA pair); export it to a second machine with `export-key`
  * and `import-key`; a lost key loses the encrypted content — nothing else can decrypt it. The `-age` verbs do the
  * same for the age-v1 algorithm's identity (`xtra_algorithm = "age-v1"`, file `xtra-age.key`), whose recovery story
  * is stronger: the export is the standard age identity, so `age -d -i <identity-file>` decrypts the age file that
@@ -40,33 +42,123 @@ class XtraCommand : Runnable {
     lateinit var parent: Main
 
     override fun run() {
-        println("Usage: unidrive xtra <init|export-key|import-key|change-passphrase|init-age|export-age|import-age|change-passphrase-age|init-tink|change-passphrase-tink>")
+        println("Usage: unidrive xtra <init [--algorithm aes-gcm-sym|aes-gcm]|export-key|import-key|change-passphrase|init-age|export-age|import-age|change-passphrase-age|init-tink|change-passphrase-tink>")
+    }
+}
+
+// ── The two key files the generic verbs manage ───────────────────────────────
+
+/**
+ * `init`, `export-key`, `import-key` and `change-passphrase` manage the key file of [XtraAlgorithm.AES_GCM_SYM] (the
+ * symmetric master key, what `init` creates when no `--algorithm` is named) or of [XtraAlgorithm.AES_GCM] (the RSA
+ * pair). Without `--algorithm`, `init` creates the symmetric key and the other three take the key file a profile
+ * without `xtra_algorithm` runs with ([XtraAlgorithm.implicitDefault]), so the commands an installation used before
+ * the symmetric default still act on its RSA key file. age-v1 and tink-aes-gcm keep their own verbs.
+ */
+internal fun keyVerbAlgorithm(
+    option: String?,
+    fallback: XtraAlgorithm,
+): XtraAlgorithm? {
+    if (option == null) return fallback
+    val named = XtraAlgorithm.named(option.trim().lowercase())
+    if (named == XtraAlgorithm.AES_GCM_SYM || named == XtraAlgorithm.AES_GCM) return named
+    System.err.println(
+        "--algorithm takes aes-gcm-sym or aes-gcm, got '$option' (age-v1 and tink-aes-gcm have their own verbs: init-age, init-tink).",
+    )
+    return null
+}
+
+/** One line naming the algorithm of a key file, and whether it holds against a quantum attacker. */
+internal fun algorithmLine(algorithm: XtraAlgorithm): String =
+    when (algorithm) {
+        XtraAlgorithm.AES_GCM_SYM ->
+            "Algorithm: aes-gcm-sym (symmetric: passphrase -> PBKDF2 -> AES-256-GCM master key -> AES-256-GCM file keys; quantum-resistant)"
+        XtraAlgorithm.AES_GCM -> "Algorithm: aes-gcm (file keys wrapped with RSA-2048; not quantum-resistant)"
+        else -> "Algorithm: ${algorithm.configName}" + if (algorithm.quantumResistant) " (quantum-resistant)" else " (not quantum-resistant)"
+    }
+
+/** Loads [keyPath] as [algorithm]'s key file under [passphrase]; throws on a wrong passphrase or a file that is not one. */
+internal fun loadKeyFile(
+    algorithm: XtraAlgorithm,
+    keyPath: java.nio.file.Path,
+    passphrase: CharArray,
+) {
+    when (algorithm) {
+        XtraAlgorithm.AES_GCM_SYM -> XtraSymmetricKeyStore(keyPath).load(passphrase)
+        else -> XtraKeyManager(keyPath).load(passphrase)
+    }
+}
+
+/**
+ * What a new key means for the profiles that set no `xtra_algorithm`: they run aes-gcm while xtra.key exists
+ * ([XtraAlgorithm.implicitDefault]), so a symmetric key beside it is used only by a profile that names it, and a new
+ * RSA key moves every such profile from aes-gcm-sym to aes-gcm.
+ */
+internal fun initNotes(
+    configDir: java.nio.file.Path,
+    created: XtraAlgorithm,
+): List<String> {
+    val hasRsa = Files.exists(configDir.resolve(XtraAlgorithm.AES_GCM.keyFileName))
+    val hasSym = Files.exists(configDir.resolve(XtraAlgorithm.AES_GCM_SYM.keyFileName))
+    return when {
+        created == XtraAlgorithm.AES_GCM_SYM && hasRsa ->
+            listOf(
+                "Note: this installation also holds xtra.key, so profiles without xtra_algorithm keep running aes-gcm. " +
+                    "To use the new key on a profile: unidrive profile set <profile> xtra_algorithm aes-gcm-sym",
+            )
+        created == XtraAlgorithm.AES_GCM && hasSym ->
+            listOf(
+                "Note: with xtra.key present, profiles without xtra_algorithm now run aes-gcm instead of aes-gcm-sym. " +
+                    "Keep such a profile on its key: unidrive profile set <profile> xtra_algorithm aes-gcm-sym",
+            )
+        else -> emptyList()
     }
 }
 
 // ── xtra init ─────────────────────────────────────────────────────────────────
 
-@Command(name = "init", description = ["Generate a new encryption key pair"], mixinStandardHelpOptions = true)
+@Command(
+    name = "init",
+    description = [
+        "Generate a new encryption key: the symmetric aes-gcm-sym master key (the default, quantum-resistant), " +
+            "or with --algorithm aes-gcm the RSA key pair of the older aes-gcm algorithm",
+    ],
+    mixinStandardHelpOptions = true,
+)
 class XtraInitCommand : Runnable {
     @ParentCommand
     lateinit var xtraCmd: XtraCommand
 
+    @Option(names = ["--algorithm"], description = ["aes-gcm-sym (default) or aes-gcm"])
+    var algorithmName: String? = null
+
     override fun run() {
-        val keyPath = xtraCmd.parent.configBaseDir().resolve("xtra.key")
+        val algorithm = keyVerbAlgorithm(algorithmName, XtraAlgorithm.NEW_KEY_DEFAULT) ?: return
+        val configDir = xtraCmd.parent.configBaseDir()
+        val keyPath = configDir.resolve(algorithm.keyFileName)
         if (Files.exists(keyPath)) {
-            System.err.println("Key already exists at $keyPath. Use 'xtra change-passphrase' to update it.")
+            System.err.println("Key already exists at $keyPath. Use '${algorithm.changePassphraseCommand}' to update it.")
             return
         }
-        val console = System.console() ?: run { System.err.println("No console available"); return }
-        val pass = console.readPassword("New passphrase (min ${XtraKeyManager.MIN_PASSPHRASE_LENGTH} chars): ")
-            ?: run { System.err.println("No passphrase read"); return }
-        val confirm = console.readPassword("Confirm passphrase: ")
-        if (!pass.contentEquals(confirm)) { System.err.println("Passphrases don't match"); return }
-        XtraKeyManager(keyPath).generate(pass)
-        println("Key pair generated at $keyPath")
+        if (algorithm == XtraAlgorithm.AES_GCM_SYM) {
+            // The master key's passphrase comes from the same chain the daemon loads it with, so what is generated
+            // here decrypts there by construction (as for init-age and init-tink).
+            XtraSymmetricKeyStore(keyPath).generate(xtraCmd.parent.xtraPassphrase())
+            println("Symmetric master key generated at $keyPath")
+        } else {
+            val console = System.console() ?: run { System.err.println("No console available"); return }
+            val pass = console.readPassword("New passphrase (min ${XtraKeyManager.MIN_PASSPHRASE_LENGTH} chars): ")
+                ?: run { System.err.println("No passphrase read"); return }
+            val confirm = console.readPassword("Confirm passphrase: ")
+            if (!pass.contentEquals(confirm)) { System.err.println("Passphrases don't match"); return }
+            XtraKeyManager(keyPath).generate(pass)
+            println("Key pair generated at $keyPath")
+        }
+        println(algorithmLine(algorithm))
+        initNotes(configDir, algorithm).forEach(::println)
         println()
         println("WARNING: If you lose this key, encrypted files CANNOT be recovered.")
-        println("Back up immediately: unidrive xtra export-key --output /safe/location/")
+        println("Back up immediately: unidrive xtra export-key --algorithm ${algorithm.configName} --output /safe/location/")
     }
 }
 
@@ -77,22 +169,28 @@ class XtraExportCommand : Runnable {
     @ParentCommand
     lateinit var xtraCmd: XtraCommand
 
-    @Option(names = ["--output"], required = true, description = ["Output directory (the file lands as xtra.key)"])
+    @Option(names = ["--output"], required = true, description = ["Output directory (the file lands under the key file's name: xtra-sym.key or xtra.key)"])
     lateinit var output: String
 
+    @Option(names = ["--algorithm"], description = ["aes-gcm-sym or aes-gcm (default: the key a profile without xtra_algorithm uses)"])
+    var algorithmName: String? = null
+
     override fun run() {
-        val keyPath = xtraCmd.parent.configBaseDir().resolve("xtra.key")
-        if (!Files.exists(keyPath)) { System.err.println("No key found. Run 'unidrive xtra init' first."); return }
-        val dest = Paths.get(output).resolve("xtra.key")
+        val configDir = xtraCmd.parent.configBaseDir()
+        val algorithm = keyVerbAlgorithm(algorithmName, XtraAlgorithm.implicitDefault(configDir)) ?: return
+        val keyPath = configDir.resolve(algorithm.keyFileName)
+        if (!Files.exists(keyPath)) { System.err.println("No key found at $keyPath. Run '${algorithm.initCommand}' first."); return }
+        val dest = Paths.get(output).resolve(algorithm.keyFileName)
         if (Files.exists(dest)) {
             System.err.println("A file already exists at $dest; remove it or export elsewhere — an export never overwrites one.")
             return
         }
         Files.createDirectories(dest.parent)
         // The export is the backup that decrypts everything; it is written owner-only and atomically, like the
-        // installation's own copy.
-        org.krost.unidrive.io.OwnerOnlyAtomicWrite.replace(dest, XtraKeyManager(keyPath).exportKey())
+        // installation's own copy. Both key files open only under their passphrase, so the export is the file as stored.
+        org.krost.unidrive.io.OwnerOnlyAtomicWrite.replace(dest, Files.readAllBytes(keyPath))
         println("Key exported to $dest")
+        println(algorithmLine(algorithm))
         println("WARNING: this file decrypts everything the key encrypts — store it accordingly.")
     }
 }
@@ -104,8 +202,11 @@ class XtraImportCommand : Runnable {
     @ParentCommand
     lateinit var xtraCmd: XtraCommand
 
-    @Option(names = ["--input"], required = true, description = ["Directory that holds xtra.key"])
+    @Option(names = ["--input"], required = true, description = ["Directory that holds the key file (xtra-sym.key or xtra.key)"])
     lateinit var input: String
+
+    @Option(names = ["--algorithm"], description = ["aes-gcm-sym or aes-gcm (default: the key a profile without xtra_algorithm uses)"])
+    var algorithmName: String? = null
 
     @Option(
         names = ["--force"],
@@ -116,9 +217,11 @@ class XtraImportCommand : Runnable {
     // Whatever the probe load throws, the answer is the same: refuse, the local key stays.
     @Suppress("TooGenericExceptionCaught")
     override fun run() {
-        val src = Paths.get(input).resolve("xtra.key")
+        val configDir = xtraCmd.parent.configBaseDir()
+        val algorithm = keyVerbAlgorithm(algorithmName, XtraAlgorithm.implicitDefault(configDir)) ?: return
+        val src = Paths.get(input).resolve(algorithm.keyFileName)
         if (!Files.exists(src)) { System.err.println("No key found at $src"); return }
-        val keyPath = xtraCmd.parent.configBaseDir().resolve("xtra.key")
+        val keyPath = configDir.resolve(algorithm.keyFileName)
         val data = Files.readAllBytes(src)
         // The passphrase the imported key must work under is this installation's — the daemon loads the imported
         // key with xtraPassphrase(), so it is resolved here, before the probe, where its own error stands.
@@ -128,41 +231,54 @@ class XtraImportCommand : Runnable {
         val probe = Files.createTempFile("xtra-import-", ".key")
         try {
             Files.write(probe, data)
-            XtraKeyManager(probe).load(passphrase)
+            loadKeyFile(algorithm, probe, passphrase)
         } catch (e: Exception) {
             System.err.println("The imported file is not a usable X-tra key (${e.javaClass.simpleName}: ${e.message}); the local key is untouched.")
             return
         } finally {
             Files.deleteIfExists(probe)
         }
-        XtraKeyManager(keyPath).importKey(data, force)
+        when (algorithm) {
+            XtraAlgorithm.AES_GCM_SYM -> XtraSymmetricKeyStore(keyPath).importKey(data, force)
+            else -> XtraKeyManager(keyPath).importKey(data, force)
+        }
         println("Key imported from $src")
+        println(algorithmLine(algorithm))
     }
 }
 
 // ── xtra change-passphrase ────────────────────────────────────────────────────
 
-@Command(name = "change-passphrase", description = ["Change the encryption key's passphrase"], mixinStandardHelpOptions = true)
+@Command(name = "change-passphrase", description = ["Change the encryption key's passphrase (the key itself is unchanged)"], mixinStandardHelpOptions = true)
 class XtraChangePassphraseCommand : Callable<Int> {
     @ParentCommand
     lateinit var xtraCmd: XtraCommand
 
+    @Option(names = ["--algorithm"], description = ["aes-gcm-sym or aes-gcm (default: the key a profile without xtra_algorithm uses)"])
+    var algorithmName: String? = null
+
     override fun call(): Int {
-        val keyPath = xtraCmd.parent.configBaseDir().resolve("xtra.key")
-        if (!Files.exists(keyPath)) { System.err.println("No key found. Run 'unidrive xtra init' first."); return 0 }
+        val configDir = xtraCmd.parent.configBaseDir()
+        val algorithm = keyVerbAlgorithm(algorithmName, XtraAlgorithm.implicitDefault(configDir)) ?: return 1
+        val keyPath = configDir.resolve(algorithm.keyFileName)
+        if (!Files.exists(keyPath)) { System.err.println("No key found at $keyPath. Run '${algorithm.initCommand}' first."); return 0 }
         val console = System.console() ?: run { System.err.println("No console available"); return 0 }
-        val km = XtraKeyManager(keyPath)
-        km.load(console.readPassword("Current passphrase: ") ?: return 0)
+        val current = console.readPassword("Current passphrase: ") ?: return 0
+        val rewrap: (CharArray) -> Unit =
+            when (algorithm) {
+                XtraAlgorithm.AES_GCM_SYM -> XtraSymmetricKeyStore(keyPath).also { it.load(current) }::changePassphrase
+                else -> XtraKeyManager(keyPath).also { it.load(current) }::changePassphrase
+            }
         val newPass = console.readPassword("New passphrase (min ${XtraKeyManager.MIN_PASSPHRASE_LENGTH} chars): ")
             ?: return 0
         val confirm = console.readPassword("Confirm passphrase: ")
         if (!newPass.contentEquals(confirm)) { System.err.println("Passphrases don't match"); return 0 }
-        // Re-wraps the same key pair under the new passphrase; a fresh generate would orphan every file already
+        // Re-wraps the same key under the new passphrase; a fresh generate would orphan every file already
         // encrypted with the old key.
         val newForVault = newPass.copyOf()
-        km.changePassphrase(newPass)
+        rewrap(newPass)
         println("Passphrase changed successfully.")
-        XtraAlgorithm.sharedPassphraseReminders(keyPath.parent, XtraAlgorithm.AES_GCM).forEach(::println)
+        XtraAlgorithm.sharedPassphraseReminders(keyPath.parent, algorithm).forEach(::println)
         return try {
             xtraCmd.parent.updateVaultXtraAfterChange(newForVault)
         } finally {

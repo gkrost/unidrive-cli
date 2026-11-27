@@ -6,6 +6,7 @@ import org.krost.unidrive.sync.Vault
 import org.krost.unidrive.sync.escapeTomlValue
 import org.krost.unidrive.xtra.XtraAgeKeyStore
 import org.krost.unidrive.xtra.XtraKeyManager
+import org.krost.unidrive.xtra.XtraSymmetricKeyStore
 import org.krost.unidrive.xtra.XtraTinkKeyStore
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
@@ -730,6 +731,7 @@ internal fun xtraKeyFileOpens(
     val keyPath = configDir.resolve(algorithm.keyFileName)
     if (!Files.exists(keyPath)) return true
     return when (algorithm) {
+        XtraAlgorithm.AES_GCM_SYM -> XtraSymmetricKeyStore(keyPath).opens(passphrase)
         XtraAlgorithm.AES_GCM -> runCatching { XtraKeyManager(keyPath).load(passphrase) }.isSuccess
         XtraAlgorithm.AGE_V1 -> XtraAgeKeyStore(keyPath).opens(passphrase)
         XtraAlgorithm.TINK_AES_GCM -> XtraTinkKeyStore(keyPath).opens(passphrase)

@@ -83,7 +83,15 @@ internal object ProfileSettings {
         val read: (RawProvider) -> JsonElement,
         /** The value is a block of text read from standard input, not an argument (patterns would not survive a command line). */
         val fromStdin: Boolean = false,
-    )
+        /** A value whose default depends on the installation's files (beside config.toml); overrides [read] when set. */
+        val readIn: ((RawProvider, Path) -> JsonElement)? = null,
+    ) {
+        /** The key's current value for a profile of the config in [configDir]. */
+        fun valueOf(
+            rp: RawProvider,
+            configDir: Path,
+        ): JsonElement = readIn?.invoke(rp, configDir) ?: read(rp)
+    }
 
     val SPECS: List<Spec> =
         listOf(
@@ -237,10 +245,11 @@ internal object ProfileSettings {
             ),
             Spec(
                 key = XTRA_ALGORITHM,
-                description = "the X-tra content algorithm when xtra_encryption is on: aes-gcm, age-v1 or tink-aes-gcm (default aes-gcm); switching does not re-encrypt files already stored",
+                description = "the X-tra content algorithm when xtra_encryption is on: aes-gcm-sym, aes-gcm, age-v1 or tink-aes-gcm (unset: aes-gcm on an installation that holds the RSA key file xtra.key, aes-gcm-sym otherwise); switching does not re-encrypt files already stored",
                 needsDaemonRestart = true,
                 toToml = { _, raw -> xtraAlgorithmToml(raw) },
-                read = { rp -> JsonPrimitive(effectiveXtraAlgorithm(rp)) },
+                read = { rp -> storedXtraAlgorithm(rp)?.let(::JsonPrimitive) ?: JsonNull },
+                readIn = { rp, configDir -> JsonPrimitive(effectiveXtraAlgorithm(rp, configDir)) },
             ),
         )
 
@@ -298,14 +307,23 @@ internal object ProfileSettings {
             else -> throw ProfileCommandError("invalid_value", "$SHOW_BACKUPS must be auto, true or false, got '$raw'")
         }
 
-    /** The algorithm a profile runs with: the stored name trimmed and lower-cased, aes-gcm when unset or blank. */
-    fun effectiveXtraAlgorithm(rp: RawProvider): String = rp.xtra_algorithm?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: "aes-gcm"
+    /** The stored algorithm name trimmed and lower-cased; null when unset or blank. */
+    fun storedXtraAlgorithm(rp: RawProvider): String? = rp.xtra_algorithm?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+
+    /**
+     * The algorithm a profile runs with: the stored name, or when unset the installation's default for [configDir]
+     * ([XtraAlgorithm.implicitDefault]: aes-gcm where the RSA key file already exists, aes-gcm-sym otherwise).
+     */
+    fun effectiveXtraAlgorithm(
+        rp: RawProvider,
+        configDir: Path,
+    ): String = storedXtraAlgorithm(rp) ?: XtraAlgorithm.implicitDefault(configDir).configName
 
     /** The key file the effective algorithm needs, beside config.toml. */
     fun xtraKeyFile(
         configDir: Path,
         algorithm: String,
-    ): Path = configDir.resolve((XtraAlgorithm.named(algorithm) ?: XtraAlgorithm.AES_GCM).keyFileName)
+    ): Path = configDir.resolve((XtraAlgorithm.named(algorithm) ?: XtraAlgorithm.implicitDefault(configDir)).keyFileName)
 
     /** Whether the profile has sync state: a non-empty state.db (or its WAL) in the profile's folder. */
     fun hasSyncState(profileDir: Path): Boolean =
@@ -330,7 +348,7 @@ internal object ProfileSettings {
         force: Boolean,
     ) {
         if (key != XTRA_ENCRYPTION && key != XTRA_ALGORITHM) return
-        if (!force && spec.read(current) != spec.read(edited) && hasSyncState(configDir.resolve(profile))) {
+        if (!force && spec.valueOf(current, configDir) != spec.valueOf(edited, configDir) && hasSyncState(configDir.resolve(profile))) {
             throw ProfileCommandError(
                 "state_present",
                 "profile '$profile' already has sync state; changing $key does not re-encrypt the files already stored. " +
@@ -338,10 +356,10 @@ internal object ProfileSettings {
             )
         }
         if (edited.xtra_encryption != true) return
-        val algorithm = effectiveXtraAlgorithm(edited)
+        val algorithm = effectiveXtraAlgorithm(edited, configDir)
         val keyFile = xtraKeyFile(configDir, algorithm)
         if (!Files.exists(keyFile)) {
-            val init = (XtraAlgorithm.named(algorithm) ?: XtraAlgorithm.AES_GCM).initCommand
+            val init = (XtraAlgorithm.named(algorithm) ?: XtraAlgorithm.implicitDefault(configDir)).initCommand
             throw ProfileCommandError(
                 "key_missing",
                 "xtra_encryption would be on with $algorithm but ${keyFile.fileName} does not exist beside config.toml; " +
@@ -350,13 +368,14 @@ internal object ProfileSettings {
         }
     }
 
-    private fun xtraAlgorithmToml(raw: String): String =
-        when (raw.trim().lowercase()) {
-            "aes-gcm" -> "\"aes-gcm\""
-            "age-v1" -> "\"age-v1\""
-            "tink-aes-gcm" -> "\"tink-aes-gcm\""
-            else -> throw ProfileCommandError("invalid_value", "$XTRA_ALGORITHM must be aes-gcm, age-v1 or tink-aes-gcm, got '$raw'")
-        }
+    private fun xtraAlgorithmToml(raw: String): String {
+        val algorithm =
+            XtraAlgorithm.named(raw.trim().lowercase()) ?: throw ProfileCommandError(
+                "invalid_value",
+                "$XTRA_ALGORITHM must be one of ${XtraAlgorithm.entries.joinToString(", ") { it.configName }}, got '$raw'",
+            )
+        return "\"${algorithm.configName}\""
+    }
 
     /**
      * The trash folder and the backups folder must not share a name. Compared after the edit and before the file is
@@ -621,8 +640,8 @@ class ProfileSetCommand : Callable<Int> {
             put("ok", true)
             put("profile", name)
             put("key", key)
-            put("value", spec.read(reread))
-            put("previous", spec.read(current))
+            put("value", spec.valueOf(reread, configPath.parent))
+            put("previous", spec.valueOf(current, configPath.parent))
             put("restart_required", restart)
             put(
                 "message",
