@@ -12,6 +12,7 @@ import org.krost.unidrive.xtra.XtraAgeKeyStore
 import org.krost.unidrive.xtra.XtraEncryptedProvider
 import org.krost.unidrive.xtra.XtraPlaintextListings
 import org.krost.unidrive.xtra.XtraKeyManager
+import org.krost.unidrive.xtra.XtraSymmetricKeyStore
 import org.krost.unidrive.xtra.XtraTinkKeyStore
 import java.nio.file.Files
 import java.nio.file.Path
@@ -22,15 +23,15 @@ import java.nio.file.Path
  * sees plaintext while the provider stores ciphertext. The strategy owns its key material and loads it lazily on
  * the first content operation ([XtraEncryptedProvider]); commands that only list, authenticate or report never
  * need the passphrase. The algorithm's key file lives beside config.toml (the token path's parent), one per
- * installation — and an age-v1 or tink-aes-gcm profile has only its own key store, never an RSA pair.
+ * installation — and an aes-gcm-sym, age-v1 or tink-aes-gcm profile has only its own key store, never an RSA pair.
  */
 internal fun Main.wrapWithXtra(
     rp: RawProvider?,
     provider: CloudProvider,
     tokenPath: Path,
 ): CloudProvider {
-    if (rp?.xtra_encryption != true) return provider
-    val name = rp?.xtra_algorithm?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: XtraAlgorithm.AES_GCM.configName
+    if (rp == null || rp.xtra_encryption != true) return provider
+    val name = ProfileSettings.effectiveXtraAlgorithm(rp)
     val algorithm = XtraAlgorithm.named(name) ?: run {
         val known = XtraAlgorithm.entries.joinToString(", ") { it.configName }
         val line = "unknown xtra_algorithm \"$name\" (known: $known)."
@@ -49,6 +50,7 @@ internal fun Main.wrapWithXtra(
     }
     val strategy =
         when (algorithm) {
+            XtraAlgorithm.AES_GCM_SYM -> AesGcmStrategy.symmetric(lazy { XtraSymmetricKeyStore(keyPath).also { it.load(xtraPassphrase()) } })
             XtraAlgorithm.AES_GCM -> AesGcmStrategy(lazy { XtraKeyManager(keyPath).also { it.load(xtraPassphrase()) } })
             XtraAlgorithm.AGE_V1 -> AgeV1Strategy(lazy { XtraAgeKeyStore(keyPath) }, this::xtraPassphrase)
             XtraAlgorithm.TINK_AES_GCM -> TinkStreamingStrategy(lazy { XtraTinkKeyStore(keyPath) }, this::xtraPassphrase)

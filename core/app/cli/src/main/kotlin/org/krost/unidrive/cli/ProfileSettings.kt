@@ -237,7 +237,7 @@ internal object ProfileSettings {
             ),
             Spec(
                 key = XTRA_ALGORITHM,
-                description = "the X-tra content algorithm when xtra_encryption is on: aes-gcm, age-v1 or tink-aes-gcm (default aes-gcm); switching does not re-encrypt files already stored",
+                description = "the X-tra content algorithm when xtra_encryption is on: aes-gcm-sym, aes-gcm, age-v1 or tink-aes-gcm (unset reads as aes-gcm; turning xtra_encryption on for a new profile writes aes-gcm-sym); switching does not re-encrypt files already stored",
                 needsDaemonRestart = true,
                 toToml = { _, raw -> xtraAlgorithmToml(raw) },
                 read = { rp -> JsonPrimitive(effectiveXtraAlgorithm(rp)) },
@@ -298,14 +298,38 @@ internal object ProfileSettings {
             else -> throw ProfileCommandError("invalid_value", "$SHOW_BACKUPS must be auto, true or false, got '$raw'")
         }
 
-    /** The algorithm a profile runs with: the stored name trimmed and lower-cased, aes-gcm when unset or blank. */
-    fun effectiveXtraAlgorithm(rp: RawProvider): String = rp.xtra_algorithm?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: "aes-gcm"
+    /** The stored algorithm name trimmed and lower-cased; null when unset or blank. */
+    fun storedXtraAlgorithm(rp: RawProvider): String? = rp.xtra_algorithm?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+
+    /** The algorithm a profile runs with: the stored name, aes-gcm ([XtraAlgorithm.UNSET_DEFAULT]) when unset. */
+    fun effectiveXtraAlgorithm(rp: RawProvider): String = storedXtraAlgorithm(rp) ?: XtraAlgorithm.UNSET_DEFAULT.configName
+
+    /**
+     * [editedText] plus `xtra_algorithm = "aes-gcm-sym"` when the edit turns encryption on for a new profile (owner
+     * decision, #1006): one that names no algorithm, had encryption off and has no sync state. A profile with sync
+     * state (reachable only with --force) keeps reading as aes-gcm, which earlier encrypted files of it were written
+     * with; one that already runs encrypted is never rewritten.
+     */
+    fun withNewProfileAlgorithm(
+        key: String,
+        current: RawProvider,
+        editedText: String,
+        name: String,
+        configDir: Path,
+    ): String {
+        if (key != XTRA_ENCRYPTION || current.xtra_encryption == true || storedXtraAlgorithm(current) != null) return editedText
+        if (hasSyncState(configDir.resolve(name))) return editedText
+        val turnsOn = runCatching { SyncConfig.parseRaw(editedText).providers[name]?.xtra_encryption == true }.getOrDefault(false)
+        if (!turnsOn) return editedText
+        val line = "$XTRA_ALGORITHM = \"${XtraAlgorithm.NEW_KEY_DEFAULT.configName}\""
+        return (editProfileKey(editedText, name, XTRA_ALGORITHM, line) as? ProfileKeyEdit.Edited)?.text ?: editedText
+    }
 
     /** The key file the effective algorithm needs, beside config.toml. */
     fun xtraKeyFile(
         configDir: Path,
         algorithm: String,
-    ): Path = configDir.resolve((XtraAlgorithm.named(algorithm) ?: XtraAlgorithm.AES_GCM).keyFileName)
+    ): Path = configDir.resolve((XtraAlgorithm.named(algorithm) ?: XtraAlgorithm.UNSET_DEFAULT).keyFileName)
 
     /** Whether the profile has sync state: a non-empty state.db (or its WAL) in the profile's folder. */
     fun hasSyncState(profileDir: Path): Boolean =
@@ -341,7 +365,7 @@ internal object ProfileSettings {
         val algorithm = effectiveXtraAlgorithm(edited)
         val keyFile = xtraKeyFile(configDir, algorithm)
         if (!Files.exists(keyFile)) {
-            val init = (XtraAlgorithm.named(algorithm) ?: XtraAlgorithm.AES_GCM).initCommand
+            val init = (XtraAlgorithm.named(algorithm) ?: XtraAlgorithm.UNSET_DEFAULT).initCommand
             throw ProfileCommandError(
                 "key_missing",
                 "xtra_encryption would be on with $algorithm but ${keyFile.fileName} does not exist beside config.toml; " +
@@ -350,13 +374,14 @@ internal object ProfileSettings {
         }
     }
 
-    private fun xtraAlgorithmToml(raw: String): String =
-        when (raw.trim().lowercase()) {
-            "aes-gcm" -> "\"aes-gcm\""
-            "age-v1" -> "\"age-v1\""
-            "tink-aes-gcm" -> "\"tink-aes-gcm\""
-            else -> throw ProfileCommandError("invalid_value", "$XTRA_ALGORITHM must be aes-gcm, age-v1 or tink-aes-gcm, got '$raw'")
-        }
+    private fun xtraAlgorithmToml(raw: String): String {
+        val algorithm =
+            XtraAlgorithm.named(raw.trim().lowercase()) ?: throw ProfileCommandError(
+                "invalid_value",
+                "$XTRA_ALGORITHM must be one of ${XtraAlgorithm.entries.joinToString(", ") { it.configName }}, got '$raw'",
+            )
+        return "\"${algorithm.configName}\""
+    }
 
     /**
      * The trash folder and the backups folder must not share a name. Compared after the edit and before the file is
@@ -596,7 +621,7 @@ class ProfileSetCommand : Callable<Int> {
         val line = if (unset) null else input?.let { "$key = ${spec.toToml(name, it)}" }
         val edited =
             when (val r = editProfileKey(text, name, key, line)) {
-                is ProfileKeyEdit.Edited -> r.text
+                is ProfileKeyEdit.Edited -> ProfileSettings.withNewProfileAlgorithm(key, current, r.text, name, configPath.parent)
                 ProfileKeyEdit.NoSuchProfile -> throw ProfileCommandError("profile_not_found", "profile '$name' is not configured")
                 ProfileKeyEdit.UnsupportedLayout ->
                     throw ProfileCommandError("unsupported_layout", "$key spans several lines in config.toml; edit it by hand")

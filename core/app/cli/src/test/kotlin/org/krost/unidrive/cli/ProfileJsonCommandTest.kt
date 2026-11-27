@@ -622,7 +622,7 @@ class ProfileJsonCommandTest {
     @Test
     fun `set xtra_encryption turns it on and off, reports the old value and leaves the rest byte for byte`() {
         writeConfig(twoProfiles)
-        Files.writeString(dir.resolve("xtra.key"), "k")
+        listOf("xtra.key", "xtra-sym.key").forEach { Files.writeString(dir.resolve(it), "k") }
 
         assertEquals(0, run("profile", "set", "work", "xtra_encryption", "true", "--json"), stderr())
         val r = json()
@@ -630,15 +630,15 @@ class ProfileJsonCommandTest {
         assertTrue(r.getValue("value").jsonPrimitive.boolean)
         assertFalse(r.getValue("previous").jsonPrimitive.boolean)
         assertTrue(r.getValue("restart_required").jsonPrimitive.boolean, "the daemon wraps the provider at start")
-        assertEquals(twoProfiles.replace(withPoll, withPoll + "xtra_encryption = true\n"), config())
+        assertEquals(twoProfiles.replace(withPoll, withPoll + "xtra_encryption = true\nxtra_algorithm = \"aes-gcm-sym\"\n"), config())
         assertTrue(listed("work").getValue("xtra_encryption").jsonPrimitive.boolean)
 
         assertEquals(0, run("profile", "set", "work", "xtra_encryption", "false", "--json"), stderr())
         assertTrue(json().getValue("previous").jsonPrimitive.boolean)
-        assertEquals(twoProfiles.replace(withPoll, withPoll + "xtra_encryption = false\n"), config())
+        assertEquals(twoProfiles.replace(withPoll, withPoll + "xtra_encryption = false\nxtra_algorithm = \"aes-gcm-sym\"\n"), config())
 
         assertEquals(0, run("profile", "set", "work", "xtra_encryption", "--unset", "--json"), stderr())
-        assertEquals(twoProfiles, config())
+        assertEquals(twoProfiles.replace(withPoll, withPoll + "xtra_algorithm = \"aes-gcm-sym\"\n"), config(), "turning it on named the algorithm")
     }
 
     @Test
@@ -713,7 +713,7 @@ class ProfileJsonCommandTest {
     @Test
     fun `unset of an effective xtra value is refused with state, and allowed once the profile has none`() {
         writeConfig(twoProfiles)
-        Files.writeString(dir.resolve("xtra.key"), "k")
+        listOf("xtra.key", "xtra-sym.key").forEach { Files.writeString(dir.resolve(it), "k") }
         assertEquals(0, run("profile", "set", "work", "xtra_encryption", "true", "--json"), stderr())
         withState()
 
@@ -725,7 +725,7 @@ class ProfileJsonCommandTest {
     @Test
     fun `an empty state db does not count as state`() {
         writeConfig(twoProfiles)
-        Files.writeString(dir.resolve("xtra.key"), "k")
+        listOf("xtra.key", "xtra-sym.key").forEach { Files.writeString(dir.resolve(it), "k") }
         Files.createDirectories(dir.resolve("work"))
         Files.write(dir.resolve("work").resolve("state.db"), ByteArray(0))
 
@@ -756,7 +756,7 @@ class ProfileJsonCommandTest {
     @Test
     fun `set xtra_algorithm while encryption is on needs the new algorithm's key`() {
         writeConfig(twoProfiles)
-        Files.writeString(dir.resolve("xtra.key"), "k")
+        listOf("xtra.key", "xtra-sym.key").forEach { Files.writeString(dir.resolve(it), "k") }
         assertEquals(0, run("profile", "set", "work", "xtra_encryption", "true", "--json"), stderr())
 
         assertEquals("key_missing", errorOf("profile", "set", "work", "xtra_algorithm", "age-v1"))

@@ -114,6 +114,8 @@ class XtraKeyManagerTest {
         val wrapped = km.wrapKey(fileKey)
 
         val exported = km.exportKey()
+        // Another key sits there now (generate never replaces one, so the old file goes first).
+        Files.delete(dir.resolve("xtra.key"))
         km.generate("retiredpass1234".toCharArray())
 
         val importer = XtraKeyManager(dir.resolve("xtra.key"))

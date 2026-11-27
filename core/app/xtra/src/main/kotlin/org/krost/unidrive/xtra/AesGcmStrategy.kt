@@ -14,41 +14,58 @@ import javax.crypto.spec.SecretKeySpec
  * decrypt holds the entire file in one array, so a 2 GB backup would need 2 GB of daemon heap; per-segment frames
  * bound the memory to two segments and let a truncated or spliced stream fail its tag (the segment index and the
  * last-segment flag ride in the nonce, so segments cannot be reordered, dropped or truncated undetected). This is
- * the on-disk format of algorithm 1; changing it needs a new algorithm id (the header binding below changed it
+ * the on-disk format of algorithms 1 and 4; changing it needs a new algorithm id (the header binding below changed it
  * in place once, while the layer was unreleased and no stored file had to survive).
  *
- * The strategy owns its key material: the installation's RSA pair ([XtraKeyManager], handed in lazy, so the
- * passphrase demand waits for the first content operation) wraps each per-file key into the header's slot.
+ * The strategy owns its key material, and the two algorithms on this segment format differ only there:
+ * - algorithm 1, `aes-gcm` (the public constructor): the installation's RSA-2048 pair ([XtraKeyManager]) wraps each
+ *   per-file key with RSA-OAEP into a 256-byte slot.
+ * - algorithm 4, `aes-gcm-sym` ([symmetric]): the installation's symmetric master key ([XtraSymmetricKeyStore]) wraps
+ *   it with AES-256-GCM into a 60-byte slot. No public-key operation runs anywhere in that chain, so nothing in a
+ *   stored file falls to a quantum attacker (Shor breaks RSA and X25519; AES-256 keeps its margin under Grover).
+ * Either key store is handed in lazy, so the passphrase demand waits for the first content operation.
  *
  * Every segment binds the serialized [XtraHeader] (magic through IV) as its associated data, so a header byte changed
  * after the write fails the first segment's tag like a changed body byte — the IV's counter bytes, which the nonce
  * overwrites, and the wrapped-key slot included. (A wrapped-key slot changed in place mostly fails earlier, in the
- * RSA-OAEP unwrap, which cannot tell a changed slot from another installation's key; both are refused as content.)
+ * key unwrap, which cannot tell a changed slot from another installation's key; both are refused as content.)
  *
  * The nonce is the header's IV with the low bytes meaning counter and flag: bytes 4..10 hold the segment index
- * big-endian (7 bytes, 2^56 segments), byte 11 is 0 for a normal segment and 1 for the last one. The header's
+ * big-endian (7 bytes, 2^56 segments), byte 11 is 0 for a normal segment and 1 for the last one. The index is a
+ * 64-bit counter checked against 2^56 before every segment, so it can never wrap into a nonce already used (the
+ * bound is 2^56 x 64 KiB, far beyond any file). The header's
  * fixed part (magic, version, algorithm id, the two length prefixes, the wrapped key and the IV) plus the tags
  * are the difference between a stored file's size and its plaintext's; [plaintextSizeOf] inverts it.
  */
-class AesGcmStrategy(
-    private val keys: Lazy<XtraKeyManager>,
+class AesGcmStrategy private constructor(
+    override val algorithmId: Byte,
+    override val wrappedKeyLength: Int,
+    private val wrap: (ByteArray) -> ByteArray,
+    // Loads the key store (the passphrase demand) and answers its unwrap; the load runs outside the refusal below.
+    private val unwrapper: () -> (ByteArray) -> ByteArray,
 ) : XtraEncryptionStrategy {
-    override val algorithmId: Byte = 1
+    /** Algorithm 1, `aes-gcm`: the per-file key is wrapped with RSA-OAEP under the installation's RSA pair. */
+    constructor(keys: Lazy<XtraKeyManager>) : this(
+        ALGORITHM_RSA,
+        RSA_WRAPPED_KEY_LENGTH,
+        { keys.value.wrapKey(it) },
+        { keys.value.let { manager -> manager::unwrapKey } },
+    )
+
     override val ivLength: Int = 12
-    override val wrappedKeyLength: Int = 256
 
-    // The header slot's key journey is this strategy's: RSA-OAEP in, RSA-OAEP out — the load behind the lazy is
-    // what demands the passphrase, and it fires on the first content operation only.
-    override fun wrapFileKey(fileKey: ByteArray): ByteArray = keys.value.wrapKey(fileKey)
+    // The header slot's key journey is this strategy's: the load behind the lazy is what demands the passphrase, and
+    // it fires on the first content operation only.
+    override fun wrapFileKey(fileKey: ByteArray): ByteArray = wrap(fileKey)
 
-    // A slot that does not unwrap is refused like a failed seal (owner decision, #821): RSA-OAEP cannot tell a
-    // changed slot from another installation's key, and both are answered as damaged content. The load stays
-    // outside the translation — a wrong passphrase or a missing key file is this installation's error, never the
-    // file's.
+    // A slot that does not unwrap is refused like a failed seal (owner decision, #821): neither RSA-OAEP nor the
+    // AES-GCM wrap can tell a changed slot from another installation's key, and both are answered as damaged content.
+    // The load stays outside the translation — a wrong passphrase or a missing key file is this installation's
+    // error, never the file's. (AEADBadTagException, the GCM wrap's refusal, is a BadPaddingException.)
     override fun unwrapFileKey(wrapped: ByteArray): ByteArray {
-        val manager = keys.value
+        val unwrap = unwrapper()
         try {
-            return manager.unwrapKey(wrapped)
+            return unwrap(wrapped)
         } catch (e: BadPaddingException) {
             throw XtraFileKeyRefusedException("X-tra file key does not unwrap: ${e.message}", e)
         } catch (e: IllegalBlockSizeException) {
@@ -146,9 +163,29 @@ class AesGcmStrategy(
 
     private fun headerFixedBytes(): Int = 4 + 1 + 1 + 2 + 2
 
-    private companion object {
-        const val TAG_BITS = 128
-        const val TAG_BYTES = TAG_BITS / 8
-        const val SEGMENT_SIZE = 64 * 1024
+    companion object {
+        /** The header's algorithm byte of `aes-gcm` (RSA-wrapped file keys). */
+        const val ALGORITHM_RSA: Byte = 1
+
+        /** The header's algorithm byte of `aes-gcm-sym` (file keys wrapped under the symmetric master key). */
+        const val ALGORITHM_SYMMETRIC: Byte = 4
+
+        private const val RSA_WRAPPED_KEY_LENGTH = 256
+
+        /**
+         * Algorithm 4, `aes-gcm-sym`: algorithm 1's segment format with the per-file key wrapped under the installation's
+         * symmetric master key ([XtraSymmetricKeyStore.wrapKey]). No RSA or X25519 operation runs for it.
+         */
+        fun symmetric(keys: Lazy<XtraSymmetricKeyStore>): AesGcmStrategy =
+            AesGcmStrategy(
+                ALGORITHM_SYMMETRIC,
+                XtraSymmetricKeyStore.WRAPPED_KEY_LENGTH,
+                { keys.value.wrapKey(it) },
+                { keys.value.let { store -> store::unwrapKey } },
+            )
+
+        private const val TAG_BITS = 128
+        private const val TAG_BYTES = TAG_BITS / 8
+        private const val SEGMENT_SIZE = 64 * 1024
     }
 }
