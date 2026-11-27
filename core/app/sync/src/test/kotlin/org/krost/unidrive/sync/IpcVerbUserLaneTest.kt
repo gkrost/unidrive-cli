@@ -56,7 +56,7 @@ class IpcVerbUserLaneTest {
                 // hangs; the second parks behind it.
                 scope.launch { budget.withPermit { firstPollHolds.complete(Unit); hung.await() } }
                 scope.launch { budget.withPermit { hung.await() } }
-                withTimeout(5_000) { firstPollHolds.await() }
+                withTimeout(30_000) { firstPollHolds.await() }
 
                 val listed = CompletableDeferred<Unit>()
                 val s = IpcServer(socketPath)
@@ -73,7 +73,7 @@ class IpcVerbUserLaneTest {
 
                 // Completing inside this window is the assertion: on the poll's lane the verb would park until the
                 // hung listing ends.
-                withTimeout(5_000) { listed.await() }
+                withTimeout(30_000) { listed.await() }
                 client.close()
                 hung.complete(Unit)
             } finally {

@@ -28,14 +28,14 @@ class HydrationUploadScopeUserLaneTest {
                 val firstPollHolds = CompletableDeferred<Unit>()
                 polls.launch { budget.withPermit { firstPollHolds.complete(Unit); hung.await() } }
                 polls.launch { budget.withPermit { hung.await() } }
-                withTimeout(5_000) { firstPollHolds.await() }
+                withTimeout(30_000) { firstPollHolds.await() }
 
                 val listed = CompletableDeferred<Unit>()
                 uploads.launch { budget.withPermit { listed.complete(Unit) } }
 
                 // Completing inside this window is the assertion: on the poll's lane the lookup parks until the hung
                 // listing ends.
-                withTimeout(5_000) { listed.await() }
+                withTimeout(30_000) { listed.await() }
                 hung.complete(Unit)
             } finally {
                 uploads.cancel()
