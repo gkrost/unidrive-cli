@@ -1,266 +1,422 @@
 # Internxt delete echo and the expected-deletions ledger (spike, 2026-11-27)
 
-Status: **spike report, live measurement NOT DONE.** The test profile `19notte78-gmail-com-2` had no credentials available to the
-agent (it is not in the owner's config, and the agent does not type passwords or use the owner's vault). Everything in section 1
-that is not marked "from code" or "from an earlier live finding" is therefore a *protocol*, not a result. No provider was called.
-Sections 2 to 4 are an estimate from code and docs. They are written so that the measured numbers drop into the tables of section 1
-and the deadline values of section 2.4 without changing the structure.
+Status: **spike report, revision 2.** Measured on two test profiles through their running daemons (one Internxt, one OneDrive;
+both named by type here, never by account). What was and was not measured is stated per case in section 1. Everything marked
+"not measured" is a protocol or an estimate, not a result. Sections 2 to 4 are design notes and an estimate from code, docs and
+the measurements; they were revised after the design review of this PR (the 23 review threads are answered in the PR).
 
 Read against engine main `8551c7f4`. Line numbers are of that commit.
 
 ## 0. Summary
 
-- **What exists today.** Own deletes are hidden by a fixed two-hour receipt (`RemoteGather.LAGGING_LISTING_WINDOW`,
-  `RemoteGather.kt:2090`; `mount_deleted_at` on the tombstone row). Four places read it: `ownDeletesRemoved` (`RemoteGather.kt:2033`),
-  the folder-delete guard (`MountDelete.kt:179`, `RmdirRefusal.kt:113`), `TombstonePurge` (`TombstonePurge.kt:39`) and the state
-  reset (`ProfileStateResetter.kt:262-271`). The two hours are a guess, not a measurement (`sync-engine-stability-design.md`: "a single
-  prior observation, not a measured bound").
-- **What is known from earlier live work (not re-measured here).** A trashed *folder* keeps being listed live for 40 to 160 s
-  (finding E3, `InternxtTrashLag.kt:9-12`). A trash does *not* cascade into the children's `/files` rows: they keep `EXISTS` with the
-  dead folder as parent (`RemoteGather.kt:2047-2056`, archive#601). `/files` lagged a web-UI trash by 60 minutes or more
-  (`mount-view-refresh-design.md` 3.2): one observation. These three numbers disagree by a factor of ~50, which is the reason to
-  measure per evidence kind before choosing a deadline.
-- **Estimate.** Provider-neutral half: about 14 to 18 engineer-days (L/XL). Internxt lag half: about 6 to 8 days (M/L). The neutral
-  half is the larger and carries the safety value (never resurrect an open id, never re-delete a changed item, surfaces).
-- **Top risk.** The ledger can turn a *lagging* listing into a *permanent* hide: an entry that never gets evidence stays open and
-  masks a genuine restore by another actor. The deadline-and-escalate rule (section 2.5) is what prevents that, and its by-id check
-  needs a version token that most `deleteById` paths do not carry (design review D6).
+- **Internxt, engine-sent deletes of fresh fixtures (one test profile, 75 one-minute rounds):** by-id meta, the parent's folder contents, the
+  provider trash and the incremental `/files` / `/folders` feed (`status=ALL`) all showed the delete at the first poll after it, 10-30 s
+  for trash (cases a, b), and at worst one poll later (about 60 s) for permanent deletes. No reversal, no flap, no regression in 55
+  pre-cleanup rounds. The 60-minute lag of the specs (a web-UI trash, one observation, a lower bound) was **not reproduced** and not
+  refuted: no UI trash was run.
+- **A folder trash does not cascade** into children in any source (listing, by-id meta, feed), for 20 minutes after the root was trashed.
+- **Evidence kinds:** by-id meta (existing `itemStateById`) is never later than the others here; folder contents, trash listing and
+  feed agree. OneDrive's delta echo and the full-scan cursor listings were **not measured**.
+- **S0 (622 entries, `rm -r` through the daemon):** 106 s on the Internxt test profile, 104 s on the OneDrive test profile
+  (about 6 entries/s); fixed bound was 30 minutes or under 1 entry/s, so neither is slow. The Internxt guard issued about 840 listing
+  calls and one `trash/add`.
+- **Batch:** 30 parallel single `rm` calls gave 21-26 `trash/add` calls, and 20 of 150 were refused with `daemon_not_answering`.
+- **ETA (re-baselined after the design review):** provider-neutral core 20 / 28 / 38 engineer-days (low/base/high); Internxt lag half
+  9 / 14 / 20, gated by one more measurement run. Ship in shadow mode first.
+- **Top risk:** a fast confirmation that retires protection while a slow feed still emits `EXISTS` (section 2.1); here the feed was fast,
+  so the risk is real only for the case the old observation described.
 
 ## 1. Measured reality
 
-### 1.1 Endpoints and fields (from code)
+### 1.1 Prior evidence (not re-measured here)
+
+Three earlier statements are in the specs. They are different kinds of observation and are **not comparable timings**; none is a
+bound for the others.
+
+| Statement | Item kind | Action | Endpoint | Samples | Kind of value |
+|---|---|---|---|---|---|
+| A trashed folder was still listed live 40-160 s (`InternxtTrashLag.kt:9-12`, "test drive 2, 2026-11-18") | folder | trash by this client | folder listing / create 409 path | not recorded | interval (observed range) |
+| `/files` status lagged a web-UI trash by 60 min or more (`mount-view-refresh-design.md` 3.2) | file | trash in the provider's web UI | incremental `/files` status | one observation | **lower bound** |
+| A folder trash does not change its children's feed rows: they keep `EXISTS` with the dead folder as parent (`RemoteGather.kt:2047-2056`, archive#601) | file children of a folder | folder trash | incremental feed | qualitative | qualitative |
+
+### 1.2 Endpoints and fields (from code)
 
 | Purpose | Call | Fields that matter | Code |
 |---|---|---|---|
-| Incremental feed of files | `GET /files?updatedAt=<cursor>&status=ALL&sort=updatedAt&limit&offset` | `uuid`, `status` (`EXISTS` / `TRASHED` / `DELETED`), `deleted`, `removed`, `updatedAt`, `folderUuid` | `InternxtApiService.listFiles` (`:585`), used with `status=ALL` when a cursor exists (`InternxtProvider.kt:3404`) |
-| Same for folders | `GET /folders?...status=ALL` | same, folders may carry no `status`, then `deleted`/`removed` | `listFolders` (`:602`), `InternxtShared.kt:36-44` |
+| Incremental feed of files | `GET /files?updatedAt=<cursor>&status=ALL&sort=updatedAt&limit&offset` | `uuid`, `status` (`EXISTS` / `TRASHED` / `DELETED`), `deleted`, `removed`, `updatedAt`, `folderUuid` | `InternxtApiService.listFiles` (`:585`), used with `status=ALL` once a cursor exists (`InternxtProvider.kt:3404`) |
+| Same for folders | `GET /folders?...status=ALL` | same; a folder may carry no `status` | `listFolders` (`:602`) |
 | Cursor listing (full scan) | `GET /files/sync`, `GET /folders/sync` | `status=EXISTS` only | `getFilesSync` (`:641`), `SYNC_LISTING_STATUS` (`InternxtCursorListing.kt:45`) |
-| Folder contents | `GET /folders/content/{uuid}` and `/folders/v2/content/{uuid}/files|folders` (cursor) | live children only | `getFolderContents`, `getFolderContentsPaged` (`:351`, `:378`) |
-| Item by id | `GET /files/{uuid}/meta`, `GET /folders/{uuid}/meta` | `status`, `updatedAt`, `deleted`, `removed` | `getFileMeta` (`:656`), `getFolderMeta` (`:664`) |
-| Trash (write) | `POST /storage/trash/add` `{items:[{uuid,type}]}` (cap 50) | | `trashItems` (`:1285`), `trashInBatches` (`InternxtBatchTrash.kt:27`) |
-| Trash (read) | `GET /storage/trash/paginated?type=files|folders&limit<=50&offset&root=true` | `uuid`, `deletedAt`, `parent`, `expiresAt` | `trashPage` (`:1343`), `InternxtTrashRow.kt` |
-| Permanent delete | `DELETE /files/{uuid}`, `DELETE /folders/{uuid}` | 204 / 404 = gone | `deleteFile` (`:1253`), `deleteFolder` |
-| Empty trash | `DELETE /storage/trash/all` | `status: processing|completed` | `emptyTrash` |
+| Folder contents | `GET /folders/content/{uuid}` and the cursor variant | live children only | `getFolderContents`, `getFolderContentsPaged` |
+| Item by id | `GET /files/{uuid}/meta`, `GET /folders/{uuid}/meta`; engine entry point `CloudProvider.itemStateById` (`CloudProvider.kt:467`, implemented by Internxt `InternxtProvider.kt:2646` and OneDrive `OneDriveProvider.kt:940`) | `status`, `deleted`, `removed`; result `Live` / `Trashed` / `NotFound` / `Unknown` | |
+| Trash write | `POST /storage/trash/add` (cap 50) | | `trashItems`, `trashInBatches` (`InternxtBatchTrash.kt:27`) |
+| Trash read | `GET /storage/trash/paginated?type=files|folders&limit<=50&offset&root=true` | `uuid`, `deletedAt`, `parent`, `expiresAt` | `trashPage`, `InternxtTrashRow.kt` |
+| Permanent delete | `DELETE /files/{uuid}`, `DELETE /folders/{uuid}` | 204 / 404 | `deleteFile`, `deleteFolder` |
 
-Gaps: the CLI has **no restore from the provider's trash** (`unidrive trash restore` is the local emulation only,
-`TrashCommand.kt:121-138`); there is no `restore` call in `InternxtApiService`. Case (d) therefore needs the web UI, a manual
-`moveFile` on a trashed uuid (untested hypothesis), or a new endpoint call found by reading the official SDK. This is an owner
-question (section 4, Q3).
+The wire model defaults an omitted `status` to `EXISTS` and omitted booleans to `false` (`InternxtFile.kt`, `InternxtFolder.kt`).
+A harness built on the decoded objects therefore cannot tell an omitted field from an explicit live value. This run used the
+decoded objects and says so; a presence-aware capture is part of the protocol for the next run (section 1.6).
 
-### 1.2 Protocol (ready to run; **not done**)
+`trash restore` of the CLI is the local emulation only (`TrashCommand.kt:121-138`); the engine has no restore from the provider's
+trash. Case (d) therefore **was not run**.
 
-Precondition: the owner (or the orchestrator) provides a throwaway config dir with `19notte78-gmail-com-2` signed in, passed as
-`-c <dir>` or `UNIDRIVE_CONFIG_DIR`. Never the owner's `%APPDATA%\unidrive`. First command of the run:
-`unidrive -c <dir> -p 19notte78-gmail-com-2 quota` (or the profile's status verb). Stop if the free 1 GiB is more than 70 % used;
-`unidrive ... trash purge --remote --all` is allowed on this profile for cleanup only.
+### 1.3 How the measurement was made
 
-**Probe harness (to be written, test scope, about 150 lines).** A Kotlin `main` (or a `@Disabled`-by-default live test) over
-`InternxtApiService` that, every 15 s for the first 10 minutes, every 60 s until 3 h (extend to 6 h for the first repetition), for
-each tracked uuid logs one CSV row `t_since_trash_s, uuid, source, observation`:
+One Internxt test profile, one OneDrive test profile, both mount profiles with a running daemon. Fixtures were created through the
+mounted folder of each profile (the engine uploads them through its daemon) in one dedicated sub-tree per profile, then deleted
+with `unidrive rm` (an RPC to the daemon: the engine's own delete route). `sync` is a mirror-profile command and `rm` serves mount
+profiles only (`SyncCommand.kt:314`, `RmCommand.kt:218-232`), so the earlier draft's `sync --upload-only` setup could not have run on
+one profile; it is removed.
 
-1. `listFiles(updatedAt = T0 - 1 min, status = "ALL", sort = "updatedAt")`: the row's `status/deleted/removed` or "absent".
-2. `getFileMeta(uuid)` / `getFolderMeta(uuid)`: `status`, or the HTTP error.
-3. `getFolderContentsPaged(parentUuid)`: whether the uuid is listed.
-4. `trashPage("files"|"folders", 50, offset)` walked to the end: whether the uuid is listed, and `deletedAt`.
-5. `listFiles(... status = "EXISTS")` incremental, because that is what the full-scan path sees.
+Reads were made by **one JVM** that built one provider through the engine's own `Main.createProvider()` (one vault unlock, one
+Windows Hello prompt per run) and then read once per minute: `listChildren` of each fixture folder (`/folders/content`), the provider
+trash (`listTrash`), the incremental `/files` and `/folders` feed (`status=ALL`, `sort=updatedAt`, paged to the end, restricted to the
+time window of the run), and by-id meta of about 25 tracked items. A first attempt that polled with one CLI process per read opened
+the vault once per process and produced several Hello prompts; it was stopped and is not part of the data. The single-JVM harness itself was started twice: the first start unlocked the vault once and ended at once on a regex typo in the script; the second start (one more unlock) produced all data.
 
-"Flap" = a source that reported the item gone and later reported it present again (or the reverse). Record the first time each
-source changes and every later change.
+Observation model: a poll gives an **interval** (last stale observation, first changed observation), not a time. A value reported
+as "+a..+b s" means: still old at a seconds after the delete call returned, already new at b seconds. "Not seen" is right-censored
+(no change within the run), not a duration. The first poll after each delete was up to 60 s later, so intervals narrower than the poll
+period cannot be claimed.
 
-**Cases, each at least 5 repetitions, each in `/_ud-spike-ledger-<timestamp>/` of that profile only:**
+### 1.4 Results: Internxt delete echo (one test profile, 75 rounds, one poll per minute)
 
-| Case | Setup | Action (engine CLI) |
-|---|---|---|
-| (a) single file | 5 files of 1 KiB, one per repetition, fresh each time | upload through a throwaway sync root (`sync --upload-only`), then `rm <path>` (the engine's own trash route) |
-| (b) folder with ~20 children | 5 folders of 20 files | `rm -r <folder>`; probe the folder and each child |
-| (c) batch | 30 files per repetition | the `deleteMany` route: delete 30 files in one sweep through the daemon (mount path) so `trashInBatches` batches them; a CLI loop of single `rm` does not exercise it |
-| (d) restore | trash a file, restore it 2, 10 and 60 min later | web UI by the owner, or the untested move; log what the feed shows, including `updatedAt` |
-| (e) permanent | 5 files | `rm --permanent` (`DELETE /files/{uuid}`); the feed's answer |
+All times are seconds after the `rm` reply returned. Each cell is the **interval upper bound**: the first poll that read the new state
+(the last poll before it still read the old state, or was taken before the delete). The first poll after the deletes of cases a, b and e
+came 10-30 s after each delete, so **"within 10-30 s" is the finest statement the data supports; the true propagation may be faster.**
+Nothing was censored except the trash column of case e (a permanent delete never reaches the trash, as expected).
 
-Per case, the table to fill in (times are seconds after the 2xx of the delete call; `never` = not seen within the probe window):
+| Case | n | Source | min | median | max | later reversals | censored |
+|---|---|---|---|---|---|---|---|
+| (a) single file, trash | 5 | folder contents (`/folders/content`) stops listing it | 21 | 25 | 29 | 0 | 0 |
+| | | by-id meta reports `TRASHED` (`deleted=true`) | 21 | 25 | 29 | 0 | 0 |
+| | | incremental `/files` (status=ALL) has the row as `TRASHED` | 21 | 25 | 29 | 0 | 0 |
+| | | provider trash lists it | 21 | 25 | 29 | 0 | 0 |
+| (b) folder with 20 children, trash | 5 | folder contents of the parent stops listing the folder | 10 | 14 | 19 | 0 | 0 |
+| | | by-id meta of the folder `TRASHED` | 10 | 14 | 19 | 0 | 0 |
+| | | incremental `/folders` row `TRASHED` (`deleted=true`) | 10 | 14 | 19 | 0 | 0 |
+| | | provider trash lists the folder | 10 | 14 | 19 | 0 | 0 |
+| (e) single file, permanent delete | 5 | by-id meta `DELETED` (`removed=true`) | 1 | 6 | 59 | 0 | 0 |
+| | | folder contents stops listing it | 6 | 59 | 63 | 0 | 0 |
+| | | incremental `/files` row `DELETED` | 4 | 8 | 61 | 0 | 0 |
+| | | provider trash lists it | n/a | n/a | n/a | n/a | 5 (expected) |
 
-| Evidence | min | median | max | flaps | notes |
+Per-item raw rows (`item`, first-seen interval in seconds; `-` = still old at the last poll before):
+
+| item | case | listing | trash | by-id meta | feed |
 |---|---|---|---|---|---|
-| `/files` incremental stops reporting `EXISTS` | | | | | |
-| `/files` incremental reports `TRASHED` or `DELETED` | | | | | |
-| `/files/{uuid}/meta` reports non-`EXISTS` | | | | | |
-| `/folders/content/{parent}` no longer lists it | | | | | |
-| `/storage/trash/paginated` lists it | | | | | |
-| (b only) each child: any non-`EXISTS` status | | | | | |
-| (b only) each child: leaves `/folders/content/{folder}` (unreachable once the folder is trashed: record the HTTP answer) | | | | | |
+| a1..a5 | a | 0..29, 0..27, 0..25, 0..23, 0..21 | same | same | same |
+| b1..b5 | b | 0..19, 0..16, 0..14, 0..12, 0..10 | same | same | same |
+| e1 | e | 0..8 | n/a | 0..8 | 0..8 |
+| e2 | e | 0..6 | n/a | 0..6 | 0..6 |
+| e3 | e | 4..63 | n/a | 0..4 | 0..4 |
+| e4 | e | 1..61 | n/a | 0..1 | 1..61 |
+| e5 | e | 0..59 | n/a | 0..59 | 0..59 |
 
-Cleanup: delete `/_ud-spike-ledger-<timestamp>/`, then `trash purge --remote --all` on this profile, then confirm the quota. Log no file
-contents and no account data beyond the profile name.
+For e3 and e4 the folder listing (and, for e4, the feed) was still old 4 s and 1 s after the reply and new at the next poll (about 60 s later), while by-id meta was
+already `DELETED`: with a one-minute poll the data cannot say whether the listing lagged by 5 s or by 55 s. It does show that **by-id meta
+is never later than the other sources in this run**.
 
-### 1.3 Results
+**(c) Batch (30 single deletes in parallel, five repetitions).** The CLI's `rm` was started 10 at a time, 30 per repetition, through
+the daemon. A burst of single deletes did **not** produce one 50-item `trash/add` per 30: 21, 21, 26, 22, 22 `POST /storage/trash/add`
+calls were counted for the five repetitions (daemon request counters). 20 of the 150 `rm` calls (2, 6, 3, 5, 4 per repetition) were
+answered `daemon_not_answering` with "nothing was deleted" when ten ran at once; those files stayed live and, as untouched controls,
+stayed `EXISTS` in listing, by-id meta and feed for the rest of the run. Of the 130 deletes that succeeded: all 130 had a feed row
+`TRASHED` and were gone from the parent listing at the first poll after the repetition (listing gone within 17, 58, 35, 12 and 46 s);
+the provider trash showed 130 additional file entries. No row ever regressed (0 feed regressions over 55 pre-cleanup rounds).
 
-**Not measured.** The tables above stay empty until the run. What the code lets us say today is limited to this:
+**Children of a trashed folder (b and the root).** The five trashed 20-child folders produced **no feed rows for their 100 children**:
+the incremental file feed held 140 rows in total and all 140 were the tracked individually deleted files (135 trashed + 5 permanent),
+and the folder feed held exactly the five trashed folders. When the test root itself was trashed at the end, the listings of the
+folders below it (still containing the untouched controls and the 20 failed deletes) kept returning their items, by-id meta of
+the controls stayed `EXISTS`, and the feed had no rows for them, for the 20 minutes until the run ended. The folder feed gained one
+row (the root). So a folder trash does not cascade into children in any of the four sources.
 
-| Evidence kind | What the code expects of Internxt | Basis |
+**Untouched controls** (`a6`, `b6`): present in listing, `EXISTS` in by-id meta and absent from the feed in all 75 rounds.
+
+**What was not measured, and why.**
+
+| Item | Status |
+|---|---|
+| Case (d), restore | not run: the engine has no restore from the provider's trash (`TrashCommand.kt:121-138`); a real owner-performed UI restore is owner question 3 |
+| Full-scan cursor listings (`/files/sync`, `/folders/sync`, fallbacks) | not walked |
+| Raw wire fields (present vs defaulted) | not captured; the harness decodes through the engine's models |
+| A fixture beyond page one / outside the time window as a control | not built: the feed window held 140 rows |
+| Web-UI trash (the original 60-minute observation) | not run; so the old figure is neither confirmed nor refuted for UI trashes |
+| Children's own listing after their folder's trash (b1..b5 contents) | not probed (the children were not tracked); the deeper listings under the trashed root do answer, see above |
+| Polls finer than 60 s | not made |
+
+The decoded-model caveat of 1.2 applies to every cell above.
+
+### 1.5 Results: OneDrive (one test profile, through its running daemon)
+
+Only daemon operations were used (no vault-opening process), so the delta feed and the recycle bin were **not read**:
+"how fast the delta reports the delete" and "whether a folder delete reports the children" are **not measured**. The daemon's
+`refresh` RPC answers `refresh.done` only; the engine's own deletes are tombstoned at once, so the plain `ls` view cannot show the
+echo. The statement in the engine docs that OneDrive's delta lag is short is therefore still unconfirmed here.
+
+What was measured is the S0 delete (1.6). A separate finding about this profile's daemon: the log before 09:33 shows
+`auto-poll: enumerate failed (Not authenticated)` with the back-off growing to 600 s, then `quota refresh failed ... no OneDrive token
+is stored for this profile`; the daemon that was found running at 10:53 (restarted) polled every 60 s and reported authenticated.
+Nothing was restarted or repaired by this spike.
+
+### 1.6 Results: S0, `rm -r` of a 622-entry tree through each daemon
+
+Tree: 358 nested folders (3-ary) plus 264 files of 1000 bytes (622 entries below one root); uploaded through the mounted folder, deleted
+with `unidrive rm -r --yes` (daemon route). "Slow" was fixed beforehand as more than 30 minutes, or under 1 entry/s.
+
+| | Internxt test profile | OneDrive test profile |
 |---|---|---|
-| Explicit `TRASHED` / `DELETED` in the incremental `/files` feed | Arrives late and may flap; for a *file* it is the only per-item feed signal | `mount-view-refresh-design.md` 3.2 (≥60 min, one observation) |
-| Item missing from a complete `/folders/content/{uuid}` | Prompt (the engine notes a web-UI trash showed in folder contents "immediately"); a trashed folder was still listed live for 40-160 s | `sync-engine-stability-design.md` (delete-detection), `InternxtTrashLag.kt:9-12` |
-| Parent's confirmed delete (cascade) | **Not available**: children keep `EXISTS` with the dead parent | `RemoteGather.kt:2047-2056` |
-| Item in the trash listing | Plausible and cheap by id, but a 50-per-page walk of the whole trash; `deletedAt` per row | `trashPage` |
-| By-id meta | Untested as evidence; likely the most direct, one call per item | `getFileMeta` |
+| Upload through the mount, until `daemon.status` shows no pending upload | about 73 s | about 87 s |
+| `rm -r` wall time | **106.0 s** | **103.6 s** |
+| Entries per second | 5.9 | 6.0 |
+| Verdict against the pre-fixed bound | not slow | not slow |
 
-Hypotheses the run must confirm or kill, in order of value: (H1) `/folders/content/{parent}` stops listing a trashed file within
-seconds; (H2) `/files/{uuid}/meta` reports `TRASHED` within seconds although the `/files` feed lags; (H3) the trash listing shows
-the item within seconds; (H4) children of a trashed folder never change status. If H1 or H2 holds, the "lag" is a defect of one
-endpoint (the incremental feed), the ledger needs no hour-long deadline, and the Internxt half shrinks to a by-id check.
+Calls during the Internxt `rm -r` (daemon request counters, difference before/after; the daemon's own 60 s background poll adds a few
+`favorites`, `recents`, `files/sync`, `folders/sync`, `sharings` calls):
 
-## 2. Ledger design notes
+| Class | Endpoint | Calls |
+|---|---|---|
+| guard listing | `GET /folders/content/{id}` | 408 |
+| guard listing | `GET /folders/v2/content/{id}/folders` | 433 |
+| meta | `GET /files/{id}/meta` | 10 |
+| trash | `POST /storage/trash/add` | 1 (the whole subtree is one folder trash) |
+| state.db commit | not exposed by the counters | not measured |
 
-### 2.1 Entry and storage
+No timing without the guard was taken, so the guard's share is inferred from the call counts, not measured: its listings (about 840
+calls) dominate the 106 s; the trash itself is one call. The OneDrive daemon exposes no request counters, so its call split is not
+measured. The Windows released-hold drain (review B1 of #1011) needs the tray and a live CfAPI mount and is the owner's.
 
-A side table `expected_deletes` in `state.db`, created like the other side tables (`StateSideTables.kt`), **no schema bump**
-(review D7 on #1011: a bump makes older builds refuse the file; add the stamp at the first insert if needed).
+### 1.7 Cleanup and what is left in the provider trash
+
+Only the run's own sub-tree was moved to the trash (`rm -r` on `/_ud-spike-ledger-<ts>/` on each profile). No `trash purge`, with or
+without `--all`, was run.
+
+- **Internxt test profile:** the root and its subtree are in the provider trash. By the last poll (20 minutes after the root was trashed)
+  the trash held 145 entries: the run's own 142 (root, `s0` of S0, five `a` files, five `b` folders, 130 batch files; their ids are in a
+  manifest file kept with the session notes, outside this repo) and **three older folders that are not from this spike**
+  (`_golden-1125-1655`, `_cmp-1125-2127`, `_exp-1126-0740`, ids `01a2136b-feae-761b-b041-d02f7dec92cc`,
+  `01a21464-eb9a-7436-96e1-1e947c1008bb`, `01a21695-c664-77da-bf50-499b4bb1b379`), left untouched for the owner to decide. The root's
+  trash id is `01a21c6e-2cae-71a3-b293-52087225bf52`, `s0`'s `01a21c6e-2d9f-726f-82c7-290345b7a37d`.
+- **OneDrive test profile:** the root was moved to the recycle bin (`deleted_as: trash`). The recycle bin was not listed (no vault read),
+  so its ids were not recorded. The test mount folder still holds the 227 local placeholder entries of the run under the root (the
+  daemon's view no longer lists the root); nothing was done to them.
+- No credential file of the Internxt profile was rewritten during the run (modification time unchanged); the unlock helper ran once for
+  the run that produced these data.
+
+### 1.8 Reproducing
+
+`internxt-delete-echo-harness/harness.jsh` (one JVM through `jshell --class-path <engine jar>`: one `Main().createProvider()`, read-only
+loop) and `analyze.py` / `analyze2.py` (tables above from the JSON-lines it writes). Environment: profile, test root, output file,
+minutes, parents, feed time window. Fixtures are created through the mount folder and deleted through `unidrive rm`.
+
+
+## 2. Ledger design notes (revised after review)
+
+### 2.1 Two questions, kept apart
+
+The earlier draft let one flag, "confirmed", end the protection. The measurements and the review show these are different:
+
+- **Delete observed** (the cloud has the item as trashed/gone): by-id state, a complete listing of the parent, the trash listing.
+- **Safe for this listing source to reintroduce this id**: a lagging feed can keep reporting `EXISTS` long after the delete was
+  observed. Protection against *that feed* must outlive the confirmation. It ends only when (a) that source has itself reported
+  the item deleted, or advanced past it (a feed cursor/watermark later than the delete), or (b) a feed-specific bound has passed
+  *and* a by-id check agrees the item is live and changed (a genuine restore), in which case the item is surfaced, not hidden.
+
+So `confirmed` (observed) is a state of the ledger entry; `feed_guard_until` is a separate field per listing source. A timeline test
+is required: fast by-id confirmation, then a late stale `EXISTS` from the feed (must stay hidden), then a genuine restore (must surface).
+This replaces the earlier 10-minute grace. (Review: confirmation vs stale-feed protection.)
+
+### 2.2 Entry, identity and states
+
+A side table `expected_deletes` in `state.db`, created like the other side tables (`StateSideTables.kt`).
 
 | Column | Meaning |
 |---|---|
-| `remote_id` (unique among open rows) | the cloud id the delete was sent for |
-| `kind` | file / folder |
-| `path_at_delete` | for display and the path-reuse check only, never for addressing |
-| `version` | etag / `updatedAt` / `remoteContentId` of the row at delete time (null when the row had none) |
-| `sent_at`, `operation` | `trash` / `permanent` / `cascade-root` |
-| `parent_entry` | for a folder delete: nothing; for a child covered by a folder's cascade: the folder's entry id |
-| `state` | `open`, `confirmed`, `resent`, `failed`, `contested` (another actor won) |
-| `confirmed_by`, `confirmed_at` | which evidence kind, when |
-| `checks`, `next_check_at` | deadline bookkeeping |
+| `op_id` (primary key) | immutable operation id, one per delete attempt |
+| `remote_id`, `kind` | the cloud id and file/folder |
+| `generation` | the strongest identity token the provider gives (Internxt: uuid; OneDrive: id + eTag/cTag; Dropbox: id + rev; S3: key + version-id/etag; null when none). **A remote id is not a generation** (S3's id is the key, `S3Provider.kt:626-629`; a recreated key has the same id) |
+| `path_at_delete` | display and path-reuse check only, never for addressing |
+| `operation` | `trash` / `permanent` |
+| `sent_at`, `deadline_at`, `attempts` | scheduling |
+| `state` | `intent` (written before dispatch), `acknowledged`, `ambiguous`, `refused`, `observed`, `unresolved`, `contested`, `released` |
+| `parent_op_id` | for a child covered by a folder delete: the folder's op; covered-by-parent is **not** observed (2.5) |
+| `feed_guard_until` | per listing source; see 2.1 |
 
-Writing the row: in the same transaction as the tombstone and `mount_deleted_at` today (`StateDatabase.kt:1846-1860`), so a crash
-leaves either both or none. `mount_deleted_at` stays for one release as the fallback for rows written before the ledger.
+Active states = `intent`, `acknowledged`, `ambiguous`, `unresolved` (one shared predicate for every query and a partial unique index
+on `(remote_id, generation)` over active rows). A restore followed by a second delete of the same id creates a new `op_id`; evidence
+carries the `op_id` it was gathered for and is discarded if it names an older one. Terminal rows are kept a bounded time.
 
-### 2.2 Tick-off rules per provider
+### 2.3 Writing the entry: intent before dispatch
 
-| Evidence | Internxt (**to be measured**) | OneDrive (not measured) | Dropbox (not measured) | S3 (not measured) |
+Today `MountDelete.deleteRemote` calls the provider before `finishFileDelete`/`markDeleted`, so a crash after the provider accepted
+and before the state transaction leaves neither a tombstone nor an entry. The ledger writes a **non-executing observation intent
+before dispatch** (never a replay instruction), then records `acknowledged`, `ambiguous` (5xx whose first attempt may have
+committed) or `refused`, and on restart reconciles every `intent`/`ambiguous` row **by id** (by-id state), never by re-sending.
+Tests: a lost reply, a crash on either side of the acknowledgement, partial batch results. This does not turn the ledger into a
+deferred-delete queue (PR #1011 is a separate decision).
+
+### 2.4 Evidence per operation and provider
+
+Success is defined per operation. A `TRASHED` object satisfies `trash`; it does **not** satisfy `permanent`. A 404 on a live-only
+endpoint does not distinguish trash from permanent absence. Outcomes are recorded as one of: *absent from the live namespace*,
+*known trashed*, *verified permanently gone*, or *unknown* (the provider cannot distinguish). A `permanent` entry is never closed
+as verified on `Trashed`/404 alone; a folder id is checked against the folder endpoint before a 404 is accepted.
+
+**Absence from the old parent is not a deletion** (a concurrent move to another parent looks identical; `itemStateById` models a
+moved item as `Live`). A complete listing of the old parent is a reason to ask by id, not terminal evidence; a live moved item is
+reconciled at its new location. Controls: a move between folders, and a partial/failed listing.
+
+| Evidence | Internxt | OneDrive | Dropbox | S3 |
 |---|---|---|---|---|
-| Explicit delete in the delta | `status` ∈ {`TRASHED`,`DELETED`} or `deleted`/`removed` in the `/files` ALL feed; late, may flap, so a single sighting confirms only after the by-id check agrees | `deleted` facet in delta; the lag is short | tombstone without id: match by path and entry (`isTombstoneOfOtherItem` handles this today) | no feed; n/a |
-| Missing from a complete listing of its folder | `/folders/content/{uuid}` (cursor variant), authoritative if H1 holds; **a complete listing only** (`complete` flag, not a truncated page) | complete delta full listing | `list_folder` is consistent | `ListObjectsV2` is consistent: the primary evidence |
-| Parent's confirmed delete (cascade) | **Never** (no cascade in feeds) | yes: recycle-bin delete covers the subtree | yes: recursive delete | no folder object; a prefix delete is per key, each key its own entry |
-| In the provider's trash | `/storage/trash/paginated`; costs a walk, so by-id preferred | recycle bin API exists, not used by the engine | restore list exists, per file | none (hard delete) |
-| By-id check (escalation) | `getFileMeta` / `getFolderMeta` | `getItemById` | `get_metadata` | `HeadObject` (404 = gone) |
+| By-id state (`itemStateById`) | exists; file meta first, then folder meta (up to two calls) | exists | not implemented | not implemented |
+| Delta/feed tombstone | `/files` status, lags (section 1) | `deleted` facet | id-less tombstone: **path-only, inconclusive after path reuse** (`isTombstoneOfOtherItem`) | none |
+| Complete parent listing | `/folders/content`, prompt (section 1), not terminal | complete delta full listing | consistent, not terminal | consistent; id = key, so **a recreated key hides behind an open entry** unless the entry carries a generation (version-id/etag) |
+| Provider trash | `/storage/trash/paginated` | recycle-bin API (not used) | restore list | none (hard delete) |
 
-Rule common to all: **confirmation needs one positive piece of evidence of a kind the provider is known to deliver promptly**.
-Absence from a *lagging* listing is never evidence (that is exactly today's bug class).
+Open-entry filters compare `(remote_id, generation)`, not the id alone. Tests: S3 delete then recreate (also with identical bytes)
+and a late Dropbox tombstone after a replacement. Neither replacement is hidden or re-deleted.
 
-### 2.3 What the ledger does while an entry is open (owner items 3)
+### 2.5 Folders: a confirmed parent is not a confirmed child
 
-- **No resurrection by a listing, for as long as the entry is open** (review D2): `ownDeletesRemoved` and `listedChildPassesOver`
-  ask the ledger for open entries by id; the time window survives only for `confirmed` entries (a short grace of 10 min, since a
-  confirmed delete can still be echoed by a stale page).
-- **No adoption of that id at the same path** (review D1): `MountEngine.existingFolderAt` (`MountEngine.kt:2236`) refuses a folder
-  whose id has an open entry; a create at the path of an open folder entry waits for it or fails `busy`.
-- **Housekeeping keeps open entries** (review D4): `PURGEABLE_TOMBSTONES` (`TombstonePurge.kt:36-48`) gets `NOT EXISTS (open entry)`;
-  `ProfileStateResetter.deleteTombstones` (`:262`) and `refuseIfBusy` treat an open entry as an operation on record; a full reset
-  with open entries refuses with a reason, or carries the table across, as the owner decides (Q6).
-- **Never re-delete after the item changed** (escalation, 2.5).
+For a folder delete the ledger records the **vetted membership at dispatch** (the rows `MountDelete` vetted; descendants it did not
+vet are kept by `keepBelow`). Children are `covered_while_parent_unreachable`, never `observed`. A child that appears under a live
+parent (moved out before the trash, or a restored parent) releases its coverage and reconciles by identity. Tests: a moved-out
+child, a concurrent new or dirty descendant, a restored parent.
 
-### 2.4 Deadline values (to be set from the measurements)
+### 2.6 Deadlines, unresolved state and retries
 
-Until measured, the proposal is conservative and provider-specific, replacing the single two hours:
+- **Scheduling interval vs retirement bound.** The first read-only check is scheduled from the measured prompt sources (section 1)
+  with jitter and backoff, a per-account probe budget and oldest-entry-first fairness, so a 10,000-item sweep is not one
+  synchronised wave. A five-run median is a scheduling hint only; **it is not a bound that retires protection.** Where no tail
+  bound is established, retirement stays evidence-based (the source reported the item deleted, or the by-id check settled it).
+- **Evidence never arrives** (offline, expired authorisation, `Unknown`, unsupported provider): at the deadline the entry moves to a
+  visible `unresolved` state, **automatic writes stop**, and the item is surfaced to the user. Protection is released by fresh
+  authoritative live evidence (by-id says live and changed) or by an explicit user action. An unverified object is never labelled
+  deleted merely to close the row. Tests: restart past deadline, permanent 401, unsupported provider.
+- **No automatic retry of a delete that carries no condition.** A by-id GET returning version V followed by an unconditional DELETE
+  is not a version check on the write: a restore or edit can land between them. A resend is allowed only where the provider enforces
+  an identity-and-generation condition on the delete itself (OneDrive `If-Match`, Dropbox `parent_rev`). Everywhere else the
+  entry goes to `contested` / needs review and **nothing is written**. Tests: an intervening restore, a missing token, a provider
+  that does not enforce the condition.
+- **Changed version or restored** (by-id says live and different): `contested`, resurrect the row, notify. Never re-delete.
 
-| Provider | First check by id after | Further checks | Hard stop |
+### 2.7 While an entry is active
+
+- No resurrection by a listing source whose `feed_guard_until` has not passed (2.1).
+- No adoption of that id at the same path: `MountEngine.existingFolderAt` (`MountEngine.kt:2236`) refuses a folder whose
+  `(id, generation)` has an active entry; a create at the path of an active folder entry waits or fails `busy`.
+- `TombstonePurge` (`TombstonePurge.kt:36-48`), `ProfileStateResetter.deleteTombstones` (`:262`) and its `refuseIfBusy` treat an
+  active entry as an operation on record; a reset with active entries refuses with a reason (owner question 6).
+
+### 2.8 Coverage: which writers and providers
+
+| Caller / route | Mode | State owner | Ledger |
 |---|---|---|---|
-| Internxt | max(10 min, 3 × the measured median of the slowest evidence kind that is still prompt) | 30 min, 2 h, 6 h | 24 h → `failed` or `contested` after the by-id check |
-| OneDrive | 5 min | 30 min | 6 h |
-| Dropbox | 2 min | 15 min | 2 h |
-| S3 | 30 s | 5 min | 1 h |
+| Mount `hydration.unlink` / `rmdir` (and the coalesced batch) | mount | daemon `state.db` | **yes** (N2) |
+| `unidrive rm` via the daemon route | mount, daemon running | daemon `state.db` | **yes**, same path as above |
+| `unidrive rm` provider route (`RmCommand.kt:407-432`) | mount without `state.db` | none | **excluded**: no state to protect, and creating state here would be new mount state; the CLI prints the outcome and the user's next enumeration is the first observation |
+| Sync apply of a remote delete | mirror | `state.db` | not a delete the client *sent*; out of scope |
+| `localfs` | any | n/a | excluded: no remote lag, deletes are immediate |
+| Providers | Internxt, OneDrive, Dropbox, S3 | | per 2.4; S3 and Dropbox need a generation rule before the ledger may hide anything |
 
-If H2 holds, Internxt's by-id check is itself prompt evidence and the row confirms within minutes; the 2 h receipt disappears.
+One acceptance test per supported writer.
 
-### 2.5 Escalation
+### 2.9 Downgrade
 
-When `next_check_at` is reached the by-id check runs (one call per entry; batched where the provider can, 50 per
-`/storage/trash`-style call does not apply to reads, so Internxt reads are single calls, rate-limited through the existing
-`driveBudget`):
+An additive table is compatible in form, but an older engine ignores active entries and reverts to the two-hour receipts: it can
+re-adopt or purge rows the new build protects, and `mount_deleted_at` as a fallback does not cover an entry older than two hours.
+Decision proposed: **raise the supported-reader stamp atomically with the first entry that needs the new semantics** (the shadow-mode
+entries of 3.3 do not need it), leaving profiles that never wrote an entry downgradeable. Tests: an older binary opening an untouched
+and an active-ledger database, including after the legacy window has expired.
 
-| Answer | Action |
-|---|---|
-| gone / 404 / `TRASHED` / `DELETED` | tick off, evidence kind `by-id` |
-| alive, **same version** as `version` | the cloud said OK and did not delete: **re-send once** (`resent`), second time → `failed`, reported through the failed-operations surface |
-| alive, **version changed**, or the item is no longer in the trash after having been in it | another actor wrote it or restored it: `contested`, **resurrect the row**, notify the user, **never delete again** |
-| error (network, auth, 5xx) | keep open, back off, never escalate on an error |
+### 2.10 How it replaces `LAGGING_LISTING_WINDOW`
 
-The version problem (D6): there is no by-id delete that takes a token (`CloudProvider.kt:221`). "Same version" is therefore
-decided on the *check*, and the re-send is an unconditional by-id delete, which is the same exposure as today's single delete.
+Only after the shadow period (3.3): `ownDeletesRemoved` (`RemoteGather.kt:2033`), the folder guard (`MountDelete.kt:179`,
+`RmdirRefusal.kt:113`), `TombstonePurge` and `ProfileStateResetter` ask the ledger for active entries and feed guards. The constant
+stays as the default for rows without an entry, then goes one release later.
 
-### 2.6 How it replaces `LAGGING_LISTING_WINDOW`
+### 2.11 Unexpected deletions and the hold
 
-1. `ownDeletesRemoved` (`RemoteGather.kt:2033`): `recentlyDeletedRemoteIds(now - 2h)` becomes `openOrRecentlyConfirmedIds()`.
-   For a provider with no listing lag the call returns an empty set after the grace period and the code is a no-op.
-2. `listedChildPassesOver` (`RmdirRefusal.kt:113`) and `MountDelete.kt:179`: the same query.
-3. `TombstonePurge` and `ProfileStateResetter`: keep open entries instead of `mount_deleted_at < bound`.
-4. The constant stays as a default for rows without an entry (old rows, a daemon restarted into an old state), then is removed
-   one release later.
+The ledger knows the deletes this client sent. A delete it did not send is *not necessarily* unexpected (another client's legitimate
+delete leaves no receipt here). "Stands out" means shown, not blocked. A **hold** of unexpected mass deletions is a separate,
+recoverable mechanism and not part of the first release: it must name which mount and mirror actions pause, thresholds and independent
+corroboration, which cursor and held evidence survives a restart, and how an operator inspects, releases or rejects it. `bulk_reap_guard`
+is a view/reaping guard, not a general gate for destructive mirror actions, so it is a precedent, not the mechanism. Tests: an external
+bulk delete with unsent local edits; a crash between detection and release; never advance past changes that cannot be recovered.
 
-## 3. ETA
+## 3. ETA (re-baselined)
 
-Sizes: S ≤ 1 day, M 2-3 days, L 4-6 days. "Lines" are production plus tests, rough. Days are engineer-days of an agent-assisted
-workflow including review; owner decisions are not on the clock.
+### 3.1 Assumptions
 
-### 3.1 Provider-neutral half (all providers, safety and surface)
+Effort in engineer-days of an agent-assisted workflow including review; one engineer unless stated; owner decisions and the
+observation windows of live runs are **elapsed time, not effort**, and are listed separately. Sizes by the rubric S ≤ 1 d,
+M 2-3 d, L 4-6 d; low/base/high is the spread of each slice, not a statistical bound. `CloudProvider.itemStateById` already exists
+(Internxt, OneDrive), so the by-id slice is an extension, not a new SPI.
 
-| # | Slice | Size | Lines | Depends on |
-|---|---|---|---|---|
-| N1 | Side table `expected_deletes`, repository, states, no bump, migration test | S | 250 | none |
-| N2 | Write path: record in the tombstone transaction (`MountDelete`, `BatchDelete`, CLI `rm`, sync-engine apply) | M | 350 | N1 |
-| N3 | Tick-off from delta tombstones and complete listings (`RemoteGather`), cascade where the provider covers the subtree | M | 400 | N1, N2 |
-| N4 | Open-entry protections: no resurrection (D2), no adoption (D1, `existingFolderAt`), purge and reset keep entries (D4), `listedChildPassesOver` | M | 350 | N1 |
-| N5 | By-id check SPI on `CloudProvider` (default: unsupported) plus implementations for OneDrive, Dropbox, S3; version token only as evidence | M | 400 | N1 |
-| N6 | Deadline worker and escalation (re-send once, contested → resurrect + notify, failed list) | M | 450 | N3, N5 |
-| N7 | Surfaces: confirmed count beside `DeleteSweepProgress`, `daemon.status`, counts only | S | 150 | N3 |
-| N8 | Unexpected-deletion marking and a guard hook (holds an unexpected mass delete before it is applied locally; interacts with `bulk_reap_guard`) | M | 350 | N3 |
-| N9 | Docs, spec updates (`cli-rm-command.md`, `mount-view-refresh-design.md`), failure-injection tests | S | 300 | all |
+### 3.2 Provider-neutral half
 
-Total ≈ 3 S + 6 M ≈ **14 to 18 days**; critical path N1 → N2 → N3 → N6 ≈ 9 days. The Windows client's card for N7 and the client
-side of N8 (a notification, the failed-ops list) are **not** in these numbers: they are a separate issue in the client repo and
-a few days there.
+| # | Slice | Size | Low | Base | High | Depends on |
+|---|---|---|---|---|---|---|
+| N1 | Side table, op ids, active predicate and index, stamp-at-first-active-entry, migration/downgrade tests | M | 2 | 3 | 4 | none |
+| N2 | Intent before dispatch and outcome recording for the covered writers (2.8), crash/lost-reply/partial-batch tests | M-L | 3 | 4 | 6 | N1 |
+| N3 | Observation and generation rules per provider on top of `itemStateById`; permanent vs trash outcomes; move/partial-listing controls | M | 2 | 3 | 4 | N1 |
+| N4 | **Shadow mode**: entries are written and observed but hide nothing; status shows active/overdue counts, a list, and a release action | M | 2 | 3 | 4 | N2, N3 |
+| N5 | Extend `itemStateById` (optional version/parent/evidence), missing providers (Dropbox, S3, localfs policy), wrapper forwarding, capability tests | M | 2 | 3 | 4 | N1 |
+| N6 | Deadline to `unresolved`, conditional resend only where enforced, contested + notification | M | 2 | 3 | 4 | N3, N5 |
+| N7 | **Enable suppression**: no-resurrection, no-adoption, purge/reset protection, feed-guard rule and its timeline test | L | 4 | 5 | 7 | N4, N6 |
+| N8 | Surfaces: confirmed count beside `DeleteSweepProgress`, unexpected-delete marking (show only) | S-M | 1 | 2 | 3 | N3 |
+| N9 | Docs, spec updates, failure-injection suite | M | 2 | 3 | 4 | all |
+| N10 | *Optional, separable:* recoverable hold of unexpected mass deletions (2.11) | L | 4 | 5 | 8 | N8 |
 
-### 3.2 Internxt lag half
+Core (N1-N9): **low 20, base 28, high 38 engineer-days**; critical path N1 → N2 → N4 → N6 → N7 → N9 ≈ 17-22 days elapsed for one engineer,
+about 14-17 with a second engineer on N3/N5/N8. N10 adds 4-8 days if wanted. The client half (the card for N8, notifications, the
+failed/unresolved list) is a separate issue in the client repo and is not counted.
 
-| # | Slice | Size | Lines | Depends on |
-|---|---|---|---|---|
-| L1 | The live measurement of section 1 (harness + 5 cases × 5 repetitions + cleanup + report) | S-M | 150 harness | profile access (Q1) |
-| L2 | Internxt evidence providers: folder-contents absence (complete listing), by-id meta, trash-listing lookup by uuid (cached per pass), mapping `TRASHED`/`DELETED`/flap handling | M | 350 | L1, N5 |
-| L3 | Internxt deadlines from the measured medians; removal of the 2 h default for this provider | S | 100 | L1, N3 |
-| L4 | Folder deletes: children keep `EXISTS`; entry per folder plus a dependent-children rule (children of a trashed folder are `confirmed-by-parent` only after the folder is confirmed by a prompt kind; the dead-parent guard stays) | M | 300 | N3, L2 |
-| L5 | Batch path (`trashInBatches`) writes one entry per item with the batch's confirmation; 400-fallback keeps entries consistent (D5) | S-M | 200 | N2 |
-| L6 | Trash-add 5xx ambiguity (first attempt may have committed) maps to an entry in state `open`, never `failed` | S | 80 | N6 |
+### 3.3 Rollout order (shadow first)
 
-Total ≈ **6 to 8 days**, of which L1 is the gate. If H1 or H2 holds, L2 is smaller (one cheap call) and L3 is mostly deleted code.
+1. **Release A:** N1, N2, N3, N4. The table is written and observed; **nothing is hidden by it.** The two-hour window stays the
+   only suppression. This is safe to stop at: an entry that is never confirmed costs a row and a status line, not a hidden restore.
+2. **Release B:** N5, N6, N7 for a provider only once that provider has a bounded release path, diagnostics and a recovery action.
+   Suppression is switched on per provider.
+3. Test an upgrade that stops after release A with a restore and an expired entry.
 
-### 3.3 Ordering
+### 3.4 Internxt lag half
 
-N1 → N2 → N4 first: they close the D1/D2/D4 data-loss holes with no provider work and make the two-hour window obsolete for
-non-lagging providers. L1 can run in parallel as soon as the profile is available. N5/N6 and L2-L4 follow. N7 and N8 are the
-surfaces and can land last or be split.
+| # | Slice | Size | Low | Base | High | Depends on |
+|---|---|---|---|---|---|---|
+| L1 | The live measurement: repeat with a presence-aware capture, the full-scan cursor listings, a move control, a presence control and a *real* restore; elapsed 2-6 h per run | S-M | 1 | 2 | 3 (+ owner/elapsed) | profile access |
+| L2 | Internxt evidence from the existing by-id state plus folder-contents and trash lookups, flap handling | M | 2 | 3 | 4 | L1, N3 |
+| L3 | Feed-guard rule per source from the measured feed behaviour (2.1); deadlines as scheduling intervals | M | 2 | 3 | 4 | L1, N7 |
+| L4 | Folder deletes: coverage-while-parent-unreachable and release (2.5) | M | 2 | 3 | 4 | N3, L2 |
+| L5 | Batch path writes one entry per item; the 400 fallback keeps entries consistent | S-M | 1 | 2 | 3 | N2 |
+| L6 | Ambiguous 5xx maps to `ambiguous`, never `refused` (shares N2's mechanism) | S | 1 | 1 | 2 | N2 |
+
+Total ≈ **low 9, base 14, high 20 days**, gated by L1.
 
 ## 4. Risks and owner questions
 
 Risks:
 
-1. A ledger entry that never gets evidence hides a real restore. Mitigation: hard stop and the by-id check; never a silent open entry.
-2. The by-id check costs one call per open entry: a 10,000-file sweep is 10,000 calls on Internxt, which already rate-limits.
-   Mitigation: check only entries past deadline, use cheaper evidence first (folder-contents listing is one call per folder).
-3. Folder deletes on Internxt do not cascade, so a ledger keyed by folder confirms the folder only; children need their own
-   evidence or the dead-parent rule (L4).
-4. Version evidence is weak for deletes (D6): "same version" decided at check time cannot prove nothing changed in between.
-5. All Internxt numbers here are unmeasured; the whole Internxt half is sized on hypotheses H1-H4.
+1. A fast confirmation that retires protection while a slow feed still emits `EXISTS` re-admits the stale row the ledger exists to
+   suppress. Mitigation: 2.1.
+2. An entry that never gets evidence hides a real restore. Mitigation: the `unresolved` state and release rules of 2.6, and shadow
+   mode first (3.3).
+3. Provider ids are not generations (S3 key, id-less Dropbox tombstone). Mitigation: 2.2 and 2.4.
+4. The batch path is thinner than assumed: 150 concurrent single `rm` calls produced 21-26 `trash/add` calls per 30 deletes, and
+   20 of 150 calls were answered `daemon_not_answering` (nothing deleted) when ten ran at once. A drain that expects a 50-item batch
+   per call is not what a burst of single deletes produces.
+5. The `/files` feed behaviour, the headline lag, is only as measured in section 1 (decoded fields, one account, small fixtures).
 
 Owner questions (A/B):
 
-1. **Profile access for the measurement.** A: owner prepares a throwaway config dir with `19notte78-gmail-com-2` signed in, agent runs
-   the protocol against it. B: owner runs the harness himself and sends the CSV.
-2. **Schema.** A: side table without a bump, stamp at the first insert (recommended, review D7). B: bump the schema.
-3. **Case (d), restore.** A: owner restores through the web UI during the run. B: agent tries the move-out-of-trash call
-   (untested; may fail or move the wrong thing). C: skip (d).
-4. **Scope of the first release.** A: neutral half N1-N4 first (safety), Internxt half after the measurement. B: both together.
-5. **Unexpected-deletion guard (N8).** A: mark and show only. B: hold unexpected mass deletes before applying them locally,
-   reusing `bulk_reap_guard`'s second-listing rule (default off, as today).
-6. **State reset with open entries.** A: refuse with a reason. B: carry the table across the reset.
-7. **Failed delete.** A: report through the failed-operations list and leave the row hidden until the user decides.
-   B: un-hide after the hard stop.
-8. **#1011 queue.** A: build no queue before the live re-measure (the owner's earlier choice stands; the ledger records only,
-   it does not defer). B: let the ledger's entry double as the queue job later (one table), accepting the D1-D5 findings as
-   requirements for it.
+1. **Presence-aware capture and the missing cases.** A: schedule another run (one Hello prompt) with raw-field capture, cursor-listing
+   walks, a move control and a real UI restore performed by the owner. B: accept this report's coverage.
+2. **Downgrade.** A: raise the supported-reader stamp at the first *active* (non-shadow) entry (recommended). B: bump the schema.
+3. **Restore control.** A: owner restores one item in the provider's web UI during a run. B: skip; restore safety stays unvalidated and
+   no result may be used to justify automatic re-delete.
+4. **First release.** A: shadow mode (release A of 3.3). B: ship suppression with the first release.
+5. **Unexpected-delete hold (N10).** A: mark and show only. B: build the recoverable hold.
+6. **State reset with active entries.** A: refuse with a reason. B: carry the table across.
+7. **A failed or unresolved delete.** A: keep the item visible and surface it; the user decides. B: hide it until the user decides.
+8. **#1011 queue.** A: no queue; the ledger records only. B: let an entry double as a job later (accepting D1-D5 of that review as
+   requirements).
