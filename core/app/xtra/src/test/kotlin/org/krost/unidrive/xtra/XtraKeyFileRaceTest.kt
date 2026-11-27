@@ -10,6 +10,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * Review finding on the symmetric key chain: two initializations racing for one key file must not let the second
@@ -155,5 +156,39 @@ class XtraKeyFileRaceTest {
 
         assertEquals(8, done.size, "a forced import is serialized, not refused")
         assertEquals(keys.map(::text).toSet(), keptKeys(path), "every key is the live one or a retired copy; none is gone")
+    }
+
+    @Test
+    fun `concurrent age generates leave exactly one key`() {
+        val path: Path = TestScratch.directory("xtra-race-age").resolve("xtra-age.key")
+        val winners = race(4, { XtraAgeKeyStore(path).also { it.generate(pass.toCharArray()) } }) { _, key -> key }
+
+        assertEquals(1, winners.size, "exactly one generate may succeed; the others must refuse")
+        assertTrue(XtraAgeKeyStore(path).opens(pass.toCharArray()))
+    }
+
+    @Test
+    fun `concurrent Tink generates leave exactly one key`() {
+        val path: Path = TestScratch.directory("xtra-race-tink").resolve("xtra-tink.key")
+        val winners = race(4, { XtraTinkKeyStore(path).also { it.generate(pass.toCharArray()) } }) { _, key -> key }
+
+        assertEquals(1, winners.size, "exactly one generate may succeed; the others must refuse")
+        assertTrue(XtraTinkKeyStore(path).opens(pass.toCharArray()))
+    }
+
+    @Test
+    fun `concurrent forced age imports lose no identity, each retired one stays beside the live one`() {
+        val scratch = TestScratch.directory("xtra-race-force-age")
+        val path: Path = scratch.resolve("xtra-age.key")
+        val identities = (0 until 9).map { kage.crypto.x25519.X25519Identity.Companion.new().encodeToString() }
+        XtraAgeKeyStore(path).importIdentity(identities[0], pass.toCharArray()) // 0 is installed, 1..8 are imported over it
+
+        val done = importRace(8) { XtraAgeKeyStore(path).importIdentity(identities[it + 1], pass.toCharArray(), force = true) }
+
+        assertEquals(8, done.size, "a forced import is serialized, not refused")
+        val retired = Files.list(scratch).use { s -> s.filter { it.fileName.toString().startsWith("${path.fileName}.bak-") }.toList() }
+        val kept = (listOf(path) + retired).map { XtraAgeKeyStore(it).exportIdentity(pass.toCharArray()) }
+        assertEquals(9, kept.size, "one live identity and eight retired copies, none overwritten")
+        assertEquals(identities.toSet(), kept.toSet(), "every identity is the live one or a retired copy; none is gone")
     }
 }
