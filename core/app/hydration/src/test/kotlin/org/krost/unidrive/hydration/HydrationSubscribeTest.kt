@@ -50,7 +50,7 @@ class HydrationSubscribeTest {
         val noop = object : Hydration {
             override suspend fun openForRead(connectionId: String, handleId: String, path: String): OpenResult =
                 OpenResult.Failed(HydrationError.Generic("unused"))
-            override suspend fun openForWrite(connectionId: String, handleId: String, path: String, cachePath: java.nio.file.Path, baseEtag: String?): OpenResult =
+            override suspend fun openForWrite(connectionId: String, handleId: String, path: String, cachePath: java.nio.file.Path, baseEtag: String?, mtimeMillis: Long?): OpenResult =
                 OpenResult.Failed(HydrationError.Generic("unused"))
             override suspend fun closeHandle(connectionId: String, handleId: String) {}
             override suspend fun cancelUpload(path: String): Boolean = false

@@ -339,7 +339,7 @@ class HydrationUploadProgressAndCancelTest {
     private class NoopHydration : Hydration {
         override suspend fun openForRead(connectionId: String, handleId: String, path: String): OpenResult =
             OpenResult.Failed(HydrationError.UnknownPath)
-        override suspend fun openForWrite(connectionId: String, handleId: String, path: String, cachePath: java.nio.file.Path, baseEtag: String?): OpenResult =
+        override suspend fun openForWrite(connectionId: String, handleId: String, path: String, cachePath: java.nio.file.Path, baseEtag: String?, mtimeMillis: Long?): OpenResult =
             OpenResult.Failed(HydrationError.UnknownPath)
         override suspend fun closeHandle(connectionId: String, handleId: String) {}
         override suspend fun cancelUpload(path: String): Boolean = false

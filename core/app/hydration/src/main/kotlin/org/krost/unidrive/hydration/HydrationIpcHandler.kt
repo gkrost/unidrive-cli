@@ -34,7 +34,7 @@ import java.util.concurrent.atomic.AtomicLong
  *   open_read   reply err:{"ok":false,"error":"<message>"}
  *                         an excluded cloud item answers with the `excluded` token without a download,
  *                         even if a warm cache copy exists.
- *   open_write  request:  {"verb":"hydration.open_write"[,"handle_id":"..."],"path":"/foo","cache_path":"/home/.../foo.txt"[,"base_etag":"..."]}
+ *   open_write  request:  {"verb":"hydration.open_write"[,"handle_id":"..."],"path":"/foo","cache_path":"/home/.../foo.txt"[,"base_etag":"..."][,"mtime_ms":N]}
  *               handle_id absent: the daemon issues the id and the reply adds ,"handle_id":"dh-<run>-<n>".
  *               A retry of that open on the same connection, for the same path, still without handle_id, while that
  *               reply has not been returned, is the same open: the same id, no second registration.
@@ -499,6 +499,12 @@ class HydrationIpcHandler(
                 // base_etag is OPTIONAL: absent (or a row with no recorded token) →
                 // unconditional upload, byte-identical to the pre-guard contract.
                 val baseEtag = request.string("base_etag")
+                // mtime_ms is OPTIONAL: the client's modification time for the file (a copy tool's utimens,
+                // handed over with the write). The engine re-stamps the cache copy with it before the upload is
+                // queued, so the row and the provider's own time field carry the client's time. Absent keeps the
+                // copy's own mtime as the carrier; present but not a whole number (sign included) is refused.
+                val mtimeMillis = request.signedWholeNumber("mtime_ms")
+                if (request.has("mtime_ms") && mtimeMillis == null) return reply(ok = false, error = "invalid_mtime_ms")
                 val unansweredKey = "$connectionId\u0000$path"
                 if (clientHandleId == null) {
                     val pending = unansweredOpenWrite[unansweredKey]
@@ -512,7 +518,7 @@ class HydrationIpcHandler(
                 if (clientHandleId == null) unansweredOpenWrite[unansweredKey] = handleId
                 try {
                     val r = claimed(rawPath(request, "path"), { it is OpenResult.Failed }) {
-                        hydration.openForWrite(connectionId, handleId, path, cachePath, baseEtag)
+                        hydration.openForWrite(connectionId, handleId, path, cachePath, baseEtag, mtimeMillis)
                     } ?: return nfcWins.clashReply(rawPath(request, "path"))
                     when (r) {
                         is OpenResult.Ok -> openOkReply(r, issuedHandleId = handleId.takeIf { clientHandleId == null })

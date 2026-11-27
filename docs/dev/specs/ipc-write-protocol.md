@@ -130,7 +130,7 @@ the scope are refused (§7).
 ```
 1. hydration.create  {path}                     -> {"ok":true,"cache_path":<local>,"handle_id":<daemon id>}
 2. write the user's bytes into <cache_path>     (local file I/O, no daemon involvement)
-3. hydration.open_write {path, cache_path}
+3. hydration.open_write {path, cache_path[, mtime_ms]}
                                                 -> {"ok":true,"cache_path":...,"handle_id":<daemon id>}
 4. await completed (direction=upload) for that handle_id
 ```
@@ -144,6 +144,23 @@ the scope are refused (§7).
   fires for downloads too and, for uploads, only says the daemon finished
   the transfer, which (for providers without atomic replace) is still the
   completion event's job to correlate.
+- **The modification time.** A copy tool sets the file's time after closing
+  it (`cp -p`, rsync -t, Explorer, `shutil.copy2`), so the stamp races the
+  upload step 3 queues. The cache copy's mtime is the only carrier the
+  engine has — the row's watermark and the provider's own time field (S3
+  `x-amz-meta-mtime`, OneDrive `fileSystemInfo`, Dropbox `client_modified`,
+  Internxt `modificationTime`) are read from it at transfer time. A client
+  that saw a set time it cannot guarantee is on the cache copy before it
+  hands the write over SHOULD send it as `mtime_ms` (epoch milliseconds):
+  the engine re-stamps the cache copy with it before the upload is queued,
+  so the row and the provider's field carry the client's time whatever the
+  copy's own stamp raced. Absent `mtime_ms` the copy's own mtime stays the
+  carrier. A `mtime_ms` that is present but not a whole number (sign
+  included; a time before the epoch is a legal one) is refused with
+  `{"ok":false,"error":"invalid_mtime_ms"}` before anything is queued.
+  This field rides a write only; a time-only change on a file that is
+  already in sync has no verb here (a client waits for the next write or a
+  later contract to carry it).
 
 ### 3.2 Overwrite (save of an existing file)
 

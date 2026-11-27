@@ -57,6 +57,7 @@ import java.nio.file.Files
 import java.nio.file.InvalidPathException
 import java.nio.file.NoSuchFileException
 import java.nio.file.Path
+import java.nio.file.attribute.FileTime
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
@@ -735,8 +736,11 @@ class HydrationImpl(
         path: String,
         cachePath: Path,
         baseEtag: String?,
+        mtimeMillis: Long?,
     ): OpenResult =
-        handles.admit(connectionId, handleId, { OpenResult.Failed(it) }) { openForWriteAdmitted(connectionId, handleId, path, cachePath, baseEtag) }
+        handles.admit(connectionId, handleId, { OpenResult.Failed(it) }) {
+            openForWriteAdmitted(connectionId, handleId, path, cachePath, baseEtag, mtimeMillis)
+        }
 
     private suspend fun openForWriteAdmitted(
         connectionId: String,
@@ -744,6 +748,7 @@ class HydrationImpl(
         path: String,
         cachePath: Path,
         baseEtag: String?,
+        mtimeMillis: Long?,
     ): OpenResult {
         if (!resolvesInsideCache(path)) return OpenResult.Failed(HydrationError.InvalidPath)
         if (renames.blocks(path)) return OpenResult.Failed(HydrationError.Generic(BUSY_TOKEN)) // archive#1040 M4, see openForReadAt
@@ -762,6 +767,23 @@ class HydrationImpl(
                 CachePaths.forLog(cachePath.toString()),
             )
             return OpenResult.Failed(HydrationError.InvalidPath)
+        }
+        // The client's set time rides the write (a copy tool's utimens the mount saw): the cache copy's mtime is
+        // the only carrier the engine has — the row's watermark and every provider's own time field are read from
+        // it at transfer time — so the copy is re-stamped now, before any upload is queued, and the client's time
+        // reaches them whatever the copy's own stamp raced. Best-effort: a filesystem that refuses the stamp keeps
+        // the copy's own mtime as the carrier.
+        if (mtimeMillis != null) {
+            try {
+                Files.setLastModifiedTime(cachePath, FileTime.fromMillis(mtimeMillis))
+            } catch (e: Exception) {
+                log.warn(
+                    "open_write of '{}' could not carry the client's set time ({} ms) on its cache copy: {}",
+                    CachePaths.forLog(path),
+                    mtimeMillis,
+                    e.message,
+                )
+            }
         }
         touch(path)
         exhaustedRounds.remove(path) // gkrost/unidrive-cli#70: new bytes from the client get the full rounds again

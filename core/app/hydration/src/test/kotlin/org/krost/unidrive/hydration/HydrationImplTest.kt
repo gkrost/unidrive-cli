@@ -99,6 +99,14 @@ internal class MinimalFakeProvider(
     // Records content uploaded via uploadFromCache for assertion in write tests.
     private val uploadedFiles: MutableMap<String, ByteArray> = mutableMapOf()
 
+    // The cache copy's mtime each upload saw at transfer time, by remote path (what the provider's write field is built from).
+    val uploadMtimes = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    // When set, the upload answers the copy's mtime as the item's cloud time — what a provider with a time field
+    // (x-amz-meta-mtime, fileSystemInfo, client_modified, modificationTime) reports back and a listing then shows.
+    // Off by default: the fake answers a fixed upload time, which a hashless provider without a field does.
+    @Volatile var answerModifiedFromCopyMtime = false
+
     // Throw-injection for testing error paths
     private var nextThrowable: Throwable? = null
 
@@ -424,7 +432,12 @@ internal class MinimalFakeProvider(
             progressBeforeGate?.let { (done, total) -> onProgress?.invoke(done, total) }
             stallGates[remotePath]?.let { holdForStallWatchdog(it, onProgress) }
             uploadGate?.await()
-            val bytes = Files.readAllBytes(localPath)
+        val bytes = Files.readAllBytes(localPath)
+        // What a real provider reads at transfer time: the cache copy's modification time is the only carrier of
+        // the client's set time into the provider's own write field (x-amz-meta-mtime, fileSystemInfo,
+        // client_modified, modificationTime).
+        val copyMtime = Files.getLastModifiedTime(localPath).toMillis()
+        uploadMtimes[remotePath] = copyMtime
             if (keepBothNextUpload) {
                 keepBothNextUpload = false
                 val copy = remotePath.substringBeforeLast('.') + " 1." + remotePath.substringAfterLast('.')
@@ -459,7 +472,7 @@ internal class MinimalFakeProvider(
                 path = remotePath,
                 size = bytes.size.toLong(),
                 isFolder = false,
-                modified = java.time.Instant.now(),
+                modified = if (answerModifiedFromCopyMtime) java.time.Instant.ofEpochMilli(copyMtime) else java.time.Instant.now(),
                 created = null,
                 hash = bytes.size.toString(),
                 mimeType = null,
