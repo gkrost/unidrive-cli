@@ -231,15 +231,40 @@ jobs:
         run: ./gradlew check --no-daemon
 
       # gkrost/unidrive-cli#534: the size baseline only goes down. `check` runs the ratchet without a base; this run compares
-      # the pull request's baseline with the base branch's, so a raised or added entry fails here.
+      # the pull request's baseline with the base branch's, so a raised or added entry fails here. The baseline-raise
+      # label marks a deliberate raise: the ratchet in `check` sizes the pull request against its own (raised) baseline,
+      # and the two base-branch comparisons below are skipped for it.
       - name: Size ratchet against the base branch
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'baseline-raise')
         working-directory: core
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
           git fetch --no-tags --depth=1 origin "$BASE_REF"
           ./gradlew sizeRatchet -PsizeRatchetBase=FETCH_HEAD --no-daemon
+
+      # gkrost/unidrive-cli#997: the task reads config/size-ratchet/baseline.txt from the working tree, so the run above
+      # still sizes the pull request's sources against the branch's OWN baseline: a branch that carries an older, higher
+      # entry passes its check, and main turns red after the merge. This run repeats the ratchet against the base
+      # branch's baseline.txt, so a file over the base's cap fails here. A push to main or a manual run skips both steps:
+      # the merge result is what `check` sizes, as before.
+      - name: Size ratchet against the base branch's baseline
+        if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'baseline-raise')
+        working-directory: core
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          if ! git show "FETCH_HEAD:core/config/size-ratchet/baseline.txt" > "$RUNNER_TEMP/baseline-base.txt"; then
+            echo "::warning title=No baseline at the base branch::The base branch carries no core/config/size-ratchet/baseline.txt; sized against the branch's own baseline."
+            exit 0
+          fi
+          cp config/size-ratchet/baseline.txt "$RUNNER_TEMP/baseline-branch.txt"
+          cp "$RUNNER_TEMP/baseline-base.txt" config/size-ratchet/baseline.txt
+          status=0
+          ./gradlew sizeRatchet --no-daemon || status=$?
+          cp "$RUNNER_TEMP/baseline-branch.txt" config/size-ratchet/baseline.txt
+          exit $status
 
       # gkrost/unidrive-cli#419: a stable test that fails here left only its console line; the stack went to the
       # report, which nothing uploaded. Uploaded on failure only.
