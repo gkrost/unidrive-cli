@@ -1118,8 +1118,7 @@ class StateDatabase(
                     }
                 }
             }
-            // A cloud id equal to a pending row's minted key would replace that row (path, marks, cache bytes): refuse.
-            if (ownPending && entry.remoteId != null) return@batch log.errorKeyCollision(entry.path, storedId)
+            if (upsertRefused(entry, storedId, ownPending, evictedIds)) return@batch
             if (evictedIds.isNotEmpty()) {
                 conn
                     .prepareStatement(
@@ -1217,6 +1216,47 @@ class StateDatabase(
                 if (rs.next()) return rs.getString(1)
             }
         return "${PendingUploadKeys.PREFIX}${UUID.randomUUID()}"
+    }
+
+    /**
+     * The upserts [upsertEntry] refuses, each with its line in the log:
+     * - gkrost/unidrive-cli#845: a cloud id equal to a pending row's minted key would replace that row (path, marks,
+     *   cache bytes).
+     * - gkrost/unidrive-cli#1000: a pending copy that would evict a cloud row carrying the same local bytes was read
+     *   before that row's upload completed. Writing it would make the file never-uploaded again and drop the cloud id.
+     */
+    private fun upsertRefused(
+        entry: SyncEntry,
+        storedId: String,
+        ownPending: Boolean,
+        evictedIds: Map<String, Boolean>,
+    ): Boolean {
+        if (ownPending && entry.remoteId != null) {
+            log.errorKeyCollision(entry.path, storedId)
+            return true
+        }
+        if (entry.remoteId != null || evictedIds.values.none { !it } || !completedRowHoldsTheBytes(entry)) return false
+        log.warnStalePendingCopy(entry.path)
+        return true
+    }
+
+    /**
+     * gkrost/unidrive-cli#1000: whether the alive cloud row at [entry]'s path (one that is no pending upload) keeps the
+     * same local stamp as the pending [entry]. A row is queued as pending only when its stamp differs from the row's, so
+     * an equal stamp means the entry is a copy of the row read before its upload completed, not new bytes.
+     */
+    private fun completedRowHoldsTheBytes(entry: SyncEntry): Boolean {
+        val mtime = entry.localMtime ?: return false
+        val size = entry.localSize ?: return false
+        return conn
+            .prepareStatement(
+                "SELECT 1 FROM sync_entries WHERE path=? AND status='EXISTS' AND pending_upload=0 AND local_mtime=? AND local_size=? LIMIT 1",
+            ).use { stmt ->
+                stmt.setString(1, PathNormalizer.nfc(entry.path))
+                stmt.setLong(2, mtime)
+                stmt.setLong(3, size)
+                stmt.executeQuery().use { rs -> rs.next() }
+            }
     }
 
     /** For upsertEntry's collision DELETE step — get the storage-layer key without minting one. */
