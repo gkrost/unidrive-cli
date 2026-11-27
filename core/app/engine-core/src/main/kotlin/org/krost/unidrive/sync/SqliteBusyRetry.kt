@@ -40,9 +40,11 @@ internal fun <T> retryOnSqliteBusy(
             return action()
         } catch (e: SQLException) {
             val first = firstFailure
+            val busy = SqliteConnections.isBusy(e)
+            if (!busy && first != null) e.addSuppressed(first) // the real error keeps the busy attempts before it
+            if (!busy) throw e
             if (first == null) firstFailure = e else first.addSuppressed(e)
             attemptsLeft -= 1
-            if (!SqliteConnections.isBusy(e)) throw e
             if (attemptsLeft == 0) throw (firstFailure ?: e)
             sleeper(SQLITE_BUSY_BACKOFF_MS)
         }

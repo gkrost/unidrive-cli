@@ -50,6 +50,24 @@ class SqliteBusyRetryTest {
     }
 
     @Test
+    fun `a non-busy failure after busy ones propagates with the busy ones attached`() {
+        var attempts = 0
+
+        val failure =
+            assertFailsWith<NotBusy> {
+                retryOnSqliteBusy(sleeper = {}) {
+                    attempts += 1
+                    if (attempts < 3) throw Busy() else throw NotBusy()
+                }
+            }
+
+        assertEquals(3, attempts)
+        val first = failure.suppressed.single()
+        assertTrue(first is Busy, "the first busy failure must be attached to the real error")
+        assertEquals(1, first.suppressed.size, "the later busy failure must stay attached to the first")
+    }
+
+    @Test
     fun `a busy failure that never clears fails on the last attempt with the earlier ones attached`() {
         var attempts = 0
         val backoffs = mutableListOf<Long>()
