@@ -95,4 +95,25 @@ class VaultDecryptOrphanTest {
         assertEquals(setOf("gone"), vault.read(pass.toCharArray()).keys)
         assertEquals(1, warnings.size)
     }
+
+    // #1038: decrypt reads the vault under the config lock, so an entry written while it waited for the lock is kept.
+    @Test
+    fun `an entry written while decrypt waits for the config lock stays in the vault`() {
+        config("keep")
+        vault.write(pass.toCharArray(), mapOf("keep" to mapOf("password" to "keep-secret")))
+        var failure: Throwable? = null
+        val decrypting = Thread { runCatching { decrypt() }.onFailure { failure = it } }
+
+        ConfigFileTransaction.withLock(dir.resolve("config.toml")) {
+            decrypting.start()
+            val deadline = System.nanoTime() + 10_000_000_000L
+            while (decrypting.state != Thread.State.BLOCKED && System.nanoTime() < deadline) Thread.sleep(5)
+            assertEquals(Thread.State.BLOCKED, decrypting.state, "decrypt never waited for the config lock")
+            vault.write(pass.toCharArray(), vault.read(pass.toCharArray()) + ("gone" to mapOf("password" to "old-secret")))
+        }
+        decrypting.join(10_000)
+
+        assertEquals(null, failure)
+        assertEquals(mapOf("gone" to mapOf("password" to "old-secret")), vault.read(pass.toCharArray()))
+    }
 }

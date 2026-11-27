@@ -264,18 +264,3 @@ class VaultLifecycleJsonTest {
         assertEquals(mapOf("k" to "v"), vault.read("new-pass-4567".toCharArray())["written-meanwhile"])
     }
 }
-
-/** Standard input that runs [beforeSecondLine] once, when the first byte past the first line is read. */
-internal class WriteBeforeSecondLine(
-    text: String,
-    private val beforeSecondLine: () -> Unit,
-) : InputStream() {
-    private val bytes = text.toByteArray(Charsets.UTF_8)
-    private val firstLineEnd = bytes.indexOf('\n'.code.toByte()) + 1
-    private var pos = 0
-
-    override fun read(): Int {
-        if (pos == firstLineEnd) beforeSecondLine()
-        return if (pos < bytes.size) bytes[pos++].toInt() and 0xff else -1
-    }
-}

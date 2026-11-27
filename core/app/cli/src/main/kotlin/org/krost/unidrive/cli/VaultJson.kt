@@ -171,6 +171,7 @@ internal fun vaultChangePassphraseJson(
         var newPass: CharArray? = null
         try {
             // #1038: both secrets first, then read and write under the config lock, so no other vault writer's entry is lost.
+            // fresh is a val the lock's lambda can capture; newPass is the same array, kept for the finally to zero.
             val fresh = requireStdinSecret("--new-passphrase-stdin")
             newPass = fresh
             requireLongEnough(fresh)
