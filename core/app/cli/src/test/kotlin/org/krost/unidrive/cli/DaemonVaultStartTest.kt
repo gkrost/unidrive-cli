@@ -7,10 +7,12 @@ import kotlinx.serialization.json.JsonPrimitive
 import org.krost.unidrive.sync.Vault
 import java.nio.file.Files
 import java.nio.file.Path
+import java.security.GeneralSecurityException
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
@@ -53,5 +55,20 @@ class DaemonVaultStartTest {
         val main = main()
         assertIs<VaultUnlockOutcome.Failed>(main.rewriteDaemonVault(pass.toCharArray()) { it })
         assertFalse(main.vaultPassphraseMatches(pass.toCharArray()))
+    }
+
+    // Only the truncated read is a failed read: an IllegalStateException of the change itself is not swallowed as one.
+    @Test
+    fun `a rewrite whose change throws IllegalStateException passes it on`() {
+        Vault(dir.resolve("vault.enc")).init(pass.toCharArray())
+        val thrown = assertFailsWith<IllegalStateException> { main().rewriteDaemonVault(pass.toCharArray()) { error("change refused") } }
+        assertEquals("change refused", thrown.message)
+    }
+
+    // The daemon start (readVaultForDaemon, which exits the process) relies on this conversion for its decryption-failed line.
+    @Test
+    fun `the truncated read is a GeneralSecurityException naming the cause`() {
+        val thrown = assertFailsWith<GeneralSecurityException> { Vault(dir.resolve("vault.enc")).readTruncatedAsFailed(pass.toCharArray()) }
+        assertIs<IllegalStateException>(thrown.cause)
     }
 }
