@@ -18,11 +18,18 @@ internal object StoragePermissions {
     private val log = LoggerFactory.getLogger(StoragePermissions::class.java)
 
     /**
-     * The credential files a profile folder can hold (the ones `logout` removes). archive#1054 S5: `pending_dropbox_flow.json`
+     * The credential files a profile folder can hold (`logout` removes them except the account name, which follows the state: [SIGN_OUT_FILES]). archive#1054 S5: `pending_dropbox_flow.json`
      * holds the PKCE verifier of a sign-in that has begun, so a sign-out removes it and the start tightens it, like the
      * OneDrive `device-flow.json` (the name is `DropboxProviderFactory.PENDING_FLOW_FILE`, pinned by a test in the Dropbox module).
      */
     val CREDENTIAL_FILES = listOf("token.json", "credentials.json", "device-flow.json", "pending_dropbox_flow.json", AccountName.FILE_NAME)
+
+    /**
+     * What a sign-out deletes: the credential files without the account name. The name says whose account the kept sync
+     * state describes, so the next sign-in is compared with it and its email is pre-filled; it goes with the state
+     * (`--delete-state`, [STATE_FILES]) or with the profile, never with the credentials.
+     */
+    val SIGN_OUT_FILES = CREDENTIAL_FILES.filter { it != AccountName.FILE_NAME }
 
     /**
      * The credential files of [profileDir] first, then the folder itself (it also holds state.db and

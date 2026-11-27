@@ -1104,6 +1104,39 @@ class ProfileRemoveTest {
     private fun defaultProfile() = SyncConfig.parseRaw(Files.readString(configFile)).general.default_profile
 
     @Test
+    fun `profile remove --keep-data does not report a kept account name as credentials`() {
+        populate()
+        Files.delete(goneDir.resolve("credentials.json")) // a profile signed out with its state kept
+        org.krost.unidrive.AccountName.write(goneDir, "ada@example.test")
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--json", "--keep-data"), stderr())
+
+        assertFalse(json().getValue("kept").jsonObject.getValue("credentials").jsonPrimitive.boolean)
+        assertEquals("ada@example.test", org.krost.unidrive.AccountName.read(goneDir), "the name stays with the kept state")
+    }
+
+    @Test
+    fun `profile remove does not report a kept account name as removed credentials`() {
+        populate()
+        Files.delete(goneDir.resolve("credentials.json"))
+        org.krost.unidrive.AccountName.write(goneDir, "ada@example.test")
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--json"), stderr())
+
+        assertFalse(json().getValue("removed").jsonObject.getValue("credentials").jsonPrimitive.boolean)
+    }
+
+    @Test
+    fun `profile remove deletes the stored account name with the profile`() {
+        populate()
+        org.krost.unidrive.AccountName.write(goneDir, "ada@example.test")
+
+        assertEquals(0, run("profile", "remove", "gone", "--yes", "--json"), stderr())
+
+        assertFalse(Files.exists(goneDir.resolve(org.krost.unidrive.AccountName.FILE_NAME)), "the name goes with the profile")
+    }
+
+    @Test
     fun `profile remove deletes the profile's hydration and ignore-rules caches`() {
         populate()
         populateCaches()

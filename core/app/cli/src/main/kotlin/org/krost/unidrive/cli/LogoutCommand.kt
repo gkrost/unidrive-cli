@@ -9,6 +9,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import org.krost.unidrive.AccountName
 import org.krost.unidrive.AccountOwner
 import org.krost.unidrive.UnprovenAccountId
 import org.krost.unidrive.AuthenticationException
@@ -55,7 +56,7 @@ class LogoutCommand : Callable<Int> {
 
     @Option(
         names = ["--delete-state"],
-        description = ["Delete state.db, scan-staging.db, failures.jsonl and the stored user of the state (account_id); refused while the profile's daemon runs"],
+        description = ["Delete state.db, scan-staging.db, failures.jsonl and the stored user and name of the state (account_id, account_name); refused while the profile's daemon runs"],
     )
     var deleteState: Boolean = false
 
@@ -196,7 +197,7 @@ internal suspend fun signOutProvider(provider: CloudProvider): Revocation {
 }
 
 internal fun deleteCredentialFiles(profileDir: Path): List<String> =
-    StoragePermissions.CREDENTIAL_FILES.mapNotNull { name ->
+    StoragePermissions.SIGN_OUT_FILES.mapNotNull { name ->
         val file = profileDir.resolve(name)
         if (Files.deleteIfExists(file)) file.toString() else null
     }
@@ -211,13 +212,15 @@ internal fun deleteStateFiles(profileDir: Path): List<String> =
 
 // Staging names first, then state.db. A checkpoint left after state.db is gone is resumed, because getActiveScan
 // has no last_full_scan left to invalidate it. The root-seen marker and the database's other files are state too.
-// The stored user (AccountOwner) says whose drive the state describes: it is deleted with the state, never with the
-// credentials, so a sign-in after a plain sign-out is still compared with it.
+// The stored user (AccountOwner) and the account name (AccountName) say whose drive the state describes: they are
+// deleted with the state, never with the credentials, so a sign-in after a plain sign-out is still compared with
+// them and its email is pre-filled.
 internal val STATE_FILES =
     StateDatabase.stagingFileNames() +
         listOf("state.db", "failures.jsonl", LocalFsProviderFactory.ROOT_SEEN_MARKER) +
         StateDatabase.sidecarNames() +
         AccountOwner.FILE_NAME +
+        AccountName.FILE_NAME +
         UnprovenAccountId.FILE_NAME
 
 @Suppress("TooGenericExceptionCaught")
@@ -407,6 +410,7 @@ private fun logoutStoppedProfile(
         removed += deleteStateFiles(target.profileDir)
         stateKept = false
     }
+    logSignOut("logout", target.name, target.profileDir, stateKept, "cli")
     val json =
         buildJsonObject {
             put("ok", true)
@@ -493,3 +497,21 @@ internal fun presenceRefusal(
 /** A JSON boolean member, or null when it is absent or not a boolean literal. */
 private fun JsonObject.optBoolean(key: String): Boolean? =
     (this[key] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toBooleanStrictOrNull()
+
+private val signOutLog = org.slf4j.LoggerFactory.getLogger("org.krost.unidrive.cli.SignOut")
+
+/**
+ * The one INFO line of a successful sign-out: what ran, for which profile, whether the state and the account name are
+ * still there afterwards (read from [profileDir], not assumed), and whether the daemon or the CLI did it. No secrets.
+ * The profile name is logged, as in every line's MDC.
+ */
+internal fun logSignOut(
+    verb: String,
+    profile: String,
+    profileDir: Path,
+    stateKept: Boolean,
+    via: String,
+) {
+    val nameKept = Files.exists(profileDir.resolve(AccountName.FILE_NAME))
+    signOutLog.info("sign-out: verb={} profile={} state_kept={} account_name_kept={} via={}", verb, profile, stateKept, nameKept, via)
+}

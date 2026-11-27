@@ -163,17 +163,19 @@ class StoragePermissionsTest {
     }
 
     @Test
-    fun `the stored account name is a credential file, so a sign-out removes it and the start tightens it`() {
+    fun `the stored account name is tightened with the credentials but a sign-out keeps it`() {
         assertTrue(org.krost.unidrive.AccountName.FILE_NAME in StoragePermissions.CREDENTIAL_FILES, "${StoragePermissions.CREDENTIAL_FILES}")
         val profileDir = Files.createDirectory(root.resolve("named-profile"))
         org.krost.unidrive.AccountName.write(profileDir, "Ada Lovelace")
+        val token = Files.writeString(profileDir.resolve("token.json"), "{}")
         val keep = Files.writeString(profileDir.resolve("state.db"), "keep")
 
         val removed = deleteCredentialFiles(profileDir)
 
-        assertEquals(listOf(profileDir.resolve("account_name").toString()), removed)
-        assertEquals(null, org.krost.unidrive.AccountName.read(profileDir))
+        assertEquals(listOf(token.toString()), removed)
+        assertEquals("Ada Lovelace", org.krost.unidrive.AccountName.read(profileDir))
         assertTrue(Files.exists(keep))
+        assertTrue(org.krost.unidrive.AccountName.FILE_NAME in STATE_FILES, "the name goes with the state, never with the credentials")
     }
 
     // issue#786: config.toml holds the providers' secret fields, so the config folder and the file itself

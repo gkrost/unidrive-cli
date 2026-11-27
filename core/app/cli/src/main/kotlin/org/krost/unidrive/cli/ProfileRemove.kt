@@ -297,7 +297,7 @@ internal object ProfileRemover {
                 tokensRemoved = removeIpcTokens(profileDir, warnings)
                 socketRemoved = removeSocket(socket, warnings)
 
-                val present = StoragePermissions.CREDENTIAL_FILES.filter { Files.exists(profileDir.resolve(it), LinkOption.NOFOLLOW_LINKS) }
+                val present = StoragePermissions.SIGN_OUT_FILES.filter { Files.exists(profileDir.resolve(it), LinkOption.NOFOLLOW_LINKS) }
                 if (keepData) {
                     credentialsKept = present.isNotEmpty()
                 } else {
