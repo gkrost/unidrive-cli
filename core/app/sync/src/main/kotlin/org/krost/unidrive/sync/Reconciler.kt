@@ -625,9 +625,9 @@ class Reconciler(
     /**
      * gkrost/unidrive-cli#845: a streamed slice's download is dispatched before the scan ends, so the rename of a tracked
      * item must turn into a move here, not at scan-end ([finalizeStreaming]): by then the bytes are fetched anew at the new
-     * path, the old path's file has no row, and the next pass uploads it as a new file. Only a rename that leaves the bytes
-     * as they are is taken here (one batched read for the slice's downloads and placeholders); a rename with an edit
-     * still streams its download and is paired at scan-end, as before.
+     * path, the old path's file has no row, and the next pass uploads it as a new file. The pairing is by remote id (one
+     * batched read for the slice's downloads and placeholders), so a rename with an edit is a move too; its download
+     * waits for the move ([streamableNow]).
      */
     private fun detectSliceRenames(
         actions: MutableList<SyncAction>,
@@ -646,7 +646,7 @@ class Reconciler(
             if (item != null && item.id.isNotEmpty()) planned[item.id] = item
         }
         if (planned.isEmpty()) return
-        val entries = db.getEntriesByRemoteIds(planned.keys).filter { (id, entry) -> !renamedContentChanged(planned.getValue(id), entry) }
+        val entries = db.getEntriesByRemoteIds(planned.keys)
         if (entries.isEmpty()) return
         val remoteChanges = if (alias.isEmpty) pageRemoteLocal else pageRemoteLocal.entries.associate { (k, v) -> alias.localToRemote(k) to v }
         detectRemoteRenames(actions, remoteChanges, entries, localChanges, alias)
@@ -692,7 +692,7 @@ class Reconciler(
         // fullLocal is real-local-keyed; the remote keys are reverse-mapped like reconcile does.
         val fullRemoteLocal =
             if (alias.isEmpty) fullRemote else fullRemote.entries.associate { (k, v) -> alias.remoteToLocal(k) to v }
-        val actions = (streamedActions + resolveLocalOnly(alias, fullRemoteLocal.keys, fullLocal, syncPaths, downloadOnly)).toMutableList()
+        val actions = asBufferedPlan(streamedActions + resolveLocalOnly(alias, fullRemoteLocal.keys + movedAwayWithLocalEdit(streamedActions, fullLocal, entryByRemoteId, ::renamedContentChanged), fullLocal, syncPaths, downloadOnly))
         val coveredPaths = actions.mapTo(mutableSetOf()) { it.path }
 
         // Case-collision detection on new local files — see [reconcile] for rationale.
@@ -1636,6 +1636,7 @@ class Reconciler(
         val replacedCandidates = identitySet<SyncAction>()
         val carried = CarriedRenameChildren() // #743 finding 7: below the renamed folders' old paths, one pass
         val movedFromPaths = HashSet<String>()
+        val plannedMoves = actions.mapNotNullTo(HashSet()) { (it as? SyncAction.MoveLocal)?.let { m -> m.fromPath to m.path } }
         for (candidate in candidates) {
             // The remote delta key is canonical; the candidate path is real-local.
             val canonicalPath = if (alias.isEmpty) candidate.path else alias.localToRemote(candidate.path)
@@ -1649,6 +1650,7 @@ class Reconciler(
             // path) its row moves to the decorated name, which is a local rename.
             val becameTwin = oldEntry.path != candidate.path && DuplicateNames.keyOf(canonicalPath, remoteItem.path) != null
             if (oldEffectiveRemote == remoteItem.path && !becameTwin) continue
+            if ((oldEntry.path to candidate.path) in plannedMoves && renamedContentChanged(remoteItem, oldEntry)) continue
 
             replacedCandidates.add(candidate)
             // The old path's remote id is the item that now lives at the new path. A DeleteRemote of the old

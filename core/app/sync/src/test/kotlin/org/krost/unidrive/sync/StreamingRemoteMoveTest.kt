@@ -39,7 +39,7 @@ class StreamingRemoteMoveTest {
         provider.deltaPages = listOf(listOf(item("X", "/q")) to "c2")
         engine().syncOnce()
         engine().syncOnce()
-        val files = Files.walk(syncRoot).use { w -> w.filter { Files.isRegularFile(it) }.map { it.toString().removePrefix(syncRoot.toString()) }.toList() }
+        val files = Files.walk(syncRoot).use { w -> w.filter { Files.isRegularFile(it) }.map { it.toString().removePrefix(syncRoot.toString()).replace('\\', '/') }.toList() }
         return Outcome(db.getAllEntries().map { it.path }.sorted(), files.sorted(), provider.uploadedPaths.toList())
     }
 
