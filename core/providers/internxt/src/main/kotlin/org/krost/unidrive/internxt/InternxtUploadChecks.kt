@@ -56,22 +56,32 @@ internal fun encryptToStaging(
 internal fun isParentFolderNotFound(e: InternxtApiException): Boolean =
     e.statusCode == 404 && e.message.orEmpty().contains("Folder not found")
 
-// The parent of [remotePath] is gone (see [isParentFolderNotFound]): its cached uuid is dropped, so the caller's remake of
-// the parent and the next upload walk the listing again, and the failure is the typed parent-gone refusal.
-internal fun parentGoneAfterCreate(
+// The create answered "Folder not found" for the parent of [remotePath] (see [isParentFolderNotFound]); its cached uuid is dropped.
+// gkrost/unidrive-cli#961: a stale cached uuid gives the same answer for a folder that is live, so the refusal is final only
+// after a second look through the complete listings ([lookAfresh], without the cache) does not find the folder either. A live
+// folder (its fresh uuid is cached by the look) leaves the attempt failing with [e], retryable, so the ladder or a round
+// offers the upload again. A look that fails propagates with its own type: it proves nothing.
+internal suspend fun refuseOrRetryAfterParentNotFound(
     e: InternxtApiException,
     remotePath: String,
     folderCache: FolderUuidCache,
     rootUuid: String,
-): org.krost.unidrive.ParentGoneException {
+    lookAfresh: suspend (String) -> String,
+): Nothing {
     val parentSegments = InternxtProvider.pathSegments(remotePath).dropLast(1)
+    val parentPath = "/" + parentSegments.joinToString("/")
     folderCache.invalidatePath(rootUuid, parentSegments)
-    return org.krost.unidrive.ParentGoneException(
-        "parent folder of $remotePath is gone in the cloud: ${e.message}",
-        parent = "/" + parentSegments.joinToString("/"),
-        cause = e,
-        requestId = e.requestId,
-    )
+    try {
+        lookAfresh(parentPath)
+    } catch (gone: FolderNotFoundException) {
+        throw org.krost.unidrive.ParentGoneException(
+            "parent folder of $remotePath is gone in the cloud: ${e.message}",
+            parent = parentPath,
+            cause = gone,
+            requestId = e.requestId,
+        )
+    }
+    throw e
 }
 
 // gkrost/unidrive-cli#793: the answers to a file create that leave its outcome unknown (the write ladder does not repeat them).

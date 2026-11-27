@@ -15,6 +15,9 @@ import kotlin.test.assertFailsWith
  * cached uuid, and the file create answered 404 {"message":"Folder not found"}. That answer is the parent gone: it is a
  * [ParentGoneException] for the parent, and the cached uuid is dropped, so the caller's remake of the parent and the next
  * upload resolve the folder afresh instead of reaching the trashed one again.
+ *
+ * gkrost/unidrive-cli#961: the answer is the parent gone only after a second look through the complete listings, taken
+ * without the cache, does not find the folder either; a stale cached uuid for a live folder is a retryable failure.
  */
 class InternxtCreateParentTrashedTest {
     private fun withDrive(block: suspend (UploadDrive, InternxtProvider, Path) -> Unit) =
@@ -23,7 +26,7 @@ class InternxtCreateParentTrashedTest {
             try {
                 val drive = UploadDrive()
                 drive.folders += UploadDriveFolder("docs-old", "docs", "root-folder-uuid")
-                val provider = rootedInternxtProvider(tmp, drive.engine)
+                val provider = rootedInternxtProvider(tmp, drive.engine).also { it.parentRelistDelayMs = 0 }
                 try {
                     block(drive, provider, tmp)
                 } finally {
@@ -36,7 +39,9 @@ class InternxtCreateParentTrashedTest {
 
     private fun local(tmp: Path, name: String): Path = tmp.resolve(name).also { Files.writeString(it, "hello world") }
 
+    // The folder is trashed: the create answers 404 and the listings no longer show it.
     private fun UploadDrive.trashDocsBehindTheCache() {
+        folders.removeIf { it.uuid == "docs-old" }
         createFault = { _, _ -> HttpStatusCode.NotFound }
         createFaultBody = """{"message":"Folder not found","error":"Not Found","statusCode":404}"""
     }
@@ -67,6 +72,23 @@ class InternxtCreateParentTrashedTest {
             provider.upload(local(tmp, "b.txt"), "/docs/b.txt", existingRemoteId = null, onProgress = null)
 
             assertEquals("docs-new", drive.files.single { it.plainName == "b" }.folderUuid, "not the trashed folder's cached uuid")
+        }
+
+    @Test
+    fun `a create 404 through a stale cached uuid whose folder is live is not refused and the upload is offered again`() =
+        withDrive { drive, provider, tmp ->
+            provider.upload(local(tmp, "a.txt"), "/docs/a.txt", existingRemoteId = null, onProgress = null) // caches docs-old
+            // Another device replaced the folder: the cached uuid is stale, the listing has the live one.
+            drive.folders.removeIf { it.uuid == "docs-old" }
+            drive.folders += UploadDriveFolder("docs-new", "docs", "root-folder-uuid")
+            drive.createFault = { call, _ -> HttpStatusCode.NotFound.takeIf { call == 1 } }
+            drive.createFaultBody = """{"message":"Folder not found","error":"Not Found","statusCode":404}"""
+
+            val failure = assertFailsWith<InternxtApiException> { provider.upload(local(tmp, "b.txt"), "/docs/b.txt", existingRemoteId = null, onProgress = null) }
+            assertEquals(404, failure.statusCode, "retryable: not the parent gone, so no upload_refusal row")
+
+            provider.upload(local(tmp, "b.txt"), "/docs/b.txt", existingRemoteId = null, onProgress = null)
+            assertEquals("docs-new", drive.files.single { it.plainName == "b" }.folderUuid, "offered again with the fresh uuid")
         }
 
     @Test
