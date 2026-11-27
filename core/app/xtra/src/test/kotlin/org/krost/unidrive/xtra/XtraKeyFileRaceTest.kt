@@ -158,22 +158,57 @@ class XtraKeyFileRaceTest {
         assertEquals(keys.map(::text).toSet(), keptKeys(path), "every key is the live one or a retired copy; none is gone")
     }
 
-    @Test
-    fun `concurrent age generates leave exactly one key`() {
-        val path: Path = TestScratch.directory("xtra-race-age").resolve("xtra-age.key")
-        val winners = race(4, { XtraAgeKeyStore(path).also { it.generate(pass.toCharArray()) } }) { _, key -> key }
-
-        assertEquals(1, winners.size, "exactly one generate may succeed; the others must refuse")
-        assertTrue(XtraAgeKeyStore(path).opens(pass.toCharArray()))
+    /**
+     * Runs [generate] on [threads] threads released together, each with its own passphrase; the passphrases of the ones
+     * that did not throw. A loser must refuse with the [IllegalStateException] of the exclusive create, nothing else.
+     */
+    private fun passphraseRace(
+        threads: Int,
+        generate: (CharArray) -> Unit,
+    ): List<String> {
+        val start = CountDownLatch(1)
+        val pool = Executors.newFixedThreadPool(threads)
+        try {
+            val futures =
+                (0 until threads).map { i ->
+                    pool.submit<String?> {
+                        val own = "race-pass-own-$i"
+                        start.await()
+                        try {
+                            generate(own.toCharArray())
+                            own
+                        } catch (_: IllegalStateException) {
+                            null
+                        }
+                    }
+                }
+            start.countDown()
+            return futures.mapNotNull { it.get(2, TimeUnit.MINUTES) }
+        } finally {
+            pool.shutdownNow()
+        }
     }
 
     @Test
-    fun `concurrent Tink generates leave exactly one key`() {
-        val path: Path = TestScratch.directory("xtra-race-tink").resolve("xtra-tink.key")
-        val winners = race(4, { XtraTinkKeyStore(path).also { it.generate(pass.toCharArray()) } }) { _, key -> key }
+    fun `concurrent age generates leave exactly one key, the winner's`() {
+        val path: Path = TestScratch.directory("xtra-race-age").resolve("xtra-age.key")
+        val winners = passphraseRace(4) { XtraAgeKeyStore(path).generate(it) }
 
         assertEquals(1, winners.size, "exactly one generate may succeed; the others must refuse")
-        assertTrue(XtraTinkKeyStore(path).opens(pass.toCharArray()))
+        val store = XtraAgeKeyStore(path)
+        assertTrue(store.opens(winners.single().toCharArray()), "the file on disk is the winner's: it opens with the winner's passphrase")
+        assertEquals(1, (0 until 4).count { store.opens("race-pass-own-$it".toCharArray()) }, "no other racer's passphrase opens it")
+    }
+
+    @Test
+    fun `concurrent Tink generates leave exactly one key, the winner's`() {
+        val path: Path = TestScratch.directory("xtra-race-tink").resolve("xtra-tink.key")
+        val winners = passphraseRace(4) { XtraTinkKeyStore(path).generate(it) }
+
+        assertEquals(1, winners.size, "exactly one generate may succeed; the others must refuse")
+        val store = XtraTinkKeyStore(path)
+        assertTrue(store.opens(winners.single().toCharArray()), "the file on disk is the winner's: it opens with the winner's passphrase")
+        assertEquals(1, (0 until 4).count { store.opens("race-pass-own-$it".toCharArray()) }, "no other racer's passphrase opens it")
     }
 
     @Test
