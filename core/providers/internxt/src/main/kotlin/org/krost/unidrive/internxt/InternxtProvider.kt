@@ -2615,8 +2615,8 @@ class InternxtProvider(
         }
 
     /**
-     * archive#580: the folder [remoteId] as its meta answers: trashed (status `TRASHED`, or the `removed` flag), not found (HTTP
-     * 404/410, or a folder deleted for good), or live. Any other failure (a 5xx, a degraded gateway, a timeout, a body
+     * archive#580: the folder [remoteId] as its meta answers: trashed (status `TRASHED`, or the `deleted` flag), not found (HTTP
+     * 404/410, or a folder deleted for good: status `DELETED`, or the `removed` flag), or live. Any other failure (a 5xx, a degraded gateway, a timeout, a body
      * that cannot be read) propagates: it proves nothing. A folder that is gone also leaves the folder-uuid cache, so the
      * next walk asks the listing instead of reaching a dead uuid (the stale-entry case at [resolveFolder]).
      */
@@ -2624,10 +2624,10 @@ class InternxtProvider(
         val state =
             try {
                 val folder = api.getFolderMeta(remoteId)
-                when {
-                    folder.status == "DELETED" || folder.deleted -> FolderState.NOT_FOUND
-                    folder.isTrashed() || folder.removed -> FolderState.TRASHED
-                    else -> FolderState.LIVE
+                when (metaRowState(folder.status, folder.deleted, folder.removed)) {
+                    MetaRowState.GONE -> FolderState.NOT_FOUND
+                    MetaRowState.TRASHED -> FolderState.TRASHED
+                    MetaRowState.LIVE -> FolderState.LIVE
                 }
             } catch (e: InternxtApiException) {
                 if (e.statusCode !in PERMANENT_ABSENCE_STATUSES) throw e
@@ -2639,18 +2639,18 @@ class InternxtProvider(
 
     /**
      * gkrost/unidrive-cli#632: the item [remoteId] (file first, then folder, like [metadataById]) as its meta answers.
-     * The file and folder rows carry the same words: status `DELETED` or the `deleted` flag is gone for good, status
-     * `TRASHED` or the `removed` flag is the trash, everything else is live. Any other failure propagates: it proves
+     * The file and folder rows carry the same words: status `DELETED` or the `removed` flag is gone for good (permanently
+     * deleted), status `TRASHED` or the `deleted` flag is the trash, everything else is live (see [metaRowState]). Any other failure propagates: it proves
      * nothing. A folder found gone also leaves the folder-uuid cache, like [folderStateById].
      */
     override suspend fun itemStateById(remoteId: String): ItemRemoteState {
         val fileState =
             try {
                 val file = api.getFileMeta(remoteId)
-                when {
-                    file.status == "DELETED" || file.deleted -> ItemRemoteState.NotFound
-                    file.status == "TRASHED" || file.removed -> ItemRemoteState.Trashed(false)
-                    else -> ItemRemoteState.Live(false)
+                when (metaRowState(file.status, file.deleted, file.removed)) {
+                    MetaRowState.GONE -> ItemRemoteState.NotFound
+                    MetaRowState.TRASHED -> ItemRemoteState.Trashed(false)
+                    MetaRowState.LIVE -> ItemRemoteState.Live(false)
                 }
             } catch (e: InternxtApiException) {
                 if (e.statusCode != 404) throw e
@@ -5588,6 +5588,27 @@ class InternxtProvider(
 
         /** The server's own word for a folder in the trash: its items are still there, below it. */
         internal fun InternxtFolder.isTrashed(): Boolean = status == "TRASHED"
+
+        internal enum class MetaRowState { LIVE, TRASHED, GONE }
+
+        /**
+         * What a by-id meta row says. Internxt's server sets `deleted = true` when an item goes to the trash and
+         * `removed = true` when it is deleted for good (status `TRASHED` and `DELETED`). The status decides; the flags
+         * are read only when it says `EXISTS` (the models' default for a row without one), `removed` first because
+         * the stronger fact wins.
+         */
+        internal fun metaRowState(
+            status: String,
+            deleted: Boolean,
+            removed: Boolean,
+        ): MetaRowState =
+            when {
+                status == "DELETED" -> MetaRowState.GONE
+                status == "TRASHED" -> MetaRowState.TRASHED
+                removed -> MetaRowState.GONE
+                deleted -> MetaRowState.TRASHED
+                else -> MetaRowState.LIVE
+            }
 
         // A page of the folders stream into the listing: the live folders go into [folders], the rest leave it, and
         // the trashed ones among the rest become ancestor-only records in [ancestors] (a folder that is live again
