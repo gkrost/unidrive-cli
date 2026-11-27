@@ -846,7 +846,8 @@ class XtraEncryptedProviderTest {
             kotlinx.coroutines.runBlocking { provider(InMemoryProvider(storage), wrong).download("/f.txt", dest) }
         }.exceptionOrNull()
         checkNotNull(failure) { "a wrong passphrase decrypted the file" }
-        assertTrue(failure !is org.krost.unidrive.RemoteContentRefusedDownloadException, "wrong passphrase quarantines content: $failure")
+        // The key file's own tag failure, unmapped: any other type would mean the load ran somewhere else.
+        assertIs<javax.crypto.AEADBadTagException>(failure, "wrong passphrase is not the key file's tag failure: $failure")
         assertEquals("the previous content", Files.readString(dest))
     }
 
