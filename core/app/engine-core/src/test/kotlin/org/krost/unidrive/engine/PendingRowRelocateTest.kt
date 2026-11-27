@@ -1,6 +1,7 @@
 package org.krost.unidrive.engine
 
 import org.krost.unidrive.sync.StateDatabase
+import org.krost.unidrive.sync.movePendingUploadRow
 import org.krost.unidrive.sync.model.SyncEntry
 import org.krost.unidrive.testing.TestScratch
 import java.nio.file.Path
@@ -100,6 +101,41 @@ class PendingRowRelocateTest {
             assertNull(moved.remoteId, "the moved row is still a pending upload")
             assertTrue(db.neverSubmitted(to), "the never-submitted mark moved with the row")
             assertEquals(refusal, db.uploadRefusal(to), "the upload-refusal mark moved with the row")
+        }
+    }
+
+    // The move refuses a target another row occupies (the statement's NOT EXISTS guard): the row stays at its
+    // path with its marks, the occupant is untouched. A real cloud row at the target is the merge's own case
+    // (a renamed item taking the path); another pending row there is the same guard, pinned beside it.
+    @Test
+    fun `moving a pending row is refused while a real row occupies the target path`() {
+        StateDatabase(file).also { it.initialize() }.use { db ->
+            db.upsertEntry(row("/p"))
+            assertTrue(db.markNeverSubmitted("/p"), "the row is queued as never submitted")
+            db.upsertEntry(row("/target").copy(remoteId = "remote-1"))
+
+            val moved = db.movePendingUploadRow("/p", "/target", null)
+
+            assertTrue(!moved, "the move was refused")
+            assertNotNull(db.getEntry("/p"), "the pending row stayed at its path")
+            assertTrue(db.neverSubmitted("/p"), "its mark stayed with it")
+            val occupant = assertNotNull(db.getEntry("/target"))
+            assertEquals("remote-1", occupant.remoteId, "the occupying real row is untouched")
+        }
+    }
+
+    @Test
+    fun `moving a pending row is refused while another pending row occupies the target path`() {
+        StateDatabase(file).also { it.initialize() }.use { db ->
+            db.upsertEntry(row("/p"))
+            assertTrue(db.markNeverSubmitted("/p"), "the row is queued as never submitted")
+            db.upsertEntry(row("/target"))
+            assertTrue(db.markNeverSubmitted("/target"), "the occupant is pending too")
+
+            val moved = db.movePendingUploadRow("/p", "/target", null)
+
+            assertTrue(!moved, "the move was refused")
+            assertEquals(listOf("/p", "/target").sorted(), db.pendingUploadPaths().sorted(), "both pending rows stayed put")
         }
     }
 }
