@@ -53,7 +53,9 @@ What the code on the default branch does, so that a report can say what it chang
   ([spec](docs/dev/specs/unlock-helper-protocol.md)), never as an argument, and child processes the engine starts do not
   inherit `UNIDRIVE_VAULT_PASS` or `UNIDRIVE_XTRA_PASS`.
 - **Client-side encryption (X-tra).** A profile with `xtra_encryption = true` encrypts file content before upload
-  (`aes-gcm`, `age-v1` or `tink-aes-gcm`); names, sizes and the folder tree stay visible to the provider. A file of
+  (`aes-gcm-sym`, the default for new keys, `aes-gcm`, `age-v1` or `tink-aes-gcm`); names, sizes and the folder tree
+  stay visible to the provider. Only the symmetric algorithms (`aes-gcm-sym`, `tink-aes-gcm`) are quantum-resistant:
+  `aes-gcm` wraps each file key with RSA-2048 and `age-v1` with X25519, which a large quantum computer can break. A file of
   another algorithm is refused before any key is asked for, and a decrypt is staged, so a corrupt or truncated download
   does not replace the previous file.
 - **Where the bearer token goes.** OneDrive requests that carry the token are refused unless the URL has the scheme,

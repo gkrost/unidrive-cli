@@ -184,11 +184,22 @@ Daemon log: `~/.local/share/unidrive/unidrive.log`. Quick triage: `scripts/dev/l
 - `sweep` — detect and rehydrate zero-byte stub files (`--null-bytes` scan; `--dry-run` and `--rehydrate` modify it)
 
 ### Client-side encryption (X-tra)
-- `xtra` — the key of profiles with `xtra_encryption = true`: `init`, `export-key`, `import-key`, `change-passphrase`,
-  and the same for the other content algorithms (`init-age`, `export-age`, `import-age`, `change-passphrase-age`,
-  `init-tink`, `change-passphrase-tink`). `xtra_algorithm` picks `aes-gcm` (the default), `age-v1` (files an offline
-  `age` tool decrypts from the identity alone) or `tink-aes-gcm`. File content is encrypted before it reaches the
-  provider; names, sizes and the folder tree are not. See [`config.example.toml`](docs/config-schema/config.example.toml).
+- `xtra` — the key of profiles with `xtra_encryption = true`: `init`, `export-key`, `import-key`, `change-passphrase`
+  (each with `--algorithm aes-gcm-sym|aes-gcm`), and the same for the other content algorithms (`init-age`,
+  `export-age`, `import-age`, `change-passphrase-age`, `init-tink`, `change-passphrase-tink`). File content is
+  encrypted before it reaches the provider; names, sizes and the folder tree are not. `xtra_algorithm` picks:
+
+  | Algorithm | File key wrapped with | Quantum-resistant |
+  |---|---|---|
+  | `aes-gcm-sym` (default for new keys; `xtra init`) | AES-256-GCM under a random master key the passphrase protects | yes (symmetric only) |
+  | `tink-aes-gcm` (`xtra init-tink`) | Tink keyset (AES-GCM-HKDF streaming) | yes (symmetric only) |
+  | `aes-gcm` (`xtra init --algorithm aes-gcm`) | RSA-2048-OAEP | no (Shor recovers the RSA key) |
+  | `age-v1` (`xtra init-age`; an offline `age` tool decrypts the files) | X25519 | no (Shor recovers the X25519 key) |
+
+  A profile that names no algorithm runs `aes-gcm` on an installation that already holds `xtra.key`, so existing
+  profiles and their files stay as they are, and `aes-gcm-sym` everywhere else. Nothing is re-encrypted: set
+  `xtra_algorithm = "aes-gcm-sym"` to write a profile's new files with it. See
+  [`config.example.toml`](docs/config-schema/config.example.toml).
 
 ### Front-ends and `--json`
 A command run with `--json` never prompts and always answers with one JSON object, a refusal included, so a front-end

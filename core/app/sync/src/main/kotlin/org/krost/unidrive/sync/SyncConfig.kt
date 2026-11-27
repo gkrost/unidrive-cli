@@ -473,10 +473,10 @@ data class RawProvider(
     // reaches the provider and decrypted on the way back; names, sizes and the tree stay as they are. One key per
     // installation, beside the vault (`unidrive xtra init`). Absent = off.
     val xtra_encryption: Boolean? = null,
-    // The X-tra content algorithm when xtra_encryption is on: "aes-gcm" (the default, algorithm 1), "age-v1"
-    // (algorithm 2, standard age-encryption.org/v1 files an offline `age` tool decrypts from the identity alone)
-    // or "tink-aes-gcm" (algorithm 3, Tink AES-GCM-HKDF streaming; decrypts only with this engine's keyset).
-    // Absent = "aes-gcm".
+    // The X-tra content algorithm when xtra_encryption is on: "aes-gcm-sym" (4, file keys under a symmetric master
+    // key), "aes-gcm" (1, RSA-2048-wrapped file keys), "age-v1" (2, standard age files an offline `age` tool decrypts)
+    // or "tink-aes-gcm" (3, Tink AES-GCM-HKDF streaming). Absent = "aes-gcm" on an installation that holds the RSA
+    // key file xtra.key, "aes-gcm-sym" otherwise (the CLI resolves it; see docs/config-schema/config.example.toml).
     val xtra_algorithm: String? = null,
     // UD-223: skip first-sync enumeration by adopting the provider's current cursor.
     // OneDrive / Graph: `?token=latest`. Other providers: flag is a warn+no-op.
