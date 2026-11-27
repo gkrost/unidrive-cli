@@ -44,11 +44,13 @@ class HydrationIpcHandlerWireTest {
             """{"verb":"hydration.open_read","handle_id":"h-1","path":"/docs/report.txt"}""" to
                 HydrationCall("open_read", listOf("c1", "h-1", "/docs/report.txt")),
             """{"verb":"hydration.open_write","handle_id":"h-1","path":"/docs/report.txt","cache_path":"/cache/unidrive/hydration/docs/report.txt"}""" to
-                HydrationCall("open_write", listOf("c1", "h-1", "/docs/report.txt", cacheFile, null)),
+                HydrationCall("open_write", listOf("c1", "h-1", "/docs/report.txt", cacheFile, null, null)),
             """{"verb":"hydration.open_write","handle_id":"h-1","path":"/docs/report.txt","cache_path":"/cache/unidrive/hydration/docs/report.txt","base_etag":"stale-etag"}""" to
-                HydrationCall("open_write", listOf("c1", "h-1", "/docs/report.txt", cacheFile, "stale-etag")),
+                HydrationCall("open_write", listOf("c1", "h-1", "/docs/report.txt", cacheFile, "stale-etag", null)),
+            """{"verb":"hydration.open_write","handle_id":"h-1","path":"/docs/report.txt","cache_path":"/cache/unidrive/hydration/docs/report.txt","mtime_ms":1767268800000}""" to
+                HydrationCall("open_write", listOf("c1", "h-1", "/docs/report.txt", cacheFile, null, 1767268800000L)),
             """{"verb":"hydration.open_write","path":"/docs/report.txt","cache_path":"/cache/unidrive/hydration/docs/report.txt"}""" to
-                HydrationCall("open_write", listOf("c1", "dh-0123456789ab-1", "/docs/report.txt", cacheFile, null)),
+                HydrationCall("open_write", listOf("c1", "dh-0123456789ab-1", "/docs/report.txt", cacheFile, null, null)),
             """{"verb":"hydration.open_write_begin","path":"/docs/report.txt","handle_id":"wh-1"}""" to
                 HydrationCall("open_write_begin", listOf("c1", "/docs/report.txt", "wh-1")),
             """{"verb":"hydration.open_write_begin","path":"/docs/report.txt"}""" to
