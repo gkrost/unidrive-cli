@@ -60,6 +60,25 @@ class XtraEncryptedProviderTest {
         assertEquals("Hello, X-tra!", Files.readString(dest))
     }
 
+    // gkrost/unidrive-cli#1018 item 16: an inner provider that hashes the bytes its upload read (Internxt's encrypt pass) hashes
+    // the ciphertext this layer hands it. The engines record the answer's digest as what was sent and compare a later download's
+    // plaintext digest with it, so the answer must name the plaintext's.
+    @Test
+    fun `the upload answer names the SHA-256 of the plaintext it encrypted, not the inner provider's of the ciphertext`() {
+        val tmpDir = TestScratch.directory("xtra-provider-test")
+        val inner = FakeCloudProvider().apply { reportSentSha256 = { bytes -> sha256Hex(bytes) } }
+        val xtra = provider(inner, keys(tmpDir))
+        val localFile = tmpDir.resolve("sent.txt")
+        val original = "the bytes that were sent".toByteArray()
+        Files.write(localFile, original)
+
+        val answer = kotlinx.coroutines.runBlocking { xtra.upload(localFile, "/sent.txt") }
+
+        assertEquals(sha256Hex(original), answer.sentSha256)
+    }
+
+    private fun sha256Hex(bytes: ByteArray): String = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes))
+
     @Test
     fun `downloadWithHash answers the plaintext bytes and digest`() {
         val tmpDir = TestScratch.directory("xtra-provider-test")
