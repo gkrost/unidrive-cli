@@ -130,4 +130,36 @@ class HydrationUploadMtimeTest {
         assertTrue(reply.contains("\"error\":\"invalid_mtime_ms\""), "the stable refusal: $reply")
         assertNull(env.providerForTest.uploadMtimes["/copy.txt"], "nothing was uploaded behind the refusal")
     }
+
+    @Test
+    fun `a fraction, an exponent, a boolean or a number past Long is refused and leaves the copy's time alone`() = runTest {
+        val env = HydrationTestEnv()
+        val copyTime = golden.toEpochMilli() + 60_000
+        val cachePath = copyInto(env, "/copy.txt", "copied bytes", copyTime)
+        val handler = HydrationIpcHandler(env.hydration)
+        val prefix = """{"verb":"hydration.open_write","handle_id":"h-w","path":"/copy.txt","cache_path":${JsonPrimitive(cachePath.toString())},"mtime_ms":"""
+
+        for (raw in listOf("1767268800000.5", "1.7672688E12", "true", "9223372036854775808", "-9223372036854775809")) {
+            val reply = handler.handle("c1", "$prefix$raw}")
+            assertEquals("""{"ok":false,"error":"invalid_mtime_ms"}""", reply, "mtime_ms $raw")
+        }
+        assertEquals(copyTime, Files.getLastModifiedTime(cachePath).toMillis(), "no refused value reached the copy")
+        assertNull(env.providerForTest.uploadMtimes["/copy.txt"], "nothing was uploaded behind the refusals")
+    }
+
+    @Test
+    fun `a set time is never stamped on a cache path outside the cache folder`() = runTest {
+        val env = HydrationTestEnv()
+        copyInto(env, "/copy.txt", "copied bytes")
+        val outside = org.krost.unidrive.testing.TestScratch.directory("unidrive-mtime-outside").resolve("victim.txt")
+        Files.createDirectories(outside.parent)
+        Files.write(outside, "not the engine's".toByteArray())
+        val outsideTime = golden.toEpochMilli() + 120_000
+        Files.setLastModifiedTime(outside, FileTime.fromMillis(outsideTime))
+
+        val opened = env.hydration.openForWrite("conn1", "h-w", "/copy.txt", outside, mtimeMillis = golden.toEpochMilli())
+
+        assertEquals(OpenResult.Failed(HydrationError.InvalidPath), opened, "the containment refusal")
+        assertEquals(outsideTime, Files.getLastModifiedTime(outside).toMillis(), "the file outside the cache keeps its time")
+    }
 }
