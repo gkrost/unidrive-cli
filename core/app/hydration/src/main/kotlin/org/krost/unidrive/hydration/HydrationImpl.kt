@@ -57,7 +57,6 @@ import java.nio.file.Files
 import java.nio.file.InvalidPathException
 import java.nio.file.NoSuchFileException
 import java.nio.file.Path
-import java.nio.file.attribute.FileTime
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
@@ -760,31 +759,10 @@ class HydrationImpl(
         // The client hands the cache path back. Only a file inside the profile's cache folder is uploaded: the path
         // create / open_write_begin / open_read handed out, or another spelling of a file there (compared on real
         // paths, so a link cannot lead out). Anything else is refused before any state is touched or upload queued.
-        if (!isInsideCacheFolder(mount.hydrationCacheDir(), cachePath)) {
-            log.warn(
-                "open_write of '{}' refused: its cache path '{}' is not inside the profile's hydration cache",
-                CachePaths.forLog(path),
-                CachePaths.forLog(cachePath.toString()),
-            )
-            return OpenResult.Failed(HydrationError.InvalidPath)
-        }
-        // The client's set time rides the write (a copy tool's utimens the mount saw): the cache copy's mtime is
-        // the only carrier the engine has — the row's watermark and every provider's own time field are read from
-        // it at transfer time — so the copy is re-stamped now, before any upload is queued, and the client's time
-        // reaches them whatever the copy's own stamp raced. Best-effort: a filesystem that refuses the stamp keeps
-        // the copy's own mtime as the carrier.
-        if (mtimeMillis != null) {
-            try {
-                Files.setLastModifiedTime(cachePath, FileTime.fromMillis(mtimeMillis))
-            } catch (e: Exception) {
-                log.warn(
-                    "open_write of '{}' could not carry the client's set time ({} ms) on its cache copy: {}",
-                    CachePaths.forLog(path),
-                    mtimeMillis,
-                    e.message,
-                )
-            }
-        }
+        if (!isInsideCacheFolder(mount.hydrationCacheDir(), cachePath)) return refusedOutsideCache(path, cachePath, log)
+        // The client's set time rides the write: the copy carries it to the row's watermark and the provider fields
+        // (ClientSetTime.kt), stamped before any upload is queued.
+        mtimeMillis?.let { carryClientSetTime(path, cachePath, it, log) }
         touch(path)
         exhaustedRounds.remove(path) // gkrost/unidrive-cli#70: new bytes from the client get the full rounds again
         // archive#660: a rule file of the ignore rules takes effect for the next decision, this file's own included.

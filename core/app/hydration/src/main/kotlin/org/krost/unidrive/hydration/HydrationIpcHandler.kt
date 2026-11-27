@@ -6,6 +6,7 @@ import org.krost.unidrive.http.UrlRedaction
 import org.krost.unidrive.io.ndjsonString
 import org.krost.unidrive.sync.PathNormalizer
 import java.nio.file.InvalidPathException
+import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
@@ -499,21 +500,10 @@ class HydrationIpcHandler(
                 // base_etag is OPTIONAL: absent (or a row with no recorded token) →
                 // unconditional upload, byte-identical to the pre-guard contract.
                 val baseEtag = request.string("base_etag")
-                // mtime_ms is OPTIONAL: the client's modification time for the file (a copy tool's utimens,
-                // handed over with the write). The engine re-stamps the cache copy with it before the upload is
-                // queued, so the row and the provider's own time field carry the client's time. Absent keeps the
-                // copy's own mtime as the carrier; present but not a whole number (sign included) is refused.
-                val mtimeMillis = request.signedWholeNumber("mtime_ms")
-                if (request.has("mtime_ms") && mtimeMillis == null) return reply(ok = false, error = "invalid_mtime_ms")
+                val (mtimeMillis, mtimeRefusal) = clientSetTimeOf(request)
+                mtimeRefusal?.let { return reply(ok = false, error = it) }
                 val unansweredKey = "$connectionId\u0000$path"
-                if (clientHandleId == null) {
-                    val pending = unansweredOpenWrite[unansweredKey]
-                    // Registered means openForWrite got past its refusals and the path is pinned under this id.
-                    // Before that, a retry must run the verb, not be told an id for an open that did not happen.
-                    if (pending != null && hydration.hasRegisteredWriteHandle(connectionId, pending, path)) {
-                        return openOkReply(OpenResult.Ok(cachePath), issuedHandleId = pending)
-                    }
-                }
+                if (clientHandleId == null) retryIssuedOpenWriteReply(connectionId, path, cachePath)?.let { return it }
                 val handleId = clientHandleId ?: issueHandleId()
                 if (clientHandleId == null) unansweredOpenWrite[unansweredKey] = handleId
                 try {
@@ -753,6 +743,17 @@ class HydrationIpcHandler(
             VIEW_PAGE -> viewPage(request)
             else -> reply(ok = false, error = "unknown_verb")
         }
+    }
+
+    // The reply a retry of an issued-id open_write answers without running the verb again: the id is still unanswered
+    // on this connection and the open got past its refusals, so the path is pinned under it. Null: the verb must run
+    // (nothing issued here yet, or the open never registered).
+    private fun retryIssuedOpenWriteReply(connectionId: String, path: String, cachePath: Path): String? {
+        val pending = unansweredOpenWrite["$connectionId\u0000$path"] ?: return null
+        // Registered means openForWrite got past its refusals and the path is pinned under this id.
+        // Before that, a retry must run the verb, not be told an id for an open that did not happen.
+        if (!hydration.hasRegisteredWriteHandle(connectionId, pending, path)) return null
+        return openOkReply(OpenResult.Ok(cachePath), issuedHandleId = pending)
     }
 
     private fun reply(ok: Boolean, error: String? = null): String =

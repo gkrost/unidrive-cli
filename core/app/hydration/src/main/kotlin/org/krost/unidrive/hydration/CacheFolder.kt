@@ -1,6 +1,7 @@
 package org.krost.unidrive.hydration
 
 import org.krost.unidrive.engine.CachePaths
+import org.slf4j.Logger
 import java.nio.file.Path
 
 /**
@@ -17,3 +18,21 @@ internal fun isInsideCacheFolder(
     cacheDir: Path,
     candidate: Path,
 ): Boolean = CachePaths.isInside(cacheDir, candidate)
+
+/**
+ * Logs why [cachePath], a cache path a client handed back to `hydration.open_write`, was refused, and answers the
+ * refusal: a cache path outside the profile's hydration cache folder is refused before any state is touched or
+ * upload queued.
+ */
+internal fun refusedOutsideCache(
+    path: String,
+    cachePath: Path,
+    log: Logger,
+): OpenResult {
+    log.warn(
+        "open_write of '{}' refused: its cache path '{}' is not inside the profile's hydration cache",
+        CachePaths.forLog(path),
+        CachePaths.forLog(cachePath.toString()),
+    )
+    return OpenResult.Failed(HydrationError.InvalidPath)
+}
