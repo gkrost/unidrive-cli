@@ -108,20 +108,26 @@ class XtraSymmetricKeyStore(
      * Installs [data] as this installation's key file. Never replaces one without [force]; a forced replace keeps the
      * retired file beside the new one. The layout is checked here (magic, version, length); whether the passphrase
      * opens it is the caller's probe, as for the RSA key file.
+     *
+     * The check, the backup and the install are one step ([withKeyFileLock]). Into an installation without a key the
+     * install is a create-new ([createKeyFileExclusively]), so of two imports racing for it exactly one lands and the
+     * other throws [IllegalStateException]; two forced imports each retire the key the other left, and none is lost.
      */
     fun importKey(
         data: ByteArray,
         force: Boolean = false,
     ) {
         require(looksLikeKeyFile(data)) { "The imported bytes are not an X-tra symmetric key file" }
-        val replaced = exists()
-        check(force || !replaced) { "A key already exists at $keyPath; import with --force to replace it, after an export of it is safe" }
-        if (replaced) {
-            val retired = keyPath.resolveSibling("${keyPath.fileName}.bak-${System.currentTimeMillis()}")
-            OwnerOnlyAtomicWrite.replace(retired, produce = { Files.readAllBytes(keyPath) })
+        withKeyFileLock(keyPath) {
+            val replaced = exists()
+            check(force || !replaced) { "A key already exists at $keyPath; import with --force to replace it, after an export of it is safe" }
+            if (!replaced) {
+                createKeyFileExclusively(keyPath, data) {}
+                return@withKeyFileLock
+            }
+            retireKeyFile(keyPath)
+            OwnerOnlyAtomicWrite.replace(keyPath, data)
         }
-        Files.createDirectories(keyPath.parent)
-        OwnerOnlyAtomicWrite.replace(keyPath, data)
     }
 
     companion object {
