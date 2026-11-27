@@ -9,12 +9,26 @@ import org.krost.unidrive.sync.model.SyncEntry
  * A tracked item the cloud renamed and edited is planned by its streamed slice as a move and a download of the new
  * content at the new name, as the buffered gather plans it. The move runs in Pass 1, after the gather: a download
  * streamed now would land first, and the move would find its destination taken. A download to a name a move of the
- * same slice fills is left for Pass 2, which runs after the move.
+ * same slice fills, or to a name below a folder such a move fills (the folder's move carries its children), is left
+ * for Pass 2, which runs after the moves.
  */
 internal fun streamableNow(safeNow: List<SyncAction>): List<SyncAction> {
     val moveTargets = safeNow.mapNotNullTo(HashSet()) { (it as? SyncAction.MoveLocal)?.path }
     if (moveTargets.isEmpty()) return safeNow
-    return safeNow.filterNot { it is SyncAction.DownloadContent && it.path in moveTargets }
+    return safeNow.filterNot { it is SyncAction.DownloadContent && fillsOrBelow(it.path, moveTargets) }
+}
+
+private fun fillsOrBelow(
+    path: String,
+    targets: Set<String>,
+): Boolean {
+    if (path in targets) return true
+    var parent = path.substringBeforeLast('/', "")
+    while (parent.isNotEmpty()) {
+        if (parent in targets) return true
+        parent = parent.substringBeforeLast('/', "")
+    }
+    return false
 }
 
 /**

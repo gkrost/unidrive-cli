@@ -21,6 +21,9 @@ class StreamingRemoteMoveEditTest {
         val rows: List<Pair<String, String?>>,
         val files: Map<String, String>,
         val uploads: List<String>,
+        // The version each row records, and what was deleted in the cloud: a stale download or a delete of the moved item shows here.
+        val hashes: Map<String, String?> = emptyMap(),
+        val deletes: List<String> = emptyList(),
     )
 
     // One sync pass: what the cloud holds, the delta pages it delivers, and what the user does locally before the pass.
@@ -66,6 +69,8 @@ class StreamingRemoteMoveEditTest {
             db.getAllEntries().map { stamp(it.path) to it.remoteId?.let(::stamp) }.sortedBy { it.first },
             files.mapKeys { stamp(it.key) }.toSortedMap(),
             provider.uploadedPaths.map(::stamp),
+            db.getAllEntries().filter { !it.isFolder }.associate { stamp(it.path) to it.remoteHash }.toSortedMap(),
+            provider.deletedPaths.toList(),
         )
     }
 
@@ -128,6 +133,57 @@ class StreamingRemoteMoveEditTest {
             assertTrue("BBBB" in outcome.files.values, "the cloud's new content lands: ${outcome.files}")
             assertTrue("/p" !in outcome.files, "the old name is gone: ${outcome.files}")
         }
+
+    @Test
+    fun `a folder the cloud moves with an edited child is moved before the child's new content is fetched (streaming matches buffered)`() =
+        runTest {
+            val trackedTree = Pass(mapOf("/A/x" to "AAA"), listOf(listOf(folder("F", "/A"), item("X", "/A/x", "AAA"))))
+            val movedTree = Pass(mapOf("/B/x" to "BBBB"), listOf(listOf(folder("F", "/B"), item("X", "/B/x", "BBBB"))))
+            val idleTree = Pass(mapOf("/B/x" to "BBBB"), listOf(emptyList()))
+            val outcome = bothAgree(listOf(trackedTree, movedTree, idleTree))
+            assertEquals(listOf("/B" to "F", "/B/x" to "X"), outcome.rows)
+            assertEquals(mapOf("/B/x" to "BBBB"), outcome.files)
+            assertEquals(emptyList(), outcome.uploads)
+            assertEquals(emptyList(), outcome.deletes)
+        }
+
+    @Test
+    fun `two edits of a renamed item on two pages of one gather keep only the newer version (streaming matches buffered)`() =
+        runTest {
+            val movedEditedTwice =
+                Pass(mapOf("/q" to "CCCCC"), listOf(listOf(item("X", "/q", "BBBB")), listOf(item("X", "/q", "CCCCC"))))
+            val idleNewest = Pass(mapOf("/q" to "CCCCC"), listOf(emptyList()))
+            val outcome = bothAgree(listOf(tracked, movedEditedTwice, idleNewest))
+            assertEquals(listOf("/q" to "X"), outcome.rows)
+            assertEquals(mapOf("/q" to "hash-X-CCCCC"), outcome.hashes)
+            assertEquals(mapOf("/q" to "CCCCC"), outcome.files)
+            assertEquals(emptyList(), outcome.uploads)
+        }
+
+    @Test
+    fun `a local delete of the old name does not delete the item the cloud renamed and edited (streaming matches buffered)`() =
+        runTest {
+            val movedWhileDeletedLocally =
+                Pass(mapOf("/q" to "BBBB"), listOf(listOf(item("X", "/q", "BBBB")))) { root -> Files.delete(root.resolve("p")) }
+            val outcome = bothAgree(listOf(tracked, movedWhileDeletedLocally, idle))
+            assertEquals(emptyList(), outcome.deletes, "the moved cloud item stays")
+            assertEquals(listOf("/q" to "X"), outcome.rows)
+        }
+
+    private fun folder(
+        id: String,
+        path: String,
+    ) = CloudItem(
+        id = id,
+        name = path.substringAfterLast("/"),
+        path = path,
+        size = 0,
+        isFolder = true,
+        modified = Instant.parse("2026-03-28T12:00:00Z"),
+        created = Instant.parse("2026-03-28T10:00:00Z"),
+        hash = null,
+        mimeType = null,
+    )
 
     private fun item(
         id: String,
