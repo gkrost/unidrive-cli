@@ -32,6 +32,21 @@ class AesGcmStrategyTest {
         assertContentEquals(key, keyed.unwrapFileKey(keyed.wrapFileKey(key)))
     }
 
+    // The slot is OAEP-wrapped under the public key alone, so whoever holds it can seal a slot of any length: only a
+    // 32-byte file key is the one this installation's writer makes (#1042).
+    @Test
+    fun `an unwrapped file key that is not 32 bytes is refused like a slot that does not unwrap`() {
+        val dir = org.krost.unidrive.testing.TestScratch.directory("xtra-aesgcm-keylen")
+        val km = XtraKeyManager(dir.resolve("xtra.key"))
+        km.generate("testpass1234".toCharArray())
+        val keyed = AesGcmStrategy(lazy { km })
+
+        for (length in intArrayOf(0, 16, 24, 31, 33, 64)) {
+            val slot = keyed.wrapFileKey(ByteArray(length) { 7 })
+            assertFailsWith<XtraFileKeyRefusedException>("a $length-byte key") { keyed.unwrapFileKey(slot) }
+        }
+    }
+
     @Test
     fun `encrypt then decrypt round-trips`() {
         val strategy = strategy()

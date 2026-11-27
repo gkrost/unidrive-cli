@@ -65,7 +65,15 @@ class AesGcmStrategy private constructor(
     override fun unwrapFileKey(wrapped: ByteArray): ByteArray {
         val unwrap = unwrapper()
         try {
-            return unwrap(wrapped)
+            val fileKey = unwrap(wrapped)
+            // The writer only makes 32-byte file keys; any other length would pick AES-128 or -192 (or fail late).
+            // Refused below like a slot that does not unwrap.
+            if (fileKey.size != FILE_KEY_BYTES) {
+                val length = fileKey.size
+                fileKey.fill(0)
+                throw BadPaddingException("the unwrapped file key is $length bytes, not $FILE_KEY_BYTES")
+            }
+            return fileKey
         } catch (e: BadPaddingException) {
             throw XtraFileKeyRefusedException("X-tra file key does not unwrap: ${e.message}", e)
         } catch (e: IllegalBlockSizeException) {
@@ -171,6 +179,8 @@ class AesGcmStrategy private constructor(
         const val ALGORITHM_SYMMETRIC: Byte = 4
 
         private const val RSA_WRAPPED_KEY_LENGTH = 256
+
+        private const val FILE_KEY_BYTES = 32
 
         /**
          * Algorithm 4, `aes-gcm-sym`: algorithm 1's segment format with the per-file key wrapped under the installation's
