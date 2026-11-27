@@ -176,6 +176,7 @@ open class InternxtCrypto {
     // --- CryptoJS-compatible AES (OpenSSL EVP_BytesToKey, AES-256-CBC) ---
 
     private val SALTED_PREFIX = "Salted__".toByteArray(Charsets.US_ASCII)
+    private val SALTED_HEADER_LENGTH = 16
 
     /**
      * Decrypt data encrypted by CryptoJS.AES.encrypt(plaintext, passphrase).
@@ -214,6 +215,8 @@ open class InternxtCrypto {
         passphraseBytes: ByteArray,
     ): String {
         val data = Base64.getDecoder().decode(base64Ciphertext)
+        // The data comes from the server: a value shorter than prefix and salt is refused here, not by the slicing below.
+        require(data.size >= SALTED_HEADER_LENGTH) { "Ciphertext is shorter than the Salted__ header" }
         // Check "Salted__" prefix
         val prefix = data.copyOfRange(0, 8)
         require(prefix.contentEquals(SALTED_PREFIX)) { "Missing Salted__ prefix" }
