@@ -17,11 +17,18 @@ import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
+import org.junit.Assume.assumeTrue
 import org.krost.unidrive.QuickXorHash
 import org.krost.unidrive.testing.TestScratch
 import java.io.IOException
+import java.nio.channels.FileChannel
+import java.nio.channels.OverlappingFileLockException
+import java.nio.file.FileSystems
 import java.nio.file.Files
+import java.nio.file.NoSuchFileException
 import java.nio.file.Path
+import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.PosixFilePermission
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -147,6 +154,69 @@ class OneDriveDownloadResumeTest {
             assertTrue(resumeFrom in 1..BREAK_AT, "the retry asks for the rest after the bytes that arrived, from $resumeFrom: ${contentRequests[1]}")
             assertTrue(contentRequests[1]!!.endsWith("-"), "an open-ended range: ${contentRequests[1]}")
             assertEquals(listOf("f.bin"), folder(), "no partial or record is left behind")
+            service.close()
+        }
+
+    /**
+     * A ranged body that makes the staging's lock felt on any OS (gkrost/unidrive-cli#1088): it waits until the staging
+     * holds the partial (a second lock attempt from this JVM is refused), then takes the read permission off the file
+     * where the OS has permissions. Windows' mandatory lock already refuses a by-path read; on POSIX the lock is advisory,
+     * so this is what makes a read through a second handle fail there too. The staging's own open channel keeps reading.
+     */
+    @OptIn(DelicateCoroutinesApi::class)
+    private fun MockRequestHandleScope.rangedBodyOnceLocked(
+        bytes: ByteArray,
+        from: Int,
+    ): HttpResponseData {
+        val partial = dir.resolve("f.bin.part.unidrive-tmp")
+        val body =
+            GlobalScope
+                .writer(autoFlush = true) {
+                    val deadline = System.currentTimeMillis() + 10_000
+                    while (!stagingHolds(partial)) {
+                        if (System.currentTimeMillis() > deadline) throw IOException("the staging never took the partial")
+                        delay(10)
+                    }
+                    if (posixPermissions) Files.setPosixFilePermissions(partial, setOf(PosixFilePermission.OWNER_WRITE))
+                    channel.writeFully(bytes, from, bytes.size)
+                }.channel
+        return respond(
+            body,
+            HttpStatusCode.PartialContent,
+            headersOf(
+                HttpHeaders.ContentType to listOf("application/octet-stream"),
+                HttpHeaders.ContentLength to listOf((bytes.size - from).toString()),
+                HttpHeaders.ContentRange to listOf("bytes $from-${bytes.size - 1}/${bytes.size}"),
+            ),
+        )
+    }
+
+    // A lock this JVM already holds on the file makes a second attempt throw: that is how the test sees the staging.
+    private fun stagingHolds(partial: Path): Boolean =
+        try {
+            FileChannel.open(partial, StandardOpenOption.WRITE).use { channel -> channel.tryLock()?.release() }
+            false
+        } catch (_: OverlappingFileLockException) {
+            true
+        } catch (_: NoSuchFileException) {
+            false
+        }
+
+    private val posixPermissions get() = "posix" in FileSystems.getDefault().supportedFileAttributeViews()
+
+    @Test
+    fun `a resumed download hashes through the staging's own channel, with the file closed to any other handle`() =
+        runTest {
+            // Permissions do not apply to root: the second-handle read would succeed and prove nothing.
+            if (posixPermissions) assumeTrue("permissions do not apply to root", System.getProperty("user.name") != "root")
+            onContent = { n, range -> if (n == 0) default(0, range) else rangedBodyOnceLocked(content, range!!.removePrefix("bytes=").removeSuffix("-").toInt()) }
+            val service = newService()
+
+            val bytes = service.downloadFile(itemId, destination)
+
+            assertEquals(content.size.toLong(), bytes)
+            assertContentEquals(content, Files.readAllBytes(destination), "the resumed result is whole and checked, not restarted from zero")
+            assertEquals(2, contentRequests.size, "one broken attempt and one resume; a failed check would have restarted from zero: $contentRequests")
             service.close()
         }
 

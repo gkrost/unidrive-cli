@@ -31,6 +31,15 @@ class QuickXorHashTest {
     }
 
     @Test
+    fun `digestBase64 is the Base64 OneDrive reports, also for a hash fed in pieces`() {
+        val qxh = QuickXorHash()
+        val abc = "abc".toByteArray()
+        qxh.update(abc, 0, 1)
+        qxh.update(abc, 1, 2)
+        assertEquals("YRDDGAAAAAAAAAAAAwAAAAAAAAA=", qxh.digestBase64())
+    }
+
+    @Test
     fun `three bytes are shifted by 11 bits each`() {
         assertEquals("YRDDGAAAAAAAAAAAAwAAAAAAAAA=", hashOf("abc".toByteArray()))
     }

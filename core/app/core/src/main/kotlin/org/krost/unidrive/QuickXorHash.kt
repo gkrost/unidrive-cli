@@ -55,6 +55,9 @@ class QuickXorHash {
         return result
     }
 
+    /** [digest] as Base64, the form OneDrive reports (and compares against). */
+    fun digestBase64(): String = Base64.getEncoder().encodeToString(digest())
+
     companion object {
         private const val WIDTH_BITS = 160
         private const val WIDTH_BYTES = WIDTH_BITS / 8
@@ -71,7 +74,7 @@ class QuickXorHash {
             while (input.read(buffer).also { read = it } != -1) {
                 qxh.update(buffer, 0, read)
             }
-            return Base64.getEncoder().encodeToString(qxh.digest())
+            return qxh.digestBase64()
         }
     }
 }
