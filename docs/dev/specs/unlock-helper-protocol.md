@@ -66,6 +66,11 @@ The codes:
 | `witness_mismatch` | The keyring's key does not match the witness the helper holds (re-enrollment, restored machine). | Hard: the chain stops; the refusal names the code. A silent re-enrollment must never release a secret. |
 | any other | Helper-specific failure (malformed keyring, internal error). | Hard: the chain stops; the refusal names the code. |
 
+A code is `[a-z0-9_]{1,64}`. Any other text in `error` is reported as the hard code `invalid_error_code`, so a
+helper cannot put free text into the log or a refusal. The engine reads the reply up to the first newline and
+discards the helper's standard error. The reply is therefore the first line of the output: a reply that starts
+with a blank line, or is pretty-printed over several lines, is `invalid_reply`.
+
 A soft error (`declined` / `unavailable` / `locked_out`) falls through to the console
 when one exists. Without a console, the run follows the refusal path it already has:
 a CLI command exits with the reason in the message; `daemon run` starts locked (the
