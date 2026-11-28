@@ -32,6 +32,7 @@ class HydrationListedRowSpellingTest {
     private class Item(val id: String, val spelling: String, var content: String)
 
     private class Provider(private val byId: Boolean) : CloudProvider {
+        override val allowsDuplicateNames = false
         override val id = "spelling-fake"
         override val displayName = "Spelling Fake"
         override var isAuthenticated = true

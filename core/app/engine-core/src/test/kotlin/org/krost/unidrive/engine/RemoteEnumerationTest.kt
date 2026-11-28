@@ -2085,6 +2085,9 @@ class RemoteEnumerationTest {
 
     // One page per listing; every cursor names the listing that produced it.
     private class ListingProvider : CloudProvider {
+        // A drive of unique names (#268: the interface default is now twins possible).
+        override val allowsDuplicateNames = false
+
         var items: List<CloudItem> = emptyList()
         var failure: ProviderException? = null
 

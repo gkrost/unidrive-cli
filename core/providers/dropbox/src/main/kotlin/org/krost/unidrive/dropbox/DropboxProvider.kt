@@ -82,6 +82,9 @@ class DropboxProvider(
     // Dropbox paths are case-insensitive and case-preserving: `path_lower` is the key (DropboxItems).
     override val caseSensitivity: CaseSensitivity get() = CaseSensitivity.INSENSITIVE_PRESERVING
 
+    // #268: a folder holds one item per name.
+    override val allowsDuplicateNames: Boolean get() = false
+
     private val log = org.slf4j.LoggerFactory.getLogger(DropboxProvider::class.java)
     private val api: DropboxApi = DropboxApi(config, { force, rejected -> auth.accessToken(force, rejected) }, engine, uploadWatchdog = uploadWatchdog)
 

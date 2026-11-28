@@ -12,6 +12,7 @@ import java.time.Instant
 
 /** An in-memory remote: a flat folder whose full listing is the delta. */
 internal class MemProvider : CloudProvider {
+    override val allowsDuplicateNames = false
     override val id = "mem"
     override val displayName = "Mem"
     override var isAuthenticated = true

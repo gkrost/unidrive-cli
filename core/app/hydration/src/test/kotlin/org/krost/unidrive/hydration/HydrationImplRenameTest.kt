@@ -24,6 +24,7 @@ import org.krost.unidrive.testing.TestScratch
 class HydrationImplRenameTest {
 
     private class RenameFakeProvider : CloudProvider {
+        override val allowsDuplicateNames = false
         override val id = "fake-rename"
         override val displayName = "Fake (rename test)"
         override var isAuthenticated = true

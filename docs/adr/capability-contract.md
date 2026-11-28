@@ -30,8 +30,8 @@ answers or qualifies a verb rather than naming one.
 
 3. **A safety-relevant descriptor defaults to the safe side.** An adapter that declares nothing is taken to have the
    weaker behaviour, so a forgotten override costs a refusal or a lost optimisation, never data: `caseSensitivity`
-   folds, the id-addressed defaults (`deleteById`, `moveById`, ...) refuse their path fallback where
-   `allowsDuplicateNames`, `reloadCredentials` refuses until the adapter states its own non-interactive reload, and
+   folds, `allowsDuplicateNames` is true, so the id-addressed defaults (`deleteById`, `moveById`, ...) refuse their
+   path fallback until the adapter declares its names unique, `reloadCredentials` refuses until the adapter states its own non-interactive reload, and
    `conditionalWrite` is `NONE`.
 4. **`conditionalWrite`** (#268, #47 item 4) declares, for `upload` and for `delete`, what the write does with the
    `ifMatchETag` it is handed: `ATOMIC` (the server checks it in the write), `EMULATED` (the provider reads the current

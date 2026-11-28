@@ -34,6 +34,7 @@ import kotlin.test.assertTrue
 class HydrationRenameDuringUploadTest {
     // Items keyed by id, as a drive keeps them: a move keeps the id, an upload by id writes the item wherever it is now.
     private class IdProvider : CloudProvider {
+        override val allowsDuplicateNames = false
         override val id = "fake-id-items"
         override val displayName = "Fake (items by id)"
         override var isAuthenticated = true

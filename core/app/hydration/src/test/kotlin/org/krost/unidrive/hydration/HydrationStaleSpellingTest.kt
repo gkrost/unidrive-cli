@@ -47,6 +47,7 @@ class HydrationStaleSpellingTest {
 
     /** A drive whose item id is its key (S3): an upload to a key makes that key, a delete removes it. */
     private class KeyedProvider : CloudProvider {
+        override val allowsDuplicateNames = false
         override val id = "keyed-fake"
         override val displayName = "Keyed Fake"
         override var isAuthenticated = true

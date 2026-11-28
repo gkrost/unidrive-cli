@@ -254,6 +254,9 @@ class NormalisationTwinsTest {
      * download, delete or move. It tells names apart by code points (NTFS and ext4 both hold an NFC/NFD pair).
      */
     private class PathAddressedProvider : CloudProvider {
+        // A drive of unique names (#268: the interface default is now twins possible).
+        override val allowsDuplicateNames = false
+
         override val id = "path-addressed-fake"
         override val displayName = "Path Addressed Fake"
         override var isAuthenticated = true

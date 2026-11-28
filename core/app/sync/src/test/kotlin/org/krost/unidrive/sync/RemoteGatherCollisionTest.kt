@@ -406,6 +406,9 @@ class RemoteGatherCollisionTest {
     }
 
     private class CollisionFakeProvider : CloudProvider {
+        // A drive of unique names (#268: the interface default is now twins possible).
+        override val allowsDuplicateNames = false
+
         override val id = "collision-fake"
         override val displayName = "Collision Fake"
         override var isAuthenticated = true

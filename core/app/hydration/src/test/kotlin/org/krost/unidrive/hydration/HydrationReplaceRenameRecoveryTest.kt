@@ -33,6 +33,7 @@ import org.krost.unidrive.testing.TestScratch
  */
 class HydrationReplaceRenameRecoveryTest {
     private class NameHoldingDrive : CloudProvider {
+        override val allowsDuplicateNames = false
         override val id = "fake-replace-recovery"
         override val displayName = "Fake (replace recovery)"
         override var isAuthenticated = true

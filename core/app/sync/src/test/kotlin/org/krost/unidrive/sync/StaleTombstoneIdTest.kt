@@ -269,6 +269,9 @@ class StaleTombstoneIdTest {
     fun `engine streaming - a late tombstone of a replaced item's old id leaves the replacement alone`() = assertSurvives(streaming = true)
 
     private class ReplacingFakeProvider : CloudProvider {
+        // A drive of unique names (#268: the interface default is now twins possible).
+        override val allowsDuplicateNames = false
+
         override val id = "replacing-fake"
         override val displayName = "Replacing Fake"
         override var isAuthenticated = true

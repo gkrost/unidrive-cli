@@ -446,6 +446,7 @@ class HydrationIpcHandlerJsonEscapeTest {
     // ── end to end through the real HydrationImpl + state.db: the observable outcome ──
 
     private class E2eProvider : CloudProvider {
+        override val allowsDuplicateNames = false
         override val id = "fake-json-escape"
         override val displayName = "Fake (JSON escape test)"
         override var isAuthenticated = true

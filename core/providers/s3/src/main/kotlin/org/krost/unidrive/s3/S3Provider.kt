@@ -86,6 +86,9 @@ class S3Provider(
     // S3 object keys are case-sensitive: `a.txt` and `A.txt` are two objects.
     override val caseSensitivity: CaseSensitivity get() = CaseSensitivity.SENSITIVE
 
+    // #268: a key names one object.
+    override val allowsDuplicateNames: Boolean get() = false
+
     override fun capabilities(): Set<Capability> = setOf(Capability.Delta, Capability.Share, Capability.VerifyItem, Capability.PermanentDelete)
 
     override fun hashAlgorithm(): HashAlgorithm = HashAlgorithm.Md5Hex

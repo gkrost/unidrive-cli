@@ -2098,6 +2098,9 @@ class IpcContractCorpusTest {
         // gkrost/unidrive-cli#851: when true the stub's deletes land, so the sweep session's marked unlinks answer ok.
         private val deletesLand: Boolean = false,
     ) : CloudProvider {
+        // A drive of unique names (#268: the interface default is now twins possible).
+        override val allowsDuplicateNames = false
+
         override val id: String = "stub"
         override val displayName: String = "Stub"
         override var isAuthenticated: Boolean = true

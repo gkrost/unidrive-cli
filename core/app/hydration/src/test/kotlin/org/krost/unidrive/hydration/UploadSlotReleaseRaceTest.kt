@@ -40,6 +40,7 @@ import org.krost.unidrive.testing.TestScratch
 class UploadSlotReleaseRaceTest {
 
     private class GatedProvider : CloudProvider {
+        override val allowsDuplicateNames = false
         override val id = "fake-slot-release-race"
         override val displayName = "Fake (slot release race test)"
         override var isAuthenticated = true

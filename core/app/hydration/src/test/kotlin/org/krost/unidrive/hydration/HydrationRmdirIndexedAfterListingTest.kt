@@ -28,6 +28,7 @@ import org.krost.unidrive.testing.TestScratch
  */
 class HydrationRmdirIndexedAfterListingTest {
     private class DeltaProvider : CloudProvider {
+        override val allowsDuplicateNames = false
         override val id = "delta-fake"
         override val displayName = "Delta Fake"
         override var isAuthenticated = true

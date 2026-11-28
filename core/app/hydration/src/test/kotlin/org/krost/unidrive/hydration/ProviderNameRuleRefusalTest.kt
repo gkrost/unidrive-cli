@@ -28,6 +28,7 @@ class ProviderNameRuleRefusalTest {
     private class RuleProvider(
         private val refused: Map<String, String>,
     ) : CloudProvider {
+        override val allowsDuplicateNames = false
         override val id = "fake-name-rules"
         override val displayName = "Fake (name rules)"
         override var isAuthenticated = true

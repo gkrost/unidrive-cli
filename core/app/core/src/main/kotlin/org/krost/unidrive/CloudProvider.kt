@@ -392,9 +392,11 @@ interface CloudProvider {
     /**
      * True when the drive can hold two live items with the same name in one folder (Internxt does). An item that an
      * incremental [delta] reports at a path the engine tracks for another item is then a duplicate, kept beside it under
-     * a decorated local name, not a replacement of it. Providers whose names are unique per folder leave the default.
+     * a decorated local name, not a replacement of it. The default is the safe side, twins possible (#268): an adapter that
+     * declares nothing gets the id-addressed defaults' refusal instead of a path fallback that may hit the other twin. A
+     * provider whose names are unique per folder declares false.
      */
-    val allowsDuplicateNames: Boolean get() = false
+    val allowsDuplicateNames: Boolean get() = true
 
     /**
      * Whether the drive tells names apart by case. The engine folds case for identity where this folds or the local file

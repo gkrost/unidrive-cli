@@ -42,6 +42,7 @@ import org.krost.unidrive.testing.TestScratch
 class HydrationImplGhostGuardTest {
 
     private class GhostFakeProvider : CloudProvider {
+        override val allowsDuplicateNames = false
         override val id = "fake-ghost"
         override val displayName = "Fake (ghost test)"
         override var isAuthenticated = true

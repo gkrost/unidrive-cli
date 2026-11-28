@@ -48,6 +48,7 @@ class HydrationRenameOvertakesUploadRetryTest {
      * after the item landed (the answer was lost), which leaves a ghost for the rename's probe to find.
      */
     private class PathKeyedDrive : CloudProvider {
+        override val allowsDuplicateNames = false
         override val id = "fake-path-keyed"
         override val displayName = "Fake (rename overtakes upload retry)"
         override var isAuthenticated = true

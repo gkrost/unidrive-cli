@@ -23,6 +23,7 @@ import org.krost.unidrive.testing.TestScratch
 class HydrationImplNamespaceTest {
 
     private class NamespaceFakeProvider : CloudProvider {
+        override val allowsDuplicateNames = false
         override val id = "fake-ns"
         override val displayName = "Fake (namespace test)"
         override var isAuthenticated = true

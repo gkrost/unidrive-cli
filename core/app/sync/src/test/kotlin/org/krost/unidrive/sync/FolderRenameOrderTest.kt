@@ -361,6 +361,9 @@ class FolderRenameOrderTest {
      * whole subtree with it (the real delete is a trash call on the folder).
      */
     private class TreeProvider : CloudProvider {
+        // A drive of unique names (#268: the interface default is now twins possible).
+        override val allowsDuplicateNames = false
+
         override val id = "tree"
         override val displayName = "Tree"
         override var isAuthenticated = true
