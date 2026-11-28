@@ -39,12 +39,22 @@ class HydrationUploadMtimeTest {
         return cachePath
     }
 
-    private fun awaitUploadDrained(env: HydrationTestEnv) {
+    /**
+     * Waits until the upload has drained *into the row*: the provider call completes before the row's rebaseline
+     * lands (`upload_done` precedes `upload_confirmed` by about a millisecond), so on a loaded machine a wait on the
+     * provider counter alone can end inside that gap and read the pre-upload row (gkrost/unidrive-cli#1068). The
+     * wait ends on the row carrying [expectedMtime], which is what the assertions then check.
+     */
+    private fun awaitUploadDrained(
+        env: HydrationTestEnv,
+        path: String,
+        expectedMtime: Long,
+    ) {
         val deadline = System.currentTimeMillis() + 20_000
-        while (env.providerForTest.completedUploads() < 1 && System.currentTimeMillis() < deadline) {
+        while (System.currentTimeMillis() < deadline && env.stateDb.localMtimeOf(path) != expectedMtime) {
             Thread.sleep(20)
         }
-        assertEquals(1, env.providerForTest.completedUploads(), "the copy's upload drained")
+        assertEquals(expectedMtime, env.stateDb.localMtimeOf(path), "the copy's upload drained into the row")
     }
 
     private suspend fun listedMtimeOf(
@@ -77,7 +87,7 @@ class HydrationUploadMtimeTest {
 
         val opened = env.hydration.openForWrite("conn1", "h-w", "/copy.txt", cachePath)
         assertTrue(opened is OpenResult.Ok, "open_write queued the upload: $opened")
-        awaitUploadDrained(env)
+        awaitUploadDrained(env, "/copy.txt", golden.toEpochMilli())
 
         assertEquals(golden.toEpochMilli(), env.stateDb.localMtimeOf("/copy.txt"), "the row keeps the copy's time")
         assertEquals(golden.toEpochMilli(), listedMtimeOf(env, "/copy.txt"), "the listing shows the copy's time")
@@ -104,7 +114,7 @@ class HydrationUploadMtimeTest {
                 openWriteRequest(cachePath, "mtime_ms" to JsonPrimitive(golden.toEpochMilli())),
             )
         assertTrue(reply.contains("\"ok\":true"), "open_write accepted the set time: $reply")
-        awaitUploadDrained(env)
+        awaitUploadDrained(env, "/copy.txt", golden.toEpochMilli())
 
         assertEquals(golden.toEpochMilli(), env.stateDb.localMtimeOf("/copy.txt"), "the row keeps the client's time")
         assertEquals(golden.toEpochMilli(), listedMtimeOf(env, "/copy.txt"), "the listing shows the client's time")
