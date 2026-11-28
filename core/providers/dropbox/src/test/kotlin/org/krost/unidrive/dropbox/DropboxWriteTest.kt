@@ -8,6 +8,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import org.krost.unidrive.CapabilityResult
 import org.krost.unidrive.HttpDefaults
+import org.krost.unidrive.InsufficientRemoteSpaceException
 import org.krost.unidrive.PermanentDownloadFailureException
 import org.krost.unidrive.PermanentUploadFailureException
 import org.krost.unidrive.ProviderException
@@ -585,5 +586,36 @@ class DropboxWriteTest {
             assertEquals(CapabilityResult.Success("https://www.dropbox.com/s/x"), provider.share("/a.txt", expiryHours = 0))
             assertFalse(fake.callsTo("sharing/create_shared_link_with_settings").single().args!!["settings"]!!.jsonObject.containsKey("expires"))
             assertNull(fake.callsTo("files/get_metadata").single().headers[DropboxApi.PATH_ROOT])
+        }
+
+    // gkrost/unidrive-cli#1074: a full drive is the engine's typed space refusal (the remote_space token, the single
+    // refusal, the 6-hour deferral), not a plain classified failure that runs the retry ladder against the refusal.
+    // Dropbox rides the answer on a 429-shaped status, so the API layer also must not wait out its six throttle
+    // attempts before surfacing it.
+    @Test
+    fun `an insufficient_space upload answer is the typed space refusal and is not throttle-retried`() =
+        runTest {
+            fake.on("files/upload") {
+                Answer(429, """{"error_summary":"insufficient_space/..","error":{".tag":"insufficient_space"}}""")
+            }
+
+            val failure = assertFailsWith<InsufficientRemoteSpaceException> { provider.upload(local("a.txt", "hello"), "/a.txt") }
+
+            assertTrue(failure.message!!.contains("insufficient_space"), failure.message)
+            assertEquals(1, fake.callsTo("files/upload").size, "the API layer does not throttle-retry a full drive")
+        }
+
+    @Test
+    fun `an insufficient_space answer off the throttle statuses is the typed space refusal too`() =
+        runTest {
+            fake.json(
+                "files/upload",
+                """{"error_summary":"insufficient_space/..","error":{".tag":"insufficient_space"}}""",
+                status = 507,
+            )
+
+            val failure = assertFailsWith<InsufficientRemoteSpaceException> { provider.upload(local("b.txt", "hello"), "/b.txt") }
+
+            assertTrue(failure.message!!.contains("no room"), failure.message)
         }
 }

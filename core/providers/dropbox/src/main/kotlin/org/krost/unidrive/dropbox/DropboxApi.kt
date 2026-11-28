@@ -290,7 +290,13 @@ class DropboxApi(
                 isThrottle(response.status) && retries < MAX_THROTTLE_ATTEMPTS -> {
                     // A bounded read of the answer for the retry hint: no megabyte String is built of a gateway page, and the JSON hint (Dropbox's
                     // bodies are a few hundred bytes) is still read. The HTTP client has buffered the response by now; only the copy is bounded.
-                    val waitMs = backoffMs(response, readBoundedErrorBody(response), retries)
+                    // A full drive rides a 429-shaped answer (gkrost/unidrive-cli#1074): no point waiting out six of them — the typed
+                    // space refusal surfaces at once, so the engine defers the row instead of throttling into the same refusal.
+                    val peeked = readBoundedErrorBody(response)
+                    if (errorSummaryOf(peeked).startsWith(INSUFFICIENT_SPACE)) {
+                        throw remoteSpaceRefused("Dropbox ${endpoint.substringAfter("/2/")}", truncateErrorBody(peeked), response.headers[REQUEST_ID])
+                    }
+                    val waitMs = backoffMs(response, peeked, retries)
                     log.warn("Dropbox answered {} on {}; waiting {} ms", response.status.value, endpoint.substringAfter("/2/"), waitMs)
                     RetryOutcome.Retry(waitMs, throttle = true)
                 }
@@ -322,6 +328,11 @@ class DropboxApi(
         val summary = parsed?.get("error_summary")?.jsonPrimitive?.contentOrNull ?: ""
         val message = "Dropbox $endpoint failed (${response.status.value}): ${truncateErrorBody(summary.ifEmpty { body })}"
         if (response.status == HttpStatusCode.Unauthorized) return AuthenticationException(message, requestId = requestId)
+        // A full drive is the typed space refusal (gkrost/unidrive-cli#1074), not a plain classified failure: the
+        // engine defers the row with the remote_space token instead of running its retry ladder against the refusal.
+        if (summary.startsWith(INSUFFICIENT_SPACE)) {
+            return remoteSpaceRefused("Dropbox $endpoint", truncateErrorBody(summary.ifEmpty { body }), requestId)
+        }
         return DropboxApiException(message, response.status.value, summary, parsed?.get("error") as? JsonObject, requestId)
     }
 
