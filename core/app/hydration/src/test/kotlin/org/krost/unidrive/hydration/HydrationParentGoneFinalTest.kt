@@ -116,6 +116,46 @@ class HydrationParentGoneFinalTest {
         env.stop()
     }
 
+    // gkrost/unidrive-cli#962: a row the code before #951 stored carries a 6 h deadline; it is final all the same.
+    @Test
+    fun `a parent_gone row stored with a past deadline is final at once`() = runTest {
+        val env = env()
+        val hydration = env.refusedParentGone(this, retryDelays = emptyList())
+        val parts = assertNotNull(env.db.uploadRefusal("/dir/new.txt")).split('|', limit = 4)
+        env.db.markUploadRefused("/dir/new.txt", "${parts[0]}|${parts[1]}|1000|${parts[3]}", keepCloudBaseline = true)
+        env.folderBack()
+
+        assertEquals("parent_gone: /dir", hydration.refusedEarlier("/dir/new.txt", env.mount.resolveCachePath("/dir/new.txt")))
+        env.mount.pause.pause("test", auto = false)
+        env.mount.pause.resume()
+        advanceUntilIdle()
+
+        assertNull(env.provider.remote["/dir/new.txt"], "the old deadline did not make it eligible once more")
+        assertEquals(1, env.provider.uploadAttempts.get(), "only the first refusal reached the provider")
+        env.stop()
+    }
+
+    // gkrost/unidrive-cli#962 (second review): a row whose detail carries no deadline segment at all
+    // (`<stamp>|parent_gone: /dir`) must not fall through the deadline parse and become eligible once.
+    @Test
+    fun `a parent_gone row stored without any deadline segment is final at once`() = runTest {
+        val env = env()
+        val hydration = env.refusedParentGone(this, retryDelays = emptyList())
+        val parts = assertNotNull(env.db.uploadRefusal("/dir/new.txt")).split('|', limit = 4)
+        env.db.markUploadRefused("/dir/new.txt", "${parts[0]}|${parts[1]}|${parts[3]}", keepCloudBaseline = true)
+        env.folderBack()
+
+        assertEquals("parent_gone: /dir", hydration.refusedEarlier("/dir/new.txt", env.mount.resolveCachePath("/dir/new.txt")), "no deadline segment still final")
+        assertNull(hydration.refusedEarlier("/dir/new.txt", env.mount.resolveCachePath("/dir/new.txt"), userRetry = true), "history.retry still asks the provider")
+        env.mount.pause.pause("test", auto = false)
+        env.mount.pause.resume()
+        advanceUntilIdle()
+
+        assertNull(env.provider.remote["/dir/new.txt"], "the missing deadline did not make it eligible once more")
+        assertEquals(1, env.provider.uploadAttempts.get(), "only the first refusal reached the provider")
+        env.stop()
+    }
+
     @Test
     fun `a parent_gone refusal survives a daemon restart and is not replayed`() = runTest {
         val env = env()

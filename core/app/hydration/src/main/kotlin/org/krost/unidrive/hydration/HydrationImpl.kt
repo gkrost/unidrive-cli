@@ -1870,8 +1870,8 @@ class HydrationImpl(
     }
 
     // Test drive 2, E3: a resume offers again every never-uploaded file whose last upload failed and that nothing uploads now
-    // (a parent_gone refusal, a ladder that ran out while the daemon was paused); the provider's refusal of these exact bytes
-    // still holds them back (refusedEarlier).
+    // (a ladder that ran out while the daemon was paused); the provider's refusal of these exact bytes still holds them back
+    // (refusedEarlier), a parent_gone one included.
     private suspend fun offerFailedPendingUploadsAgain() {
         for (row in pendingUploadSplit().waiting) {
             if (row.lastErrorAt == null || uploadSlots.containsKey(row.path) || !replayable(row.path)) continue
@@ -1940,10 +1940,12 @@ class HydrationImpl(
         val stamp = refusalStamp(cachePath) ?: return null
         if (!refusal.startsWith("$stamp|")) return null
         val detail = refusal.substring(stamp.length + 1)
-        // Legacy refusals have no deadline: make them eligible once after upgrade.
+        // gkrost/unidrive-cli#962: a parent_gone refusal is final whatever deadline the row carries (a 6 h one, or none:
+        // `<stamp>|parent_gone: /dir`), so the deadline parse below cannot make it eligible once after upgrade.
+        val reason = if ('|' in detail) detail.substringAfter('|') else detail
+        if (HydrationError.ParentGone.parse(reason) != null) return if (userRetry) null else reason
+        // Legacy non-parent_gone refusals have no deadline: make them eligible once after upgrade.
         val retryAt = detail.substringBefore('|').toLongOrNull() ?: return null
-        val reason = detail.substringAfter('|', "upload refused")
-        if (userRetry && HydrationError.ParentGone.parse(reason) != null) return null
         return if (System.currentTimeMillis() < retryAt) reason else null
     }
 
