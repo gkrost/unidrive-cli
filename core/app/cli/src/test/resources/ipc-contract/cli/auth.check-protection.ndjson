@@ -1,0 +1,2 @@
+{"argv":["auth","check","--profile","od","--json"]}
+{"ok":false,"error":"credential_protection_unavailable","message":"/p/token.json does not open under the vault's credential seal key"}

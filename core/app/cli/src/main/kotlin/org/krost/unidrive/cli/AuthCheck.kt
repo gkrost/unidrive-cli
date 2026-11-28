@@ -15,6 +15,8 @@ import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.CredentialProof
 import org.krost.unidrive.NotSignedInException
 import org.krost.unidrive.ProviderException
+import org.krost.unidrive.auth.CredentialLockedException
+import org.krost.unidrive.auth.CredentialProtectionException
 import org.slf4j.LoggerFactory
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
@@ -54,6 +56,11 @@ internal fun checkFailure(e: Throwable): LifecycleError =
         e is AuthenticationException ->
             LifecycleError("credentials_rejected", "the provider did not accept the stored sign-in (revoked, expired or another account)", e)
         e is UnsupportedOperationException -> LifecycleError("unsupported", "this provider has no credential check", e)
+        // A token sealed under the vault key, read locked (#964): the sign-in steps' token; the message is ours (file, vault.unlock).
+        e is CredentialLockedException -> LifecycleError("credential_sealed", e.message ?: "unlock the vault and retry", e)
+        // A protection failure that is not the lock (a failing backend, a wrong key, a damaged seal): the same
+        // token the sign-in steps answer for it (AuthSteps.kt), not a provider error (#964 second review).
+        e is CredentialProtectionException -> LifecycleError("credential_protection_unavailable", e.message ?: "the credential protection is unavailable", e)
         // The same classifier as the sign-in steps (#143): the cause chain, not only the exception's own type.
         else ->
             unreachableRefusal(e, "asked")
@@ -120,7 +127,7 @@ internal fun requireCheckTimeout(seconds: Long): Long {
         "Prove the stored sign-in of a profile against the provider with one authenticated call: no sync, no scan, " +
             "no sign-in prompt. Prints status authenticated (with the account when the provider says it) or a refusal " +
             "token: not_signed_in, credentials_rejected, network_error (could not be asked: not a verdict), provider_error, " +
-            "unsupported. Exit 1 on any refusal. A running daemon of the profile is asked itself, so its token refresh is not raced.",
+            "unsupported, credential_sealed (the token is sealed under the vault key: unlock the vault). Exit 1 on any refusal. A running daemon of the profile is asked itself, so its token refresh is not raced.",
     ],
     mixinStandardHelpOptions = true,
 )

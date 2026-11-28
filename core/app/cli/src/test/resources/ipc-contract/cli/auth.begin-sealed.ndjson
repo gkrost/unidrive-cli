@@ -1,0 +1,2 @@
+{"argv":["auth","begin","--profile","od","--json"]}
+{"ok":false,"error":"credential_sealed","message":"/p/device-flow.json is sealed under the vault key; unlock the vault first (vault.unlock)"}

@@ -192,6 +192,7 @@ interface CloudProvider {
      * blind-overwriting the other editor's change. It likewise precedes `onProgress` so
      * trailing-lambda call sites are unaffected. Providers without conditional-write semantics
      * (path-based or filesystem overwrite) ignore it; null means "no guard" (e.g. a NEW upload).
+     * Which of these a provider is, it declares in [conditionalWrite] (`upload`), and the conformance suite holds it to that.
      */
     suspend fun upload(
         localPath: Path,
@@ -217,7 +218,7 @@ interface CloudProvider {
      * the item being current (OneDrive sends it as an `If-Match` header). A concurrent edit
      * between plan and apply flips the server-side eTag and the delete fails (412) instead of
      * destroying a version the engine never saw. Providers without conditional-delete semantics
-     * ignore it; null preserves the legacy unconditional delete.
+     * ignore it; null preserves the legacy unconditional delete. The provider declares which in [conditionalWrite] (`delete`).
      */
     suspend fun delete(remotePath: String, ifMatchETag: String? = null)
 
@@ -578,6 +579,15 @@ interface CloudProvider {
      * per profile. False (the default): the provider names none, and nothing is listed for it.
      */
     val reportsContentIds: Boolean get() = false
+
+    /**
+     * #268 (#47 item 4): whether [upload] and [delete] check the `ifMatchETag` they are handed, and how: atomically on the
+     * server, emulated by a read before the write, or not at all. The default is [ConditionalWrite.NONE], the safe side: a
+     * provider that declares nothing is taken to guard nothing, so no caller counts on a token the provider may drop. A
+     * provider whose writes do check the token overrides this, and the conformance suite holds the declaration to what the
+     * writes do with a stale token.
+     */
+    val conditionalWrite: ConditionalWrite get() = ConditionalWrite.NONE
 
     /**
      * gkrost/unidrive-cli#414: hands the provider what an earlier answer said about the stored object of the item [remoteId]

@@ -7,6 +7,7 @@ import org.krost.unidrive.CapabilityResult
 import org.krost.unidrive.CaseSensitivity
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
+import org.krost.unidrive.ConditionalWrite
 import org.krost.unidrive.ContentProof
 import org.krost.unidrive.DeltaPage
 import org.krost.unidrive.ProviderException
@@ -441,6 +442,9 @@ class LocalFsProvider(
      * before/with their children via the natural pre-order walk.
      */
     override val deltaIsFullListing: Boolean get() = true
+
+    // #268: a file copy carries no write token, so neither a replace nor a delete checks the one it is handed.
+    override val conditionalWrite: ConditionalWrite get() = ConditionalWrite.NONE
 
     // The drive is a directory: it tells names apart as the file system holding the root does (asked once, at the root
     // or its nearest existing ancestor), the host's usual behaviour when the file system cannot tell.

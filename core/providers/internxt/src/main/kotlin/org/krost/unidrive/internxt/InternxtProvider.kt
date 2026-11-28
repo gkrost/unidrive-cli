@@ -60,6 +60,8 @@ class InternxtProvider(
 
     // gkrost/unidrive-cli#202: every file a listing converts names its stored object (CloudItem.contentId, internxtContentId).
     override val reportsContentIds: Boolean get() = true
+    // #268, archive#291: a replace compares the write token with fresh metadata, then writes; a delete has no conditional primitive (it trashes).
+    override val conditionalWrite: ConditionalWrite get() = ConditionalWrite(upload = WriteGuard.EMULATED, delete = WriteGuard.NONE)
 
     // archive#578: the --upload-concurrency flag's runtime override of the profile's upload_concurrency
     // key; null leaves the key in force. [effectiveUploadConcurrency] is what the part loop reads.
@@ -1315,7 +1317,7 @@ class InternxtProvider(
                 val item = uploadUnclassified(localPath, remotePath, existingRemoteId, ifMatchETag, onProgress, sourceSha256)
                 sourceSha256.get()?.let { item.copy(sentSha256 = it) } ?: item
             } catch (e: InternxtApiException) {
-                if (isParentFolderNotFound(e)) throw parentGoneAfterCreate(e, remotePath, folderCache, authService.getValidCredentials().rootFolderId)
+                if (isParentFolderNotFound(e)) refuseOrRetryAfterParentNotFound(e, remotePath, folderCache, authService.getValidCredentials().rootFolderId, ::resolveFolderAfresh)
                 if (isMaxSpaceUsed(e)) {
                     throw org.krost.unidrive.InsufficientRemoteSpaceException(
                         "Internxt refused the upload of $remotePath: the account's storage is full (${e.statusCode}: ${serverSentence(e.message) ?: e.message})",
@@ -2578,8 +2580,6 @@ class InternxtProvider(
     }
 
     override suspend fun delete(remotePath: String, ifMatchETag: String?) {
-        // archive#291: Internxt has no conditional-delete primitive, so the optimistic-concurrency
-        // token is accepted-and-ignored; routine deletes already route to the recycle bin below.
         // UD-367: route routine sync-driven deletes through Internxt's recycle bin
         // (POST /storage/trash/add) so any spurious del-local from a partial delta()
         // gather is recoverable rather than permanently destructive. The permanent

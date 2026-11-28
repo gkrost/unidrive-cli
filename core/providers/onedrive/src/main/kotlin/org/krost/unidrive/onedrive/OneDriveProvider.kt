@@ -1233,6 +1233,9 @@ class OneDriveProvider(
     // never matches it.
     override val reportsItemVersions: Boolean get() = true
 
+    // #268: Graph checks If-Match as part of the content PUT, the upload session and the DELETE.
+    override val conditionalWrite: ConditionalWrite get() = ConditionalWrite(upload = WriteGuard.ATOMIC, delete = WriteGuard.ATOMIC)
+
     // gkrost/unidrive-cli#233: every file a listing converts names its bytes by its content hash (CloudItem.contentId, oneDriveContentId),
     // so the once-per-profile backfill fills the rows from before the column.
     override val reportsContentIds: Boolean get() = true

@@ -7,6 +7,8 @@ import org.krost.unidrive.CloudItem
 import org.krost.unidrive.AuthRequiredException
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.NotSignedInException
+import org.krost.unidrive.ProviderException
+import org.krost.unidrive.RemoteConflictException
 import org.krost.unidrive.UnsupportedCapabilityException
 import org.krost.unidrive.ViewKind
 import java.nio.file.Path
@@ -25,9 +27,10 @@ import kotlin.test.assertTrue
  * contract that drifts for one provider fails that provider's own build, not just the engine's.
  *
  * The suite pins the safety-relevant decisions each adapter declares through the knobs below: whether the
- * id-addressed writes decide by remote id or keep the documented path fallback, whether a stale `ifMatchETag`
- * refuses or is ignored, whether the stored credentials are a removable file at all. A knob is a decision, not an
- * excuse: the contract runs on both sides of it and pins whichever side the module declares.
+ * id-addressed writes decide by remote id or keep the documented path fallback, whether the stored credentials are a
+ * removable file at all. A knob is a decision, not an excuse: the contract runs on both sides of it and pins whichever
+ * side the module declares. Whether a stale `ifMatchETag` refuses is no knob of the test module's: the provider itself
+ * declares it ([CloudProvider.conditionalWrite], #268), and the guard contracts hold it to that declaration.
  *
  * Two kinds of evidence exist, and a module picks per backend:
  *  - a stateful backend (real state behind the fake): the contract observes the outcome through the provider itself;
@@ -72,12 +75,6 @@ abstract class CloudProviderConformanceTest {
     /** True when [CloudProvider.moveById] decides by remote id; false pins the documented path fallback (ids are the paths). */
     protected open val idAddressedMove: Boolean = true
 
-    /** True when [CloudProvider.upload] refuses a stale `ifMatchETag`; false pins the declared ignore. */
-    protected open val guardedUpload: Boolean = true
-
-    /** True when [CloudProvider.delete] refuses a stale `ifMatchETag`; false pins the declared ignore. */
-    protected open val guardedDelete: Boolean = true
-
     /** True when the stored credentials are a removable file; false: the profile config is the credential, nothing to remove. */
     protected open val storedCredentialsRemovable: Boolean = false
 
@@ -94,6 +91,10 @@ abstract class CloudProviderConformanceTest {
 
     /** Removes the stored credentials (and only the stored ones), so nothing is left to reload. */
     protected open fun clearStoredCredentials() {}
+
+    /** A stale-token refusal: the typed conflict, or the provider's own HTTP 412 Precondition Failed. */
+    private fun isStaleTokenRefusal(e: Throwable): Boolean =
+        e is RemoteConflictException || (e as? ProviderException)?.httpStatus == 412
 
     // ── the contracts ─────────────────────────────────────────────────────────
 
@@ -307,39 +308,62 @@ abstract class CloudProviderConformanceTest {
         }
 
     @Test
-    fun `upload honours the declared ifMatchETag semantics`() =
+    fun `a declared conditional upload refuses a stale ifMatchETag`() =
         runBlocking<Unit> {
             val provider = newGuardProvider()
             try {
+                if (!provider.conditionalWrite.upload.checksToken) return@runBlocking
                 val item = seedFile(provider, "/conformance-a.txt", "original")
-                val local = localFile("replaced")
-                if (guardedUpload) {
-                    assertFails("a stale ifMatchETag must refuse the write instead of blind-overwriting") {
-                        provider.upload(local, item.path, existingRemoteId = item.id, ifMatchETag = staleWriteToken())
-                    }
-                } else {
-                    // The declared decision: a replace ignores the token (a filesystem copy has none to check).
-                    provider.upload(local, item.path, existingRemoteId = item.id, ifMatchETag = staleWriteToken())
-                }
+                // Refusing is a conflict (or a keep-both copy beside the item, OneDrive's answer to a 412), never an incidental
+                // failure: a fake that fails the write for another reason must not let a provider that drops the token pass.
+                val outcome = runCatching { provider.upload(localFile("replaced"), item.path, existingRemoteId = item.id, ifMatchETag = staleWriteToken()) }
+                val refused = outcome.exceptionOrNull()?.let(::isStaleTokenRefusal) ?: outcome.getOrThrow().keptBoth
+                assertTrue(refused, "a provider that declares ${provider.conditionalWrite.upload} must refuse a stale token, not overwrite: $outcome")
             } finally {
                 provider.close()
             }
         }
 
     @Test
-    fun `delete honours the declared ifMatchETag semantics`() =
+    fun `an upload that declares no guard writes whatever the ifMatchETag says`() =
         runBlocking<Unit> {
             val provider = newGuardProvider()
             try {
+                // A provider that checks the token but declares NONE undersells itself; this pins the declaration to the
+                // behaviour from the other side, so the declared value is what the provider does.
+                if (provider.conditionalWrite.upload.checksToken) return@runBlocking
+                val item = seedFile(provider, "/conformance-a.txt", "original")
+                provider.upload(localFile("replaced"), item.path, existingRemoteId = item.id, ifMatchETag = staleWriteToken())
+            } finally {
+                provider.close()
+            }
+        }
+
+    @Test
+    fun `a declared conditional delete refuses a stale ifMatchETag`() =
+        runBlocking<Unit> {
+            val provider = newGuardProvider()
+            try {
+                if (!provider.conditionalWrite.delete.checksToken) return@runBlocking
                 val item = seedFile(provider, "/conformance-a.txt", "content")
-                if (guardedDelete) {
-                    assertFails("a stale ifMatchETag must refuse the delete") {
-                        provider.delete(item.path, staleWriteToken())
-                    }
-                } else {
-                    // The declared decision: routine deletes accept and ignore the token.
-                    provider.delete(item.path, staleWriteToken())
-                }
+                val failure = runCatching { provider.delete(item.path, staleWriteToken()) }.exceptionOrNull()
+                assertTrue(
+                    failure != null && isStaleTokenRefusal(failure),
+                    "a provider that declares ${provider.conditionalWrite.delete} must refuse a stale token as a conflict, not delete: $failure",
+                )
+            } finally {
+                provider.close()
+            }
+        }
+
+    @Test
+    fun `a delete that declares no guard deletes whatever the ifMatchETag says`() =
+        runBlocking<Unit> {
+            val provider = newGuardProvider()
+            try {
+                if (provider.conditionalWrite.delete.checksToken) return@runBlocking
+                val item = seedFile(provider, "/conformance-a.txt", "content")
+                provider.delete(item.path, staleWriteToken())
             } finally {
                 provider.close()
             }

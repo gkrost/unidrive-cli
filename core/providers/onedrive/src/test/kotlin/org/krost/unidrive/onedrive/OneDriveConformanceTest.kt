@@ -111,23 +111,35 @@ class OneDriveConformanceTest : CloudProviderConformanceTest() {
             jsonHeaders(),
         )
 
-    /** Graph's conditional write: a content PUT or a DELETE carrying a mismatching `If-Match` is refused with 412. */
+    /**
+     * Graph's conditional write: a content PUT or a DELETE carrying a mismatching `If-Match` is refused with 412. One
+     * without `If-Match` is unconditional, as on Graph, so a provider that drops the token overwrites or deletes here and
+     * the guard contracts see it; a `rename` PUT lands a keep-both copy under another name.
+     */
     private fun guardEngine(): MockEngine =
         MockEngine { request ->
             handleGuard(request)
         }
 
+    private fun stale(request: HttpRequestData): Boolean = request.headers[HttpHeaders.IfMatch]?.let { it != guardEtag } ?: false
+
     private fun MockRequestHandleScope.handleGuard(request: HttpRequestData): HttpResponseData {
         val item = driveItemJson("conformance-id", guardSeededPath.trimStart('/'), guardEtag)
+        val copy = driveItemJson("conformance-copy-id", "conformance-a 1.txt", "etag-copy")
         return when {
             request.method == HttpMethod.Get && request.url.encodedPath.contains("/root:/") ->
                 respond(item, HttpStatusCode.OK, jsonHeaders())
             request.method == HttpMethod.Put && request.url.encodedPath.endsWith("/content") ->
-                if (request.headers[HttpHeaders.IfMatch] != guardEtag) preconditionFailed()
-                else respond(item, HttpStatusCode.OK, jsonHeaders())
+                when {
+                    stale(request) -> preconditionFailed()
+                    request.url.parameters["@microsoft.graph.conflictBehavior"] == "rename" -> respond(copy, HttpStatusCode.OK, jsonHeaders())
+                    else -> respond(item, HttpStatusCode.OK, jsonHeaders())
+                }
+            // The fileSystemInfo PATCH that follows every content PUT.
+            request.method == HttpMethod.Patch && request.url.encodedPath.contains("/items/") ->
+                respond(if (request.url.encodedPath.endsWith("/conformance-copy-id")) copy else item, HttpStatusCode.OK, jsonHeaders())
             request.method == HttpMethod.Delete ->
-                if (request.headers[HttpHeaders.IfMatch] != guardEtag) preconditionFailed()
-                else respond("", HttpStatusCode.NoContent)
+                if (stale(request)) preconditionFailed() else respond("", HttpStatusCode.NoContent)
             else ->
                 respond(
                     """{"error":{"code":"invalidRequest","message":"unexpected ${request.method} ${request.url.encodedPath}"}}""",
