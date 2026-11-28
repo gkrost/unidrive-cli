@@ -986,38 +986,27 @@ open class SyncEngine(
             )
         }
 
-        // UD-256: scope-persistence guard against the 2026-05-16
-        // delete-the-cloud-by-bidirectional-on-partial-local pattern.
-        //
-        // A profile that has ever been operated with `--sync-path` accumulates
-        // a persisted `effective_scope` (sync_state key, TAB-separated list of
-        // normalised paths). On every run:
-        //  - If `syncPaths` is non-empty this run: UNION them into the persisted scope
-        //    (whether the scope was previously empty or not). The run proceeds
-        //    with the runtime scope filter as before.
-        //  - If `syncPaths` is empty and the persisted scope is non-empty and the
-        //    run is bidirectional-apply: REFUSE unless --full-tree was passed.
-        //    The reconciler would otherwise treat every cloud path outside the
+        // UD-256: scope-persistence guard against the 2026-05-16 delete-the-cloud-by-bidirectional-on-partial-local
+        // pattern. A profile that has ever been operated with `--sync-path` accumulates a persisted `effective_scope`
+        // (sync_state key, TAB-separated list of normalised paths). On every run:
+        //  - If `syncPaths` is non-empty this run: UNION them into the persisted scope (whether the scope was
+        //    previously empty or not). The run proceeds with the runtime scope filter as before.
+        //  - If `syncPaths` is empty and the persisted scope is non-empty and the run is bidirectional-apply: REFUSE
+        //    unless --full-tree was passed. The reconciler would otherwise treat every cloud path outside the
         //    persisted scope as "user-deleted-locally" and propagate DELETE.
-        //  - If `--full-tree` was passed: clear the persisted scope (the user
-        //    is consciously taking the profile out of scoped mode) and proceed.
-        //  - Dry-run is allowed-with-warning, not refused, so the operator can
-        //    inspect what a `--full-tree` would do without an unrecoverable
-        //    commitment.
-        //  - Upload-only and download-only are not refused — UD-737 already
-        //    blocks delete propagation in those modes, so the catastrophe
-        //    pattern can't trigger from the directions alone.
-        //
-        // UD-256 / PR archive#45 review (Codex P1): **never mutate effective_scope
-        // in dry-run.** Dry-run is contractually side-effect-free (see
-        // UD-738's in-memory-shadow handling of `--reset --dry-run`). Earlier
-        // versions of this block wrote to sync_state unconditionally — so a
-        // `--full-tree --dry-run` preview would permanently clear the guard,
-        // and a subsequent bare bidirectional apply on the same partial local
-        // tree would no longer be refused. Same hazard applied to
-        // `--sync-path X --dry-run`: previewing a scope addition silently
-        // committed it. Both writes are now gated on `!dryRun`. The refusal
-        // / warning branches are pure reads and stay structured as before.
+        //  - If `--full-tree` was passed: clear the persisted scope (the user is consciously taking the profile out
+        //    of scoped mode) and proceed.
+        //  - Dry-run is allowed-with-warning, not refused, so the operator can inspect what a `--full-tree` would do
+        //    without an unrecoverable commitment.
+        //  - Upload-only and download-only are not refused — UD-737 already blocks delete propagation in those
+        //    modes, so the catastrophe pattern can't trigger from the directions alone.
+        // UD-256 / PR archive#45 review (Codex P1): **never mutate effective_scope in dry-run.** Dry-run is
+        // contractually side-effect-free (see UD-738's in-memory-shadow handling of `--reset --dry-run`). Earlier
+        // versions of this block wrote to sync_state unconditionally — so a `--full-tree --dry-run` preview would
+        // permanently clear the guard, and a subsequent bare bidirectional apply on the same partial local tree
+        // would no longer be refused. Same hazard applied to `--sync-path X --dry-run`: previewing a scope addition
+        // silently committed it. Both writes are now gated on `!dryRun`. The refusal / warning branches are pure
+        // reads and stay structured as before.
         // archive#395: a per-run --sync-path outside the standing scope is tracked for this run only; the next
         // run without the flag untracks those rows again (the local files stay). Intentional, so say it.
         if (standingScope.isNotEmpty()) {
@@ -1102,37 +1091,23 @@ open class SyncEngine(
             versionManager?.pruneByAge(versionRetentionDays)
         }
 
-        // UD-297: empty-local + populated-DB sanity check. Catches the
-        // wrong-sync_root case (user pointed at an empty directory while
-        // the state DB knows about thousands of remote entries) before
-        // the reconciler turns it into a wall of del-remote actions.
-        // Fires in dry-run too — that's where the user is most likely
-        // to notice and the system has the least to lose by being loud.
-        //
-        // Gate on the HYDRATED entry count, not the total. A state.db
-        // populated by previous failed gather passes (Internxt "dance"
-        // pattern: many delta walks, no successful downloads) is full of
-        // unhydrated rows that represent cloud-side items the user still
-        // needs to download — refusing to run there blocks the UD-225
-        // recovery loop from doing its job. The original concern (mass
-        // DeleteRemote when sync_root is mis-pointed) only applies when
-        // hydrated entries are missing locally; the Reconciler rewrites
-        // unhydrated-FILE DELETED localChanges into DownloadContent via
-        // its UD-225a recovery downgrade, and drops DeleteRemote actions
-        // for unhydrated-FOLDER rows in a post-detectMoves filter, so
-        // the only way DeleteRemote reaches the apply phase is via
-        // hydrated rows.
-        // Live repro 2026-05-20: 171 386 file rows all is_hydrated=0,
-        // sync_root empty, old guard refused with a misleading
-        // "--force-delete" hint that would have catastrophically wiped
-        // the cloud side.
-        //
-        // archive#137: --download-only is exempt. In download-only mode the
-        // destructive local→remote-delete direction is already gated by
-        // the direction filter, so the mis-pointed-sync_root mass-delete
-        // risk does NOT apply. A download-only user who intentionally
-        // wiped local and wants the cloud copy back (a legitimate
-        // rehydrate) must not be blocked here.
+        // UD-297: empty-local + populated-DB sanity check. Catches the wrong-sync_root case (user pointed at an empty
+        // directory while the state DB knows about thousands of remote entries) before the reconciler turns it into a
+        // wall of del-remote actions. Fires in dry-run too — that's where the user is most likely to notice and the
+        // system has the least to lose by being loud.
+        // Gate on the HYDRATED entry count, not the total. A state.db populated by previous failed gather passes
+        // (Internxt "dance" pattern: many delta walks, no successful downloads) is full of unhydrated rows that
+        // represent cloud-side items the user still needs to download — refusing to run there blocks the UD-225
+        // recovery loop from doing its job. The original concern (mass DeleteRemote when sync_root is mis-pointed)
+        // only applies when hydrated entries are missing locally; the Reconciler rewrites unhydrated-FILE DELETED
+        // localChanges into DownloadContent via its UD-225a recovery downgrade, and drops DeleteRemote actions for
+        // unhydrated-FOLDER rows in a post-detectMoves filter, so the only way DeleteRemote reaches the apply phase
+        // is via hydrated rows. Live repro 2026-05-20: 171 386 file rows all is_hydrated=0, sync_root empty, old
+        // guard refused with a misleading "--force-delete" hint that would have catastrophically wiped the cloud side.
+        // archive#137: --download-only is exempt. In download-only mode the destructive local→remote-delete direction
+        // is already gated by the direction filter, so the mis-pointed-sync_root mass-delete risk does NOT apply. A
+        // download-only user who intentionally wiped local and wants the cloud copy back (a legitimate rehydrate)
+        // must not be blocked here.
         val hydratedEntryCount = db.getHydratedEntryCount()
         val localDeletesAllowed = !forceDelete && syncDirection != SyncDirection.DOWNLOAD
         if (localDeletesAllowed && hydratedEntryCount > 10 && isSyncRootEffectivelyEmpty()) {
@@ -1492,34 +1467,25 @@ open class SyncEngine(
             return
         }
 
-        // UD-298: legacy whole-inventory percentage check. Still in place for
-        // back-compat — preserves the same threshold name and behaviour that
-        // operators have come to rely on. Evaluates in dry-run as a warning
-        // (UD-298 reframe) and throws otherwise.
-        //
+        // UD-298: legacy whole-inventory percentage check. Still in place for back-compat — preserves the same
+        // threshold name and behaviour that operators have come to rely on. Evaluates in dry-run as a warning (UD-298
+        // reframe) and throws otherwise.
         // UD-265: two additional axes on top of the legacy check.
-        //   1) maxDeleteAbsolute (default 50): trips on any run planning > N
-        //      deletes, regardless of inventory size. Catches "wide blast"
-        //      runs on large drives where 0.14 % of 280k entries (the
-        //      2026-05-16 incident: 405 deletes) is still a catastrophe.
-        //   2) maxDeletePerSubtreePercent (default 80): trips when any single
-        //      top-level cloud folder affected by deletes has > N% of its
-        //      tracked entries marked for deletion. Catches "delete 100 % of
-        //      /Documents/CyberLink/" runs that are tiny fractions of the
-        //      whole drive but catastrophic within their subtree.
-        //
-        // Any single axis tripping aborts apply / warns in dry-run.
-        // forceDelete bypasses all three. 0 disables the corresponding axis.
-        //
-        // archive#108: under a long-running daemon (`sync --watch`), a tripped safeguard
-        // must NOT abort the whole cycle. The throw is caught by the watch loop,
-        // which then retries the same failing cycle forever (exponential backoff)
-        // and never makes progress on uploads/downloads either — the daemon
-        // "stays failed". So in daemon mode (BOOT/WATCH_POLL) we DEFER the deletes
-        // (drop them this cycle, below) + warn + continue; one-shot `unidrive sync`
-        // (MANUAL) keeps the hard throw so an operator sees it and can re-run with
-        // --force-delete. A transient cause (e.g. an incomplete Internxt
-        // enumeration) clears on a later cycle; a genuine bulk delete simply waits
+        //   1) maxDeleteAbsolute (default 50): trips on any run planning > N deletes, regardless of inventory size.
+        //      Catches "wide blast" runs on large drives where 0.14 % of 280k entries (the 2026-05-16 incident: 405
+        //      deletes) is still a catastrophe.
+        //   2) maxDeletePerSubtreePercent (default 80): trips when any single top-level cloud folder affected by
+        //      deletes has > N% of its tracked entries marked for deletion. Catches "delete 100 % of
+        //      /Documents/CyberLink/" runs that are tiny fractions of the whole drive but catastrophic within their
+        //      subtree.
+        // Any single axis tripping aborts apply / warns in dry-run. forceDelete bypasses all three. 0 disables the
+        // corresponding axis.
+        // archive#108: under a long-running daemon (`sync --watch`), a tripped safeguard must NOT abort the whole
+        // cycle. The throw is caught by the watch loop, which then retries the same failing cycle forever (exponential
+        // backoff) and never makes progress on uploads/downloads either — the daemon "stays failed". So in daemon mode
+        // (BOOT/WATCH_POLL) we DEFER the deletes (drop them this cycle, below) + warn + continue; one-shot `unidrive
+        // sync` (MANUAL) keeps the hard throw so an operator sees it and can re-run with --force-delete. A transient
+        // cause (e.g. an incomplete Internxt enumeration) clears on a later cycle; a genuine bulk delete simply waits
         // for explicit operator confirmation.
         var deferDeletes = false
         if (!forceDelete) {
