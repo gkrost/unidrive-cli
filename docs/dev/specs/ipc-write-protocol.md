@@ -149,15 +149,21 @@ the scope are refused (§7).
   upload step 3 queues. The cache copy's mtime is the only carrier the
   engine has — the row's watermark and the provider's own time field (S3
   `x-amz-meta-mtime`, OneDrive `fileSystemInfo`, Dropbox `client_modified`,
-  Internxt `modificationTime`) are read from it at transfer time. A client
-  that saw a set time it cannot guarantee is on the cache copy before it
-  hands the write over SHOULD send it as `mtime_ms` (epoch milliseconds):
+  Internxt `modificationTime`) are read from it at transfer time. The
+  intended flow: the client waits until the file's time has settled (the
+  copy tool's time set after the close has arrived), then hands the write
+  over with that time. A client that saw a set time it cannot guarantee is
+  on the cache copy before it hands the write over SHOULD send it as
+  `mtime_ms` (epoch milliseconds):
   the engine re-stamps the cache copy with it before the upload is queued,
   so the row and the provider's field carry the client's time whatever the
   copy's own stamp raced. Absent `mtime_ms` the copy's own mtime stays the
   carrier. A `mtime_ms` that is present but not a whole number (sign
-  included; a time before the epoch is a legal one) is refused with
-  `{"ok":false,"error":"invalid_mtime_ms"}` before anything is queued.
+  included; a time before the epoch is a legal one), or that lies outside
+  the years 0001 to 9999 UTC (`-62135596800000` to `253402300799999`, what
+  the providers' ISO-8601 time fields hold), is refused with
+  `{"ok":false,"error":"invalid_mtime_ms"}` before the cache copy is
+  touched or anything is queued.
   `daemon.status` lists `hydration.open_write_mtime` in `capabilities`
   (gkrost/unidrive-cli#949; `contract_level` 19) on an engine that takes
   the field; an older engine ignores the member, so a client that needs the
@@ -919,7 +925,7 @@ noticed at once, not when the download ends. Requests the client sends while one
 | `permanent_unsupported` | unlink, rmdir | `"permanent":true` was asked (section 3.7) and the provider cannot delete for good (no permanent-delete capability); nothing was touched |
 | `conflict` | open_write | base_etag no longer matches the row |
 | `invalid_path` | open_write (`cache_path`) | the cache path lies outside the profile's hydration cache folder, or is not a valid local path; refused before anything is queued |
-| `invalid_mtime_ms` | open_write | `mtime_ms` is present but not a whole number (section 3.1); refused before anything is changed or queued |
+| `invalid_mtime_ms` | open_write | `mtime_ms` is present but not a whole number, or lies outside the years 0001 to 9999 UTC (`-62135596800000` to `253402300799999`; section 3.1); refused before anything is changed or queued |
 | `outside_scope` | create, mkdir, rename (both ends), open_write_begin | path outside the profile's sync_path set |
 | `read_only` | create, mkdir, unlink, rmdir, rename (either end), open_write_begin, open_write | the path is the trash or the backups root or lies below it (section 4.1), or is the root of a view or lies below it (section 4.2); nothing was touched or queued |
 | `busy` | dehydrate, replace-rename, unlink, rmdir | an upload is in flight on that path (unlink, dehydrate), below it (rmdir), or on the source or destination of a replace-rename; nothing was touched, retry once the upload's `completed` event has arrived |

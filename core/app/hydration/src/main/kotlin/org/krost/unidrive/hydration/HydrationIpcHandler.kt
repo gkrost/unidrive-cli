@@ -41,7 +41,7 @@ import java.util.concurrent.atomic.AtomicLong
  *               reply has not been returned, is the same open: the same id, no second registration.
  *               A client-named id that starts with dh- answers {"ok":false,"error":"invalid_handle_id"} (every verb that opens a handle).
  *               mtime_ms (OPTIONAL, gkrost/unidrive-cli#949, "hydration.open_write_mtime" in capabilities): the client's set time in
- *               epoch ms, stamped on the cache copy before the upload is queued; present but not a whole number answers
+ *               epoch ms, stamped on the cache copy before the upload is queued; not a whole number in years 0001-9999 UTC answers
  *               {"ok":false,"error":"invalid_mtime_ms"} before anything is changed or queued.
  *   open_write  reply:    same as open_read; base_etag (OPTIONAL) is the etag the client
  *                         observed at list/open time — a mismatch refuses the write with

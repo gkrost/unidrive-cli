@@ -6,8 +6,11 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.FileTime
 
-/** The wire refusal for an open_write's `mtime_ms` that is present but not a whole number. */
+/** The wire refusal for an open_write's `mtime_ms` that is present but not a whole number in [CLIENT_SET_TIME_RANGE]. */
 internal const val INVALID_MTIME_MS = "invalid_mtime_ms"
+
+/** The set times open_write takes: years 0001 to 9999 (UTC), what the providers' ISO-8601 time fields can hold. */
+internal val CLIENT_SET_TIME_RANGE = -62_135_596_800_000L..253_402_300_799_999L
 
 /**
  * The client's set time of an open_write request (a copy tool's utimens, handed over with the write): the cache
@@ -15,11 +18,11 @@ internal const val INVALID_MTIME_MS = "invalid_mtime_ms"
  * read from it at transfer time — so the copy is re-stamped with it before any upload is queued and the client's
  * time reaches them whatever the copy's own stamp raced. Answers the parsed epoch milliseconds with no refusal;
  * a member that is absent answers null and no refusal (the copy's own mtime stays the carrier), and one that is
- * present but not a whole number (sign included; a time before the epoch is a legal one) answers the
- * [INVALID_MTIME_MS] refusal for the caller to reply with.
+ * present but not a whole number (sign included; a time before the epoch is a legal one) or outside
+ * [CLIENT_SET_TIME_RANGE] answers the [INVALID_MTIME_MS] refusal for the caller to reply with.
  */
 internal fun clientSetTimeOf(request: HydrationRequest): Pair<Long?, String?> {
-    val millis = request.signedWholeNumber("mtime_ms")
+    val millis = request.signedWholeNumber("mtime_ms")?.takeIf { it in CLIENT_SET_TIME_RANGE }
     return if (request.has("mtime_ms") && millis == null) null to INVALID_MTIME_MS else millis to null
 }
 

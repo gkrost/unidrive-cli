@@ -1,6 +1,7 @@
 package org.krost.unidrive.cli
 
 import kotlinx.coroutines.runBlocking
+import org.krost.unidrive.http.Priority
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.CapabilityResult
 import org.krost.unidrive.authenticateAndLog
@@ -57,7 +58,7 @@ class ShareCommand : Runnable {
 
     override fun run() {
         expiryProblem(expiryHours)?.let { throw CommandLine.ParameterException(spec.commandLine(), it) }
-        runBlocking {
+        runBlocking(Priority.Foreground) {
             val provider =
                 try {
                     parent.createProvider()

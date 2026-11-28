@@ -76,7 +76,7 @@ open class SyncEngine(
     // propagate to remote. Set to true to opt back in to legacy "local is
     // source of truth" semantics. No effect outside SyncDirection.UPLOAD.
     private val propagateDeletes: Boolean = false,
-    private val maxDeletePercentage: Int = 50,
+    maxDeletePercentage: Int = 50,
     // UD-265: two new axes on the deletion safeguard. maxDeletePercentage stays
     // for back-compat (still trips); these add an absolute cap (catches
     // wide-blast on large drives where any sane percentage is still a
@@ -84,8 +84,8 @@ open class SyncEngine(
     // 100%-of-/Documents/Foo runs that are 0.1% of the whole drive). Either
     // axis tripping aborts apply / warns in dry-run; --force-delete bypasses
     // all three. 0 disables the corresponding check.
-    private val maxDeleteAbsolute: Int = 50,
-    private val maxDeletePerSubtreePercent: Int = 80,
+    maxDeleteAbsolute: Int = 50,
+    maxDeletePerSubtreePercent: Int = 80,
     private val verifyIntegrity: Boolean = false,
     private val providerId: String = "",
     private val useTrash: Boolean = true,
@@ -214,6 +214,7 @@ open class SyncEngine(
 ) : MountHost,
     EnumerationEntryPoint {
     private val log = LoggerFactory.getLogger(SyncEngine::class.java)
+    private val deleteSafeguards = DeleteSafeguards(maxDeletePercentage, maxDeleteAbsolute, maxDeletePerSubtreePercent)
 
     // gkrost/unidrive-cli#394: what the current pass did per phase (the `file_summary` line) and the failed attempts per upload path.
     private val fileTally = FileEventTally()
@@ -1522,73 +1523,16 @@ open class SyncEngine(
         // for explicit operator confirmation.
         var deferDeletes = false
         if (!forceDelete) {
-            val deleteActions = actions.filter { it is SyncAction.DeleteRemote || it is SyncAction.DeleteLocal }
-            val deleteCount = deleteActions.size
-            val totalEntries = db.getEntryCount()
             val daemonMode = reason == SyncReason.WATCH_POLL || reason == SyncReason.BOOT
-
-            // UD-298 legacy whole-inventory percentage axis.
-            if (maxDeletePercentage in 1..99 && totalEntries > 0 && deleteCount > 10) {
-                val pct = deleteCount * 100 / totalEntries
-                if (pct > maxDeletePercentage) {
-                    val msg =
-                        "Deletion safeguard: $deleteCount of $totalEntries files ($pct%) would be deleted, " +
-                            "exceeding max_delete_percentage=$maxDeletePercentage%. " +
-                            "sync_root='$syncRoot'. Use --force-delete to override."
-                    when {
-                        dryRun -> reporter.onWarning(msg)
-                        daemonMode -> {
-                            deferDeletes = true
-                            reporter.onWarning("$msg Deferring deletes this cycle (daemon mode).")
-                        }
-                        else -> throw IllegalStateException(msg)
-                    }
-                }
-            }
-
-            // UD-265 axis 1: absolute count cap.
-            if (maxDeleteAbsolute > 0 && deleteCount > maxDeleteAbsolute) {
-                val msg =
-                    "UD-265 Deletion safeguard: $deleteCount deletes planned, " +
-                        "exceeding max_delete_absolute=$maxDeleteAbsolute. " +
-                        "sync_root='$syncRoot'. Use --force-delete to override."
+            // #267: each trip is a typed SafeguardTripped; the reporter or the exception renders the text.
+            for (trip in deleteSafeguards.trips(actions, db, syncRoot.toString())) {
                 when {
-                    dryRun -> reporter.onWarning(msg)
+                    dryRun -> reporter.onSafeguard(trip, deferred = false)
                     daemonMode -> {
                         deferDeletes = true
-                        reporter.onWarning("$msg Deferring deletes this cycle (daemon mode).")
+                        reporter.onSafeguard(trip, deferred = true)
                     }
-                    else -> throw IllegalStateException(msg)
-                }
-            }
-
-            // UD-265 axis 2: per-top-level-subtree percentage cap. Group
-            // delete actions by their top-level segment, count the tracked
-            // entries under that top-level in state.db, and compare. Skip
-            // subtrees with fewer than 5 tracked entries — small folders
-            // produce noisy 100% trips on legitimate cleanups.
-            if (maxDeletePerSubtreePercent in 1..99 && deleteCount > 0) {
-                val byTopLevel = deleteActions.groupBy { topLevelOf(it.path) }
-                for ((top, group) in byTopLevel) {
-                    if (top == null) continue
-                    val tracked = db.countEntriesUnderTopLevel(top)
-                    if (tracked < 5) continue
-                    val pct = group.size * 100 / tracked
-                    if (pct > maxDeletePerSubtreePercent) {
-                        val msg =
-                            "UD-265 Deletion safeguard: ${group.size} of $tracked entries " +
-                                "under top-level '$top' ($pct%) would be deleted, exceeding " +
-                                "max_delete_per_subtree_percent=$maxDeletePerSubtreePercent%. " +
-                                "sync_root='$syncRoot'. Use --force-delete to override."
-                        when {
-                            dryRun -> reporter.onWarning(msg)
-                            daemonMode -> {
-                                deferDeletes = true
-                                reporter.onWarning("$msg Deferring deletes this cycle (daemon mode).")
-                            }
-                            else -> throw IllegalStateException(msg)
-                        }
-                    }
+                    else -> throw SafeguardTrippedException(trip)
                 }
             }
         }
@@ -2968,6 +2912,7 @@ open class SyncEngine(
         // What the download keeps aside at its placement.
         var keptLocalEdit: String? = null
         val placementGuard = if (shouldDownload) placementGuard(action.path, localPath, keepNow, lostBytesBackedUp) else null
+        val before = if (shouldDownload) db.getEntry(action.path) else null // #1018 item 16: its upload digest
 
         withEchoSuppression(action.path) {
             if (item.isFolder) {
@@ -2990,7 +2935,7 @@ open class SyncEngine(
                     // destination is localPath (resolved from the real-local action.path).
                     // archive#491: in the provider's own spelling, which a name that is not NFC keeps at the provider.
                     val (receipt, keptAtPlacement) =
-                        downloadByIdOrPathWithHash(item, remoteGather.cloudPathOf(item), localPath, item.modified?.toEpochMilli(), placementGuard)
+                        downloadByIdOrPathWithHash(item, remoteGather.cloudPathOf(item), localPath, item.modified?.toEpochMilli(), placementGuard, before?.uploadDigest)
                     downloadReceipt = receipt
                     keptLocalEdit = keptAtPlacement
                     downloadedHash = stagedLocalHash(localPath, receipt)
@@ -3007,7 +2952,7 @@ open class SyncEngine(
         // archive#396: only bytes the engine just wrote get a local hash; an adopted file is not re-read.
         db.upsertEntry(
             if (shouldDownload) {
-                withDownloadedHash(entry, checkNotNull(downloadReceipt), downloadedHash)
+                withDownloadedHash(entry, checkNotNull(downloadReceipt), downloadedHash, before)
             } else {
                 entry
             },
@@ -3028,13 +2973,14 @@ open class SyncEngine(
         if (versionManager != null && action.wasHydrated && !item.isFolder) snapshotVersion(action.path, placeholder.resolveLocal(action.path))
         var downloadReceipt: DownloadReceipt? = null
         var downloadedHash: String? = null
+        val before = db.getEntry(action.path) // #1018 item 16: its upload digest
         withEchoSuppression(action.path) {
             if (action.wasHydrated && !item.isFolder) {
                 try {
                     // UD-225b: id-based dispatch (see applyCreatePlaceholder).
                     // archive#115: remote source = item.path (canonical); dest = real-local.
                     val localPath = placeholder.resolveLocal(action.path)
-                    val receipt = downloadByIdOrPathWithHash(item, remoteGather.cloudPathOf(item), localPath, item.modified?.toEpochMilli()).first
+                    val receipt = downloadByIdOrPathWithHash(item, remoteGather.cloudPathOf(item), localPath, item.modified?.toEpochMilli(), uploadDigest = before?.uploadDigest).first
                     downloadReceipt = receipt
                     downloadedHash = stagedLocalHash(localPath, receipt)
                     if (!receipt.mtimeAppliedBeforePlacement) placeholder.restoreMtime(action.path, item.modified)
@@ -3051,7 +2997,7 @@ open class SyncEngine(
         // archive#396: the hydrated branch above re-downloaded real bytes; metadata-only updates did not.
         db.upsertEntry(
             if (action.wasHydrated && !item.isFolder) {
-                withDownloadedHash(entry, checkNotNull(downloadReceipt), downloadedHash)
+                withDownloadedHash(entry, checkNotNull(downloadReceipt), downloadedHash, before)
             } else {
                 entry
             },
@@ -3103,6 +3049,7 @@ open class SyncEngine(
         destination: Path,
         targetMtimeMillis: Long?,
         guard: PreTransferGuard? = null,
+        uploadDigest: UploadDigest? = null, // gkrost/unidrive-cli#1018 item 16: the replaced row's (Transfers.uploadDigestRefusal)
     ): Pair<DownloadReceipt, String?> {
         // Check the provider's result before it can replace the last good local copy. A broken provider may
         // return normally after writing short bytes; its own staging contract is not the mirror's safety net.
@@ -3111,6 +3058,8 @@ open class SyncEngine(
         try {
             val receipt = Transfers.downloadByIdOrPathWithHash(provider, item, remotePath, staging, targetMtimeMillis, fileTally, downloadEventRetries)
             requireCompleteDownload(remotePath, item, receipt)
+            // The version this machine uploaded must bring the bytes it sent; a refusal moves nothing (the finally drops the staging).
+            Transfers.uploadDigestRefusal(remotePath, uploadDigest, Transfers.readVersionKey(item, receipt), receipt, provider.hashAlgorithm())?.let { throw it }
             // gkrost/unidrive-cli#451: the transfer ran; the file may no longer be what the check cleared. A
             // save that landed mid-transfer moves aside as a conflict-local copy before the replace, the way
             // the pre-transfer check one scope earlier kept the edits that landed before it. Stats null (the
@@ -3196,8 +3145,9 @@ open class SyncEngine(
                 absent = preTransferStats == null && !Files.exists(localPath, java.nio.file.LinkOption.NOFOLLOW_LINKS),
             )
         snapshotVersion(action.path, localPath)
-        // UD-113: capture pre-action hash for the audit oldHash field.
-        val prevHash = db.getEntry(action.path)?.remoteHash
+        // UD-113: capture pre-action hash for the audit oldHash field. #1018 item 16: and the row's upload digest.
+        val before = db.getEntry(action.path)
+        val prevHash = before?.remoteHash
         try {
             var downloadReceipt: DownloadReceipt? = null
             var downloadedHash: String? = null
@@ -3212,6 +3162,7 @@ open class SyncEngine(
                     localPath,
                     action.remoteItem.modified?.toEpochMilli(),
                     guard = preTransferGuard,
+                    uploadDigest = before?.uploadDigest,
                 )
                 downloadReceipt = receipt
                 // A provider that reports no bytes while it downloads is charged once, for what it wrote.
@@ -3233,7 +3184,7 @@ open class SyncEngine(
             val entry = entryFromCloudItem(action.remoteItem, action.path, isHydrated = true)
             // #567: the row is committed off the event loop, with the commits of the transfers beside it; this call
             // returns only once it is durable, as the plain upsert did.
-            transferRows.upsertEntry(withDownloadedHash(entry, checkNotNull(downloadReceipt), downloadedHash))
+            transferRows.upsertEntry(withDownloadedHash(entry, checkNotNull(downloadReceipt), downloadedHash, before))
             // The bytes of a renamed item are at the row's path: the failed local move this mark remembers is made up.
             if (db.pendingLocalMarkAt(action.path)?.let { PendingLocal.moveFrom(it) } != null) db.clearPendingLocal(action.path)
             auditLog?.emit(
@@ -4730,10 +4681,12 @@ open class SyncEngine(
         }
     }
 
+    // gkrost/unidrive-cli#1018 item 16: the downloaded bytes never replace the upload digest of [before], kept while it names the row's version.
     private suspend fun withDownloadedHash(
         entry: SyncEntry,
         receipt: DownloadReceipt,
         streamedHash: String?,
+        before: SyncEntry?,
     ): SyncEntry =
         if (receipt.plaintextSha256 != null) {
             if ((provider.hashAlgorithm() == null || entry.remoteHash.isNullOrEmpty()) && !entry.isFolder) {
@@ -4747,7 +4700,7 @@ open class SyncEngine(
             }
         } else {
             withLocalHash(entry.sizedByDownload(receipt))
-        }
+        }.keepingUploadDigestOf(before)
 
     // Same guard for a copy of the bytes that is not the sync-root file — the cache copy a
     // hydration downloaded or a write-back was uploaded from. The row records that copy's
@@ -5060,19 +5013,6 @@ open class SyncEngine(
         val raw = scopeState.effectiveScope ?: return emptyList()
         if (raw.isEmpty()) return emptyList()
         return raw.split("\t").filter { it.isNotEmpty() }
-    }
-
-    // UD-264: extract the top-level cloud-path segment from an absolute path.
-    // `/Documents/CyberLink/Foo` -> `/Documents`. Root-only paths (`/`, ``) or
-    // single-segment paths under root (`/Foo`) return their own value as the
-    // top-level. Returns null for paths that don't start with `/`, which never
-    // happens in production but keeps callers honest.
-    private fun topLevelOf(path: String): String? {
-        if (!path.startsWith("/")) return null
-        val trimmed = path.trimStart('/')
-        if (trimmed.isEmpty()) return null
-        val firstSlash = trimmed.indexOf('/')
-        return "/" + if (firstSlash < 0) trimmed else trimmed.substring(0, firstSlash)
     }
 
     // UD-264: filter `del-remote` actions against the top-level-never-hydrated

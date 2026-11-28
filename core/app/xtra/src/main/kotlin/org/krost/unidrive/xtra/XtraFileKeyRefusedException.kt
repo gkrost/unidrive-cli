@@ -10,5 +10,5 @@ import java.security.GeneralSecurityException
  */
 class XtraFileKeyRefusedException(
     message: String,
-    cause: Throwable,
+    cause: Throwable? = null,
 ) : GeneralSecurityException(message, cause)

@@ -5,8 +5,10 @@ import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.DownloadReceipt
 import org.krost.unidrive.HashAlgorithm
+import org.krost.unidrive.RemoteContentRefusedDownloadException
 import org.krost.unidrive.sync.HashVerifier
 import org.krost.unidrive.sync.model.SyncEntry
+import org.krost.unidrive.sync.model.UploadDigest
 import org.slf4j.Logger
 import java.nio.file.Files
 import java.nio.file.Path
@@ -151,7 +153,55 @@ object Transfers {
         sentSha256: String? = null,
         onHashed: ((fromProvider: Boolean, ms: Long) -> Unit)? = null,
     ): SyncEntry {
-        if (sent == null) return entry.copy(localHash = null)
-        return withLocalHash(entry, local, sent, algorithm, log, sentSha256, onHashed)
+        if (sent == null) return entry.copy(localHash = null, uploadDigest = null)
+        val hashed = withLocalHash(entry, local, sent, algorithm, log, sentSha256, onHashed)
+        // gkrost/unidrive-cli#1018 item 16: for a provider without a content hash, the hash of what was sent is also what a later
+        // download of the version this upload produced must bring back (see [uploadDigestRefusal]).
+        val digest = hashed.localHash?.takeIf { algorithm == null && !hashed.isFolder }?.let { UploadDigest(it, hashed.remoteVersionKey) }
+        return hashed.copy(uploadDigest = digest)
+    }
+
+    /**
+     * gkrost/unidrive-cli#1018 item 16: with a provider that has no content hash ([algorithm] null: X-tra, whose AEAD binds only
+     * the header), nothing told another valid object served at a path, or an older one, from the file's own bytes. A download
+     * of the version this machine uploaded can be told: it must bring the plaintext whose SHA-256 the upload recorded
+     * ([digest]). The refusal when the downloaded plaintext ([receipt]'s digest) differs; null when it matches or nothing
+     * applies: the download read another version ([readKey], see [readVersionKey]), the row has no upload digest (a file
+     * this machine did not upload; the manifest planned for X-tra v2 covers those), or the receipt names no digest.
+     * A content refusal, like a failed seal: the same version reads the same bytes again.
+     */
+    fun uploadDigestRefusal(
+        path: String,
+        digest: UploadDigest?,
+        readKey: String,
+        receipt: DownloadReceipt,
+        algorithm: HashAlgorithm?,
+    ): RemoteContentRefusedDownloadException? {
+        if (algorithm != null || digest == null || digest.versionKey != readKey) return null
+        val read = receipt.plaintextSha256 ?: return null
+        if (read.equals(digest.sha256, ignoreCase = true)) return null
+        return RemoteContentRefusedDownloadException(
+            "$path is not the content this machine uploaded for that version: SHA-256 $read, uploaded ${digest.sha256}",
+            reason = UPLOAD_DIGEST_MISMATCH,
+        )
+    }
+
+    /** The `content_refused` reason of [uploadDigestRefusal]: no file name, as the wire token requires. */
+    const val UPLOAD_DIGEST_MISMATCH = "not the uploaded content"
+
+    /**
+     * The key ([UploadDigest.keyOf]) of the version a download of [item] read: the version the receipt names, where the
+     * provider names one (a file replaced since it was listed came down as the newer version), else the item's.
+     */
+    fun readVersionKey(
+        item: CloudItem,
+        receipt: DownloadReceipt,
+    ): String {
+        val named = receipt.itemHash != null || receipt.itemVersion != null
+        return if (named) {
+            UploadDigest.keyOf(item.id, receipt.itemHash, receipt.itemVersion, item.size, receipt.itemModified ?: item.modified)
+        } else {
+            UploadDigest.keyOf(item.id, item.hash, item.version, item.size, item.modified)
+        }
     }
 }

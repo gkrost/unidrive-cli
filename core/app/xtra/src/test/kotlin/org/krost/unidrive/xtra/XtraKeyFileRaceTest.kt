@@ -10,6 +10,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * Review finding on the symmetric key chain: two initializations racing for one key file must not let the second
@@ -155,5 +156,74 @@ class XtraKeyFileRaceTest {
 
         assertEquals(8, done.size, "a forced import is serialized, not refused")
         assertEquals(keys.map(::text).toSet(), keptKeys(path), "every key is the live one or a retired copy; none is gone")
+    }
+
+    /**
+     * Runs [generate] on [threads] threads released together, each with its own passphrase; the passphrases of the ones
+     * that did not throw. A loser must refuse with the [IllegalStateException] of the exclusive create, nothing else.
+     */
+    private fun passphraseRace(
+        threads: Int,
+        generate: (CharArray) -> Unit,
+    ): List<String> {
+        val start = CountDownLatch(1)
+        val pool = Executors.newFixedThreadPool(threads)
+        try {
+            val futures =
+                (0 until threads).map { i ->
+                    pool.submit<String?> {
+                        val own = "race-pass-own-$i"
+                        start.await()
+                        try {
+                            generate(own.toCharArray())
+                            own
+                        } catch (_: IllegalStateException) {
+                            null
+                        }
+                    }
+                }
+            start.countDown()
+            return futures.mapNotNull { it.get(2, TimeUnit.MINUTES) }
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `concurrent age generates leave exactly one key, the winner's`() {
+        val path: Path = TestScratch.directory("xtra-race-age").resolve("xtra-age.key")
+        val winners = passphraseRace(4) { XtraAgeKeyStore(path).generate(it) }
+
+        assertEquals(1, winners.size, "exactly one generate may succeed; the others must refuse")
+        val store = XtraAgeKeyStore(path)
+        assertTrue(store.opens(winners.single().toCharArray()), "the file on disk is the winner's: it opens with the winner's passphrase")
+        assertEquals(1, (0 until 4).count { store.opens("race-pass-own-$it".toCharArray()) }, "no other racer's passphrase opens it")
+    }
+
+    @Test
+    fun `concurrent Tink generates leave exactly one key, the winner's`() {
+        val path: Path = TestScratch.directory("xtra-race-tink").resolve("xtra-tink.key")
+        val winners = passphraseRace(4) { XtraTinkKeyStore(path).generate(it) }
+
+        assertEquals(1, winners.size, "exactly one generate may succeed; the others must refuse")
+        val store = XtraTinkKeyStore(path)
+        assertTrue(store.opens(winners.single().toCharArray()), "the file on disk is the winner's: it opens with the winner's passphrase")
+        assertEquals(1, (0 until 4).count { store.opens("race-pass-own-$it".toCharArray()) }, "no other racer's passphrase opens it")
+    }
+
+    @Test
+    fun `concurrent forced age imports lose no identity, each retired one stays beside the live one`() {
+        val scratch = TestScratch.directory("xtra-race-force-age")
+        val path: Path = scratch.resolve("xtra-age.key")
+        val identities = (0 until 9).map { kage.crypto.x25519.X25519Identity.Companion.new().encodeToString() }
+        XtraAgeKeyStore(path).importIdentity(identities[0], pass.toCharArray()) // 0 is installed, 1..8 are imported over it
+
+        val done = importRace(8) { XtraAgeKeyStore(path).importIdentity(identities[it + 1], pass.toCharArray(), force = true) }
+
+        assertEquals(8, done.size, "a forced import is serialized, not refused")
+        val retired = Files.list(scratch).use { s -> s.filter { it.fileName.toString().startsWith("${path.fileName}.bak-") }.toList() }
+        val kept = (listOf(path) + retired).map { XtraAgeKeyStore(it).exportIdentity(pass.toCharArray()) }
+        assertEquals(9, kept.size, "one live identity and eight retired copies, none overwritten")
+        assertEquals(identities.toSet(), kept.toSet(), "every identity is the live one or a retired copy; none is gone")
     }
 }

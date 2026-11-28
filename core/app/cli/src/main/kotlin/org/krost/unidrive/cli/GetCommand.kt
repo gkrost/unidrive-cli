@@ -3,6 +3,7 @@ package org.krost.unidrive.cli
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import org.krost.unidrive.http.Priority
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -71,7 +72,7 @@ class GetCommand : Callable<Int> {
         val placeholder = PlaceholderManager(config.syncRoot)
 
         try {
-            runBlocking {
+            runBlocking(Priority.Foreground) {
                 val isFolder =
                     entry?.isFolder ?: java.nio.file.Files
                         .isDirectory(placeholder.resolveLocal(normalizedPath))

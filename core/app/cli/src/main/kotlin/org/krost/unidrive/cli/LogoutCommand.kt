@@ -30,6 +30,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.Callable
 import kotlinx.coroutines.runBlocking
+import org.krost.unidrive.http.Priority
 
 @Command(
     name = "logout",
@@ -230,7 +231,7 @@ internal fun logoutAndDeleteLocalFiles(
     logout: suspend () -> Unit,
 ): List<String> {
     try {
-        runBlocking { logout() }
+        runBlocking(Priority.Foreground) { logout() }
     } catch (e: CredentialProtectionException) {
         throw e
     } catch (_: Exception) {
@@ -398,7 +399,7 @@ private fun logoutStoppedProfile(
             null -> Revocation.UNSUPPORTED
             else ->
                 try {
-                    runBlocking { signOutProvider(provider) }
+                    runBlocking(Priority.Foreground) { signOutProvider(provider) }
                 } finally {
                     runCatching { provider.close() }
                 }

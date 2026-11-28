@@ -34,7 +34,8 @@ class XtraTinkKeyStore(
     fun exists(): Boolean = Files.exists(keyPath)
 
     // Never over an existing keyset: it is the only key material of every file it sealed, and a replacement
-    // would turn each of them into a file sealed by another keyset.
+    // would turn each of them into a file sealed by another keyset. The install is a create-new
+    // (createKeyFileExclusively): of two generates racing for one path exactly one lands.
     fun generate(passphrase: CharArray) {
         require(passphrase.size >= XtraKeyManager.MIN_PASSPHRASE_LENGTH) {
             "Passphrase must be at least ${XtraKeyManager.MIN_PASSPHRASE_LENGTH} characters"
@@ -43,7 +44,7 @@ class XtraTinkKeyStore(
         val handle = KeysetHandle.generateNew(PARAMETERS)
         val serialized = TinkProtoKeysetFormat.serializeKeyset(handle, InsecureSecretKeyAccess.get())
         try {
-            writeKeyFile(passphrase, serialized)
+            writeKeyFile(passphrase, serialized, createNew = true)
         } finally {
             serialized.fill(0)
         }
@@ -90,6 +91,7 @@ class XtraTinkKeyStore(
     private fun writeKeyFile(
         passphrase: CharArray,
         serializedKeyset: ByteArray,
+        createNew: Boolean = false,
     ) {
         val salt = randomBytes(SALT_LENGTH)
         val iv = randomBytes(IV_LENGTH)
@@ -98,7 +100,7 @@ class XtraTinkKeyStore(
         Files.createDirectories(keyPath.parent)
         // archive#1053, the vault's rule: the key file is the only copy of what decrypts the account's content,
         // so the new bytes replace the old only once they decrypt back to what was written.
-        OwnerOnlyAtomicWrite.replace(keyPath, salt + iv + encrypted, verify = { tmp ->
+        val verify = { tmp: Path ->
             val onDisk = Files.readAllBytes(tmp)
             check(onDisk.size >= SALT_LENGTH + IV_LENGTH + GCM_TAG_BITS / 8) { "The new key file is truncated; the old one was kept." }
             val diskIv = onDisk.copyOfRange(SALT_LENGTH, SALT_LENGTH + IV_LENGTH)
@@ -111,7 +113,9 @@ class XtraTinkKeyStore(
             } finally {
                 verified.fill(0)
             }
-        })
+        }
+        val blob = salt + iv + encrypted
+        if (createNew) createKeyFileExclusively(keyPath, blob, verify) else OwnerOnlyAtomicWrite.replace(keyPath, blob, verify = verify)
     }
 
     private fun deriveKey(

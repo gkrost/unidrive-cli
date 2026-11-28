@@ -2,6 +2,7 @@ package org.krost.unidrive.cli
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
+import org.krost.unidrive.http.Priority
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
@@ -158,7 +159,7 @@ class AuthCheckCommand : Callable<Int> {
                     askDaemonToSignIn(target, endpoint, request, timeoutMs = limit * 1000 + DAEMON_ANSWER_GRACE_MS)
                 },
             ) {
-                runBlocking {
+                runBlocking(Priority.Foreground) {
                     val provider = LifecycleHooks.providerFor(authCmd.parent, target)
                     try {
                         checkProvider(target.name, provider, limit)
