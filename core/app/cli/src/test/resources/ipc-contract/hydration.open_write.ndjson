@@ -14,6 +14,14 @@
 {"ok":false,"error":"invalid_mtime_ms"}
 {"verb":"hydration.open_write","handle_id":"h-1","path":"/docs/report.txt","cache_path":"/cache/unidrive/hydration/docs/report.txt","mtime_ms":null}
 {"ok":false,"error":"invalid_mtime_ms"}
+{"verb":"hydration.open_write","handle_id":"h-1","path":"/docs/report.txt","cache_path":"/cache/unidrive/hydration/docs/report.txt","mtime_ms":-62135596800000}
+{"ok":true,"cache_path":"/cache/unidrive/hydration/docs/report.txt"}
+{"verb":"hydration.open_write","handle_id":"h-1","path":"/docs/report.txt","cache_path":"/cache/unidrive/hydration/docs/report.txt","mtime_ms":-62135596800001}
+{"ok":false,"error":"invalid_mtime_ms"}
+{"verb":"hydration.open_write","handle_id":"h-1","path":"/docs/report.txt","cache_path":"/cache/unidrive/hydration/docs/report.txt","mtime_ms":253402300799999}
+{"ok":true,"cache_path":"/cache/unidrive/hydration/docs/report.txt"}
+{"verb":"hydration.open_write","handle_id":"h-1","path":"/docs/report.txt","cache_path":"/cache/unidrive/hydration/docs/report.txt","mtime_ms":253402300800000}
+{"ok":false,"error":"invalid_mtime_ms"}
 {"verb":"hydration.open_write","handle_id":"h-1","path":"/excluded/scratch.tmp","cache_path":"/cache/unidrive/hydration/excluded/scratch.tmp"}
 {"ok":true,"cache_path":"/cache/unidrive/hydration/excluded/scratch.tmp","excluded":true}
 {"verb":"hydration.open_write","handle_id":"h-1","path":"/outside/x.txt","cache_path":"/cache/unidrive/hydration/outside/x.txt"}
