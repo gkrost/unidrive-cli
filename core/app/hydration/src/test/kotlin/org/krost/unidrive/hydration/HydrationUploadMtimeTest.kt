@@ -54,6 +54,7 @@ class HydrationUploadMtimeTest {
         while (System.currentTimeMillis() < deadline && env.stateDb.localMtimeOf(path) != expectedMtime) {
             Thread.sleep(20)
         }
+        assertEquals(1, env.providerForTest.completedUploads(), "the provider received the copy's upload")
         assertEquals(expectedMtime, env.stateDb.localMtimeOf(path), "the copy's upload drained into the row")
     }
 
