@@ -239,6 +239,51 @@ class AuthCheckTest {
         }
     }
 
+    private val sealedMessage = "/p/token.json is sealed under the vault key; unlock the vault first (vault.unlock)"
+
+    @Test
+    fun `a check over a token sealed in a locked process answers credential_sealed, not provider_error (#964)`() {
+        using(CheckProvider { throw org.krost.unidrive.auth.CredentialLockedException(sealedMessage) })
+
+        assertEquals(1, run("auth", "check", "--json"))
+
+        assertEquals("credential_sealed", errorToken())
+        assertEquals(sealedMessage, json().getValue("message").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `the credential_sealed refusal of auth check is the corpus line (#964)`() {
+        val (request, reply) =
+            checkNotNull(javaClass.getResourceAsStream("/ipc-contract/cli/auth.check-sealed.ndjson")) { "fixture missing" }
+                .bufferedReader().readLines().filter { it.isNotBlank() }
+        val argv = Json.parseToJsonElement(request).jsonObject.getValue("argv").let { (it as kotlinx.serialization.json.JsonArray).map { a -> a.jsonPrimitive.content } }
+        using(CheckProvider { throw org.krost.unidrive.auth.CredentialLockedException(sealedMessage) })
+
+        assertEquals(1, run(*argv.toTypedArray()), everything())
+
+        assertEquals(Json.parseToJsonElement(reply), json(), "the refusal drifted from auth.check-sealed.ndjson")
+    }
+
+    @Test
+    fun `a check whose protection backend fails, a wrong key or a damaged seal, stays provider_error (#964)`() {
+        using(CheckProvider { throw org.krost.unidrive.auth.CredentialProtectionException("/p/token.json does not open under the vault's credential seal key") })
+
+        assertEquals(1, run("auth", "check", "--json"))
+
+        assertEquals("provider_error", errorToken())
+    }
+
+    @Test
+    fun `the daemon's check over a token sealed in a locked process answers credential_sealed (#964)`() =
+        runBlocking {
+            val handler = AuthCheckRpcHandler("od", CheckProvider { throw org.krost.unidrive.auth.CredentialLockedException(sealedMessage) })
+
+            val reply = Json.parseToJsonElement(handler.check("""{"verb":"auth.check"}""")).jsonObject
+
+            assertEquals("credential_sealed", reply.getValue("error").jsonPrimitive.content)
+            assertEquals(sealedMessage, reply.getValue("message").jsonPrimitive.content)
+        }
+
     @Test
     fun `a refusal quotes nothing from the exception`() {
         using(CheckProvider { throw ProviderException("body: {\"access_token\":\"SECRET-VALUE\"}", httpStatus = 500) })

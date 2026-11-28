@@ -56,6 +56,7 @@ failed command, archive#1126), on stdout with `--json`:
 | `network_error` | the provider could not be asked (no connection, a timeout, a gateway error), or did not answer within `--timeout` | no: unknown |
 | `provider_error` | the provider answered, but not usably (an account without a drive, a refusal that is not about the sign-in) | no |
 | `unsupported` | the provider has no account to check (localfs) | no |
+| `credential_sealed` | the stored token is sealed under the vault key and this process holds no key; the message names the file and `vault.unlock` (#964) | no: unlock the vault |
 | `invalid_timeout` | `--timeout` is outside 1 to 300 | no |
 
 The other refusals of the `auth` commands apply unchanged (`profile_not_found`, `config_not_found`, `profile_in_use`,
