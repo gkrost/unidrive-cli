@@ -112,6 +112,14 @@ class DropboxSealedTokenTest {
     }
 
     @Test
+    fun `a token json that does not parse is described as unreadable, not signed in (#964)`() {
+        Files.createDirectories(dir)
+        Files.writeString(tokenFile, "not a token")
+
+        assertEquals("dropbox (token unreadable)", factory().describeConnection(profile, dir))
+    }
+
+    @Test
     fun `a profile with a sealed token json needs the vault`() {
         tokenStore(platform).save(token())
         assertFalse(factory().needsCredentialSeal(dir))

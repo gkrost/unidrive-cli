@@ -239,7 +239,7 @@ open class DropboxProviderFactory(
                 DropboxAuth.TOKEN_FILE,
                 DropboxToken.serializer(),
                 protector = credentialProtector,
-            ).load()
+            ).load() ?: return "dropbox (token unreadable)"
             "dropbox (signed in)"
         } catch (e: org.krost.unidrive.auth.CredentialLockedException) {
             "dropbox (token locked: ${e.message})"
