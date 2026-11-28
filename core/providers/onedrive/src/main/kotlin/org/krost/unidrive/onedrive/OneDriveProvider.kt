@@ -82,17 +82,23 @@ class OneDriveProvider(
             Capability.PermanentDelete,
         )
 
+    // #267: the stored token only; the browser sign-in is signIn's.
     override suspend fun authenticate() {
         tokenManager.initialize()
+        if (!tokenManager.isAuthenticated) throw NotSignedInException("no OneDrive token is stored for this profile")
+    }
+
+    override suspend fun signIn(console: SignInConsole) {
+        tokenManager.initialize()
         if (!tokenManager.isAuthenticated) {
-            tokenManager.authenticateWithBrowser()
+            tokenManager.authenticateWithBrowser(console)
         }
     }
 
-    suspend fun authenticateWithDeviceCode() {
+    suspend fun authenticateWithDeviceCode(console: SignInConsole) {
         tokenManager.initialize()
         if (!tokenManager.isAuthenticated) {
-            tokenManager.authenticateWithDeviceCode()
+            tokenManager.authenticateWithDeviceCode(console)
         }
     }
 

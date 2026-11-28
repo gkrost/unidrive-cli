@@ -342,14 +342,14 @@ class InternxtProvider(
         }
     }
 
-    override suspend fun authenticate() {
-        authService.initialize()
-        if (!authService.isAuthenticated || authService.isJwtExpired()) {
-            authService.authenticateInteractive()
-        }
-        // Bring up the notifications WS now that we have a JWT, if anyone listens.
-        // Failures are logged inside NotificationsClient; the periodic poll is the
-        // safety net so a WS that won't connect mustn't fail the authenticate path.
+    override suspend fun authenticate() = authenticateWith(console = null)
+
+    override suspend fun signIn(console: SignInConsole) = authenticateWith(console)
+
+    private suspend fun authenticateWith(console: SignInConsole?) {
+        authService.signedIn(console)
+        // Bring up the notifications WS now that we have a JWT, if anyone listens. Failures are logged inside
+        // NotificationsClient; the periodic poll is the safety net so a WS that won't connect mustn't fail the authenticate path.
         if (remoteHintsWanted) ensureNotificationsClient()
     }
 

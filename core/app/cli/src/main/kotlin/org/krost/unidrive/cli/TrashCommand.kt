@@ -13,7 +13,6 @@ import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.TrashEmptyOutcome
 import org.krost.unidrive.TrashItem
-import org.krost.unidrive.authenticateAndLog
 import org.krost.unidrive.io.formatSize
 import org.krost.unidrive.sync.TrashManager
 import picocli.CommandLine
@@ -312,7 +311,7 @@ private fun <T> withRemoteTrashProvider(
     val provider = main.createProvider()
     return try {
         runBlocking(Priority.Foreground) {
-            provider.authenticateAndLog()
+            provider.authenticateOrSignIn()
             requireRemoteTrash(provider)
             block(provider)
         }

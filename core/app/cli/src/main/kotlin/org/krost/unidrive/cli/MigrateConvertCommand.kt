@@ -3,7 +3,6 @@ package org.krost.unidrive.cli
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.krost.unidrive.ProviderException
-import org.krost.unidrive.authenticateAndLog
 import org.krost.unidrive.engine.RemoteErrors
 import org.krost.unidrive.sync.StateDatabase
 import org.krost.unidrive.sync.SyncConfig
@@ -110,7 +109,7 @@ class MigrateUploadQuarantinedCommand : Runnable {
         val provider = main.createProvider()
         try {
             kotlinx.coroutines.runBlocking(org.krost.unidrive.http.Priority.Foreground) {
-                provider.authenticateAndLog()
+                provider.authenticateOrSignIn()
                 val done =
                     QuarantineUploadRun.run(main.providerConfigDir(), journal!!, provider) { local, remotePath, beforeUpload ->
                         uploadAsConflictCopy(provider, local, remotePath, beforeUpload)

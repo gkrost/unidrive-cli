@@ -13,7 +13,6 @@ import kotlinx.serialization.json.put
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
-import org.krost.unidrive.authenticateAndLog
 import org.krost.unidrive.engine.RemoteErrors
 import org.krost.unidrive.engine.RemoteOperationGuard
 import org.krost.unidrive.sync.IpcAuth
@@ -91,7 +90,7 @@ class LsCommand : Callable<Int> {
         val listing =
             try {
                 runBlocking(Priority.Foreground) {
-                    provider.authenticateAndLog()
+                    provider.authenticateOrSignIn()
                     listLive(provider, normalized)
                 }
             } catch (e: AuthenticationException) {

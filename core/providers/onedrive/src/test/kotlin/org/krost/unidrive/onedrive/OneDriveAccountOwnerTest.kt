@@ -190,7 +190,7 @@ class OneDriveAccountOwnerTest {
         val config = OneDriveConfig(tokenPath = profileDir)
         val manager = TokenManager(config, OAuthService(config, HttpClient(authEngine)), identityOf = { "id-bob" })
 
-        assertFailsWith<AccountChangedException> { runBlocking { manager.authenticateWithDeviceCode() } }
+        assertFailsWith<AccountChangedException> { runBlocking { manager.authenticateWithDeviceCode(org.krost.unidrive.TerminalSignInConsole) } }
 
         assertEquals(oldToken, Files.readString(profileDir.resolve("token.json")))
         assertEquals("id-ada", AccountOwner.read(profileDir))
@@ -201,7 +201,7 @@ class OneDriveAccountOwnerTest {
         val config = OneDriveConfig(tokenPath = profileDir)
         val manager = TokenManager(config, OAuthService(config, HttpClient(authEngine)), identityOf = { "id-ada" })
 
-        runBlocking { manager.authenticateWithDeviceCode() }
+        runBlocking { manager.authenticateWithDeviceCode(org.krost.unidrive.TerminalSignInConsole) }
 
         assertEquals("id-ada", AccountOwner.read(profileDir))
     }

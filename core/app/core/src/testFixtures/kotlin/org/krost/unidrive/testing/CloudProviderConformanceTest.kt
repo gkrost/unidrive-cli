@@ -4,7 +4,9 @@ import kotlinx.coroutines.runBlocking
 import org.krost.unidrive.Capability
 import org.krost.unidrive.CapabilityResult
 import org.krost.unidrive.CloudItem
+import org.krost.unidrive.AuthRequiredException
 import org.krost.unidrive.CloudProvider
+import org.krost.unidrive.NotSignedInException
 import org.krost.unidrive.UnsupportedCapabilityException
 import org.krost.unidrive.ViewKind
 import java.nio.file.Path
@@ -157,6 +159,47 @@ abstract class CloudProviderConformanceTest {
             } finally {
                 provider.close()
             }
+        }
+
+    // gkrost/unidrive-cli#267: authenticate() is non-interactive. With nothing stored it refuses at once, typed, and
+    // prints nothing; before, OneDrive and Dropbox opened a browser and waited 5 minutes, Internxt read the console.
+    @Test
+    fun `authenticate with nothing stored refuses typed and prints nothing`() {
+        runBlocking<Unit> {
+            if (!storedCredentialsRemovable) return@runBlocking
+            val provider = newProvider()
+            val (out, err) = java.io.ByteArrayOutputStream() to java.io.ByteArrayOutputStream()
+            val (originalOut, originalErr) = System.out to System.err
+            System.setOut(java.io.PrintStream(out, true))
+            System.setErr(java.io.PrintStream(err, true))
+            try {
+                clearStoredCredentials()
+                val refusal = assertFails { kotlinx.coroutines.withTimeout(10_000) { provider.authenticate() } }
+                assertTrue(
+                    refusal is NotSignedInException || refusal is AuthRequiredException,
+                    "authenticate() with nothing stored must refuse as not signed in; got $refusal",
+                )
+            } finally {
+                System.setOut(originalOut)
+                System.setErr(originalErr)
+                provider.close()
+            }
+            assertEquals("", out.toString() + err.toString(), "authenticate() printed although it must never sign in")
+        }
+    }
+
+    @Test
+    fun `signIn with credentials stored asks the console nothing`() =
+        runBlocking<Unit> {
+            val provider = newProvider()
+            val console = RecordingSignInConsole()
+            try {
+                provider.signIn(console)
+                assertTrue(provider.isAuthenticated, "signIn left the provider unauthenticated although credentials are stored")
+            } finally {
+                provider.close()
+            }
+            assertEquals(emptyList(), console.events)
         }
 
     @Test

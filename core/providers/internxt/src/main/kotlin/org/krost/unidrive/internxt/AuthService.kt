@@ -10,6 +10,7 @@ import org.krost.unidrive.AccountOwner
 import org.krost.unidrive.UnprovenAccountId
 import org.krost.unidrive.AccountUnverifiedException
 import org.krost.unidrive.AuthRequiredException
+import org.krost.unidrive.SignInConsole
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.HttpDefaults
 import org.krost.unidrive.TransientNetworkException
@@ -138,15 +139,15 @@ open class AuthService(
         transientRefreshFailureLogged = false
     }
 
-    // Console-only readers. archive#865: authenticateInteractive refuses to run without an interactive
+    // The sign-in console's readers. archive#865: authenticateInteractive refuses to run without an interactive
     // terminal, so there is deliberately no stdin fallback here — a headless caller must get the
     // typed refusal above, never a blocking read on a stdin nobody will answer.
-    private fun readLine(prompt: String): String =
-        System.console()?.readLine(prompt)?.trim()
+    private fun SignInConsole.line(prompt: String): String =
+        readLine(prompt)?.trim()
             ?: throw AuthenticationException("No input provided")
 
-    private fun readPassword(prompt: String): CharArray =
-        System.console()?.readPassword(prompt)
+    private fun SignInConsole.password(prompt: String): CharArray =
+        readSecret(prompt)
             ?: throw AuthenticationException("No input provided")
 
     /**
@@ -330,10 +331,29 @@ open class AuthService(
     }
 
     /**
-     * archive#865: a real interactive terminal on stdin, not merely a Console handle. JDK 22+ hands out a
-     * Console even when the streams are redirected (its isTerminal() then answers false).
+     * archive#865: the refusal of a sign-in nobody can answer: the credentials are missing or expired and there is no
+     * interactive terminal (a daemon or mount start, a hidden window, a closed stdin). gkrost/unidrive-cli#267: also
+     * what the non-interactive [InternxtProvider.authenticate] throws, so a daemon start reads the same line as before.
      */
-    private fun hasInteractiveTerminal(): Boolean = System.console()?.isTerminal == true
+    fun signInRequired(): AuthRequiredException {
+        val profile = config.tokenPath.fileName.toString()
+        val state = if (credentials != null) "expired" else "missing"
+        return AuthRequiredException(
+            "${AuthRequiredException.REASON}: Internxt credentials are $state for profile " +
+                "'$profile' and there is no interactive terminal to sign in on. " +
+                "Sign in again: unidrive -p $profile auth",
+        )
+    }
+
+    /**
+     * gkrost/unidrive-cli#267: loads the stored session. One that is missing or expired is signed in through [console]
+     * ([InternxtProvider.signIn]), or refused with [signInRequired] without one ([InternxtProvider.authenticate]).
+     */
+    suspend fun signedIn(console: SignInConsole?) {
+        initialize()
+        if (isAuthenticated && !isJwtExpired()) return
+        authenticateInteractive(console ?: throw signInRequired())
+    }
 
     /**
      * Interactive email / password / 2FA sign-in, for a human on a terminal (`unidrive auth`).
@@ -343,20 +363,12 @@ open class AuthService(
      * Such a caller gets the typed [AuthRequiredException] instead, fast and non-interactively;
      * a front-end signs in via `auth login`, which takes the credentials without a console.
      */
-    suspend fun authenticateInteractive(): InternxtCredentials {
-        if (!hasInteractiveTerminal()) {
-            val profile = config.tokenPath.fileName.toString()
-            val state = if (credentials != null) "expired" else "missing"
-            throw AuthRequiredException(
-                "${AuthRequiredException.REASON}: Internxt credentials are $state for profile " +
-                    "'$profile' and there is no interactive terminal to sign in on. " +
-                    "Sign in again: unidrive -p $profile auth",
-            )
-        }
-        val email = readLine("Internxt email: ")
+    suspend fun authenticateInteractive(console: SignInConsole): InternxtCredentials {
+        if (!console.isInteractive) throw signInRequired()
+        val email = console.line("Internxt email: ")
         if (email.isBlank()) throw AuthenticationException("No email provided")
 
-        val passwordChars = readPassword("Password: ")
+        val passwordChars = console.password("Password: ")
         if (passwordChars.isEmpty()) throw AuthenticationException("No password provided")
         // passwordChars stays populated during the readLine prompts between
         // retries. The outer finally guarantees zeroing on any exit (success,
@@ -372,13 +384,13 @@ open class AuthService(
 
             var attempts = 0
             while (attempts < 3) {
-                val tfaCode = readLine("2FA code: ")
+                val tfaCode = console.line("2FA code: ")
                 try {
                     return authenticate(email, passwordChars, tfaCode = tfaCode)
                 } catch (_: TfaInvalidException) {
                     attempts++
                     if (attempts >= 3) throw AuthenticationException("Too many invalid 2FA attempts")
-                    System.err.println("Invalid 2FA code, please try again.")
+                    console.warn("Invalid 2FA code, please try again.")
                 }
             }
             throw AuthenticationException("Too many invalid 2FA attempts")

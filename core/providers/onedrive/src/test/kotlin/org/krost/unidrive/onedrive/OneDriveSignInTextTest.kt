@@ -7,6 +7,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.ktor.utils.io.ByteReadChannel
 import kotlinx.coroutines.runBlocking
+import org.krost.unidrive.testing.RecordingSignInConsole
 import org.krost.unidrive.testing.TestScratch
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
@@ -66,7 +67,7 @@ class OneDriveSignInTextTest {
         val out = ByteArrayOutputStream()
         System.setOut(PrintStream(out, true, Charsets.UTF_8))
         try {
-            runBlocking { manager.authenticateWithDeviceCode() }
+            runBlocking { manager.authenticateWithDeviceCode(org.krost.unidrive.TerminalSignInConsole) }
         } finally {
             System.setOut(originalOut)
         }
@@ -77,5 +78,30 @@ class OneDriveSignInTextTest {
                 "Authentication successful!$nl",
             out.toString(Charsets.UTF_8),
         )
+    }
+
+    @Test
+    fun the_device_code_sign_in_shows_its_text_through_the_console_only() {
+        val config = OneDriveConfig(tokenPath = profileDir)
+        val manager = TokenManager(config, OAuthService(config, HttpClient(authEngine)), identityOf = { "id-ada" })
+        val console = RecordingSignInConsole()
+        val originalOut = System.out
+        val out = ByteArrayOutputStream()
+        System.setOut(PrintStream(out, true, Charsets.UTF_8))
+        try {
+            runBlocking { manager.authenticateWithDeviceCode(console) }
+        } finally {
+            System.setOut(originalOut)
+        }
+        assertEquals(
+            listOf(
+                "show:To sign in, enter the code USR-1.",
+                "show:",
+                "show:Waiting for authentication...",
+                "show:Authentication successful!",
+            ),
+            console.events,
+        )
+        assertEquals("", out.toString(Charsets.UTF_8))
     }
 }

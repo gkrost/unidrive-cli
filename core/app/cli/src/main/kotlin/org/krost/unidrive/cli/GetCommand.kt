@@ -9,7 +9,6 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import org.krost.unidrive.AuthenticationException
-import org.krost.unidrive.authenticateAndLog
 import org.krost.unidrive.sync.PlaceholderManager
 import org.krost.unidrive.sync.StateDatabase
 import picocli.CommandLine
@@ -82,7 +81,7 @@ class GetCommand : Callable<Int> {
                     exitCode = EXCLUDED_EXIT
                     return@runBlocking
                 }
-                provider.authenticateAndLog()
+                provider.authenticateOrSignIn()
 
                 if (isFolder) {
                     val prefix = if (normalizedPath.endsWith("/")) normalizedPath else "$normalizedPath/"
