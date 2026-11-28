@@ -1940,11 +1940,14 @@ class HydrationImpl(
         val stamp = refusalStamp(cachePath) ?: return null
         if (!refusal.startsWith("$stamp|")) return null
         val detail = refusal.substring(stamp.length + 1)
-        // Legacy refusals have no deadline: make them eligible once after upgrade.
-        val retryAt = detail.substringBefore('|').toLongOrNull() ?: return null
-        val reason = detail.substringAfter('|', "upload refused")
-        // gkrost/unidrive-cli#962: final whatever deadline the row carries (the code before #951 stored a 6 h one).
+        // The reason, with or without the deadline segment before it: the rows the code before #951 stored carry
+        // no deadline at all (`<stamp>|parent_gone: /dir`).
+        val reason = if ('|' in detail) detail.substringAfter('|') else detail
+        // gkrost/unidrive-cli#962: final whatever deadline the row carries (the code before #951 stored a 6 h one) —
+        // a row without any deadline segment included, so the parse below cannot make it eligible once after upgrade.
         if (HydrationError.ParentGone.parse(reason) != null) return if (userRetry) null else reason
+        // Legacy non-parent_gone refusals have no deadline: make them eligible once after upgrade.
+        val retryAt = detail.substringBefore('|').toLongOrNull() ?: return null
         return if (System.currentTimeMillis() < retryAt) reason else null
     }
 
