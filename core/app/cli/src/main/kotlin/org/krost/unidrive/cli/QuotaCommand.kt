@@ -1,6 +1,7 @@
 package org.krost.unidrive.cli
 
 import kotlinx.coroutines.runBlocking
+import org.krost.unidrive.http.Priority
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import org.krost.unidrive.AuthenticationException
@@ -56,7 +57,7 @@ class QuotaCommand : Runnable {
         val profile = parent.resolveCurrentProfile()
         val stateDb = parent.configBaseDir().resolve(profile.name).resolve("state.db")
         try {
-            runBlocking {
+            runBlocking(Priority.Foreground) {
                 provider.authenticateAndLog()
                 val quota = provider.quota()
                 cacheQuota(stateDb, quota)

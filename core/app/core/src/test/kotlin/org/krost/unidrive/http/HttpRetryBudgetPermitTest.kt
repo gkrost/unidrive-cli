@@ -439,6 +439,32 @@ class HttpRetryBudgetPermitTest {
             poll.await()
         }
 
+    // Owner decision on #74: at a single permit the user operation wins — the poll waits while a user operation wants it.
+    @Test
+    fun `at the storm floor a waiting user operation gets the last permit before the waiting poll`() =
+        runTest {
+            val budget = budget(maxConcurrency = 2, reservedForUserSlots = 1)
+            budget.recordThrottle(10)
+            budget.recordThrottle(10)
+            assertEquals(1, budget.currentConcurrency(), "the storm halved the bound to its floor")
+            val gate = CompletableDeferred<Unit>()
+            val order = Collections.synchronizedList(mutableListOf<String>())
+            val holder = async { withContext(Priority.Foreground) { budget.withPermit { gate.await() } } }
+            runCurrent()
+            val poll = async { budget.withPermit { order.add("poll") } }
+            runCurrent()
+            val user = async { withContext(Priority.Foreground) { budget.withPermit { order.add("user") } } }
+            runCurrent()
+
+            gate.complete(Unit)
+            holder.await()
+            runCurrent()
+            assertEquals("user", order.first(), "the user operation takes the freed last permit ahead of the parked poll")
+            user.await()
+            poll.await()
+            assertEquals(listOf("user", "poll"), order.toList(), "the poll runs once no user operation wants the permit")
+        }
+
     @Test
     fun `a storm that halves the concurrency reads as no negative free slot`() =
         runTest {

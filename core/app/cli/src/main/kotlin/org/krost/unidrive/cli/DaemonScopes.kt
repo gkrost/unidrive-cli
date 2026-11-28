@@ -4,6 +4,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import org.krost.unidrive.http.Priority
 
 /**
  * The coroutine scopes of a daemon, beside [DaemonRuntime]'s companion (which they would grow past its
@@ -24,11 +25,13 @@ internal fun serveScopeOf(
 
 /**
  * The scope the mount's hydration uploads and replays run in: a scope of its own (the shutdown joins it apart from
- * the serve scope), so it carries the daemon's [logContext] itself (archive#150, gkrost/unidrive-cli#225).
+ * the serve scope), so it carries the daemon's [logContext] itself (archive#150, gkrost/unidrive-cli#225). A mount upload
+ * is a user's write, so it runs on the user lane and may take the reserved Drive slot (gkrost/unidrive-cli#74).
  */
 internal fun hydrationUploadScope(profileName: String): CoroutineScope =
     CoroutineScope(
         SupervisorJob() +
             Dispatchers.IO +
-            logContext(profileName),
+            logContext(profileName) +
+            Priority.Foreground,
     )

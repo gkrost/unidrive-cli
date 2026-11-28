@@ -634,7 +634,7 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
             // canonical follow-up — id-in-message logging on coroutine paths
             // per the lessons/mdc-in-suspend.md guidance — is the wider Slice
             // B in UD-254a's body and out of scope for this single-file fix.
-            runBlocking {
+            runBlocking(org.krost.unidrive.http.Priority.Foreground) {
                 // gkrost/unidrive-cli#213: the coroutine the shutdown hook cancels and waits for. Every pass and its transfers
                 // run under it; the IPC accept loop is a child too, and the finally below closes it once the body is left.
                 shutdown.attach(coroutineContext.job)
