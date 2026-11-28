@@ -34,6 +34,9 @@ class OneDriveProvider(
     // OneDrive names are case-insensitive and case-preserving: `a.txt` and `A.txt` are one item (OneDriveServerNames.sameName).
     override val caseSensitivity: CaseSensitivity get() = CaseSensitivity.INSENSITIVE_PRESERVING
 
+    // #268: a folder holds one item per name.
+    override val allowsDuplicateNames: Boolean get() = false
+
     private val log = LoggerFactory.getLogger(OneDriveProvider::class.java)
     private val oauthService = OAuthService(config)
     internal val tokenManager = TokenManager(config, oauthService)

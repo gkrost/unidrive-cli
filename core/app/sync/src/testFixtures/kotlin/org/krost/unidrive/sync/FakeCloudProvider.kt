@@ -16,6 +16,9 @@ private fun <T> syncList(): MutableList<T> = java.util.Collections.synchronizedL
 // front-end's tests in :app:hydration build their SyncEngine host on the same fake as the mirror
 // tests here, without a test dependency from this module on :app:hydration.
 class FakeCloudProvider : CloudProvider {
+    // A drive of unique names (#268: the interface default is now twins possible).
+    override val allowsDuplicateNames = false
+
     override val id = "fake"
     override val displayName = "Fake"
     override var isAuthenticated = true

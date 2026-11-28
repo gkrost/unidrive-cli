@@ -443,6 +443,9 @@ class LocalFsProvider(
      */
     override val deltaIsFullListing: Boolean get() = true
 
+    // #268: a directory holds one entry per name.
+    override val allowsDuplicateNames: Boolean get() = false
+
     // #268: a file copy carries no write token, so neither a replace nor a delete checks the one it is handed.
     override val conditionalWrite: ConditionalWrite get() = ConditionalWrite.NONE
 

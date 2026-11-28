@@ -13,9 +13,11 @@ import kotlin.test.assertFailsWith
  * that allows same-named siblings it may be the twin, so an adapter that forgot the override fails before any request.
  */
 class IdAddressedDefaultsTest {
+    // [declared] null leaves allowsDuplicateNames at the interface default.
     private class PathOnlyProvider(
-        override val allowsDuplicateNames: Boolean,
+        private val declared: Boolean?,
     ) : CloudProvider {
+        override val allowsDuplicateNames: Boolean get() = declared ?: super.allowsDuplicateNames
         val calls = mutableListOf<String>()
         override val id = "path-only"
         override val displayName = "Path only"
@@ -86,7 +88,7 @@ class IdAddressedDefaultsTest {
     @Test
     fun `where names are unique the id-addressed defaults act on the path`() =
         runBlocking {
-            val p = PathOnlyProvider(allowsDuplicateNames = false)
+            val p = PathOnlyProvider(declared = false)
 
             p.deleteById("id-1", "/a.txt")
             p.deletePermanentlyById("id-2", "/b.txt")
@@ -98,7 +100,7 @@ class IdAddressedDefaultsTest {
     @Test
     fun `where twins may exist the id-addressed defaults refuse before any call`() =
         runBlocking {
-            val p = PathOnlyProvider(allowsDuplicateNames = true)
+            val p = PathOnlyProvider(declared = true)
 
             val e = assertFailsWith<UnsupportedOperationException> { p.deleteById("id-1", "/a.txt") }
             assertFailsWith<UnsupportedOperationException> { p.deletePermanentlyById("id-2", "/b.txt") }
@@ -109,17 +111,29 @@ class IdAddressedDefaultsTest {
             assertEquals(true, e.message?.contains("/a.txt"), e.message)
         }
 
+    @Test
+    fun `an adapter that declares nothing is taken to allow twins, so the id-addressed defaults refuse`() =
+        runBlocking {
+            val p = PathOnlyProvider(declared = null)
+
+            assertEquals(true, p.allowsDuplicateNames, "the default is the fail-closed side (#268)")
+            assertFailsWith<UnsupportedOperationException> { p.deleteById("id-1", "/a.txt") }
+            assertFailsWith<UnsupportedOperationException> { p.deletePermanentlyById("id-2", "/b.txt") }
+            assertFailsWith<UnsupportedOperationException> { p.moveById("id-3", "/c.txt", "/d.txt") }
+            assertEquals(emptyList(), p.calls)
+        }
+
     // gkrost/unidrive-cli#831: a provider without batched deletes is asked item by item, and each item gets its own answer.
     @Test
     fun `the batched delete of a provider without batches is the per-item loop, one answer per item`() =
         runBlocking {
-            val unique = PathOnlyProvider(allowsDuplicateNames = false)
+            val unique = PathOnlyProvider(declared = false)
             val items = listOf(DeleteRequest("id-1", "/a.txt", isFolder = false), DeleteRequest("id-2", "/b", isFolder = true))
 
             assertEquals(listOf(null, null), unique.deleteManyOrEach(items))
             assertEquals(listOf("delete /a.txt", "delete /b"), unique.calls)
 
-            val twins = PathOnlyProvider(allowsDuplicateNames = true)
+            val twins = PathOnlyProvider(declared = true)
             val answers = twins.deleteManyOrEach(items)
             assertEquals(2, answers.size, "a refusal of the first item does not stop the second")
             assertEquals(true, answers.all { it is UnsupportedOperationException }, answers.toString())

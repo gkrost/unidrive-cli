@@ -19,6 +19,9 @@ import java.nio.file.Path
 class ListingFeedProvider(
     private val fullListing: Boolean = false,
 ) : CloudProvider {
+    // A drive of unique names (#268: the interface default is now twins possible).
+    override val allowsDuplicateNames = false
+
     override val id = "listing-feed-fake"
     override val displayName = "Listing Feed Fake"
     override var isAuthenticated = true
