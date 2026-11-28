@@ -21,6 +21,7 @@ import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.FileTime
 import java.nio.file.attribute.PosixFileAttributeView
 import java.nio.file.attribute.PosixFilePermissions
+import java.security.DigestInputStream
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.HexFormat
@@ -43,7 +44,8 @@ import javax.crypto.AEADBadTagException
  * ciphertext, while the bytes the engines see are the plaintext, so [hashAlgorithm] is null (the engines skip
  * their content-hash verification; the AEAD tag of the seal is the integrity check, and a tampered stream fails
  * its decrypt), [contentMatchesLocal] yields no proof, and [reportsContentIds] is false (the row's content id
- * would name bytes the client does not hold).
+ * would name bytes the client does not hold). The answer of an upload does name the plaintext's SHA-256 ([CloudItem.sentSha256]),
+ * the digest the engines record as sent; the AEAD binds only the header, so a download of that version is compared with it.
  *
  * The key material is the [strategy]'s, lazy on purpose: the wrap happens for every provider of an opted-in
  * profile, including commands that never touch content (auth, status, quota, listings), and only those that
@@ -107,13 +109,18 @@ class XtraEncryptedProvider(
 
         val tmp = Files.createTempFile("xtra-", ".tmp")
         try {
+            // gkrost/unidrive-cli#1018 item 16: the encrypt pass is the one read of the plaintext, so it is hashed here. An inner provider
+            // that hashes what its upload reads (Internxt) hashes the ciphertext, and the engines take the answer's digest as what was
+            // sent: the plaintext's, which a later download of this version is compared with.
+            val plaintext = MessageDigest.getInstance("SHA-256")
             FileOutputStream(tmp.toFile()).use { out ->
                 out.write(header)
-                FileInputStream(localPath.toFile()).use { input ->
+                DigestInputStream(FileInputStream(localPath.toFile()), plaintext).use { input ->
                     strategy.encrypt(input, out, fileKey, iv, header)
                 }
             }
-            return inner.upload(tmp, remotePath, existingRemoteId, ifMatchETag, onProgress).plaintextSized(strategy)
+            val answer = inner.upload(tmp, remotePath, existingRemoteId, ifMatchETag, onProgress).plaintextSized(strategy)
+            return answer.copy(sentSha256 = HexFormat.of().formatHex(plaintext.digest()))
         } finally {
             Files.deleteIfExists(tmp)
         }

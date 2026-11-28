@@ -697,7 +697,8 @@ class StateDatabase(
                     hint_updated_at      TEXT,
                     changed_by           TEXT,
                     changed_at_ms        INTEGER,
-                    pending_upload       INTEGER NOT NULL DEFAULT 0
+                    pending_upload       INTEGER NOT NULL DEFAULT 0,
+                    upload_digest        TEXT
                 )
             """,
             )
@@ -842,9 +843,9 @@ class StateDatabase(
             if (!columnExists("sync_entries", "pending_local")) {
                 stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN pending_local TEXT")
             }
-            // gkrost/unidrive-cli#849: who last changed the row and when the engine saw it (SyncEntry.changedBy). Additive, no
-            // schema_version bump, no backfill: NULL = unknown, which is every older row; an older build's upsert resets them to it.
-            for (col in listOf("changed_by TEXT", "changed_at_ms INTEGER")) if (!columnExists("sync_entries", col.substringBefore(' '))) stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN $col")
+            // gkrost/unidrive-cli#849: who last changed the row and when the engine saw it (SyncEntry.changedBy); #1018 item 16: what its upload sent
+            // (SyncEntry.uploadDigest). Additive, no schema_version bump, no backfill: NULL = unknown, every older row; an older build's upsert resets them to it.
+            for (col in listOf("changed_by TEXT", "changed_at_ms INTEGER", "upload_digest TEXT")) if (!columnExists("sync_entries", col.substringBefore(' '))) stmt.executeUpdate("ALTER TABLE sync_entries ADD COLUMN $col")
             // gkrost/unidrive-cli#414: the download hint the row carries (SyncEntry.storedObject): the stored object of
             // the version the row records, so a download after a daemon restart seeds the provider's in-memory hint from
             // the row and skips the metadata call it would otherwise pay per file. Unlike the additive columns above,
@@ -1191,6 +1192,7 @@ class StateDatabase(
                 }
                 // The row never reached the cloud: the column says so, whatever the synthetic key looks like.
                 stmt.setInt(if (keepMarks) 36 else 32, if (entry.remoteId == null) 1 else 0)
+                stmt.setString(if (keepMarks) 37 else 33, entry.uploadDigest?.encoded()) // #1018 item 16: kept without local bytes, unlike local_hash
                 stmt.executeUpdate()
             }
             // INSERT OR REPLACE swapped the row of this remote id (nothing, a tombstone or an alive row) for the new one.
@@ -3639,6 +3641,7 @@ class StateDatabase(
             remoteContentId = getString("remote_content_id"),
             changedBy = getString("changed_by"),
             changedAtMs = getLong("changed_at_ms").let { if (wasNull()) null else it },
+            uploadDigest = org.krost.unidrive.sync.model.UploadDigest.decode(getString("upload_digest")),
             // gkrost/unidrive-cli#414: the hint tuple reads as one stored object; a tuple without its fileId (the
             // pre-#414 shape) reads as none known. hint_size is nullable, so read it before testing it, and read it
             // as the 64-bit number it is written as (a 32-bit read flips a 2 GiB object's size negative).
@@ -3835,10 +3838,9 @@ class StateDatabase(
                 "local_mtime, local_size, is_folder, is_pinned, is_hydrated, last_synced, status, " +
                 "download_quarantined, last_error_at, local_hash, cache_backed, edit_base, remote_version, remote_content_id, " +
                 "hint_file_id, hint_bucket, hint_encrypt_version, hint_size, hint_modified, hint_updated_at, " +
-                "changed_by, changed_at_ms, " +
-                "pending_local, pending_upload) " +
+                "changed_by, changed_at_ms, pending_local, pending_upload, upload_digest) " +
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
-                "(SELECT pending_local FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'), ?)"
+                "(SELECT pending_local FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'), ?, ?)"
 
         // The same, with the refusal stamp and the name block of the row it replaces carried over (see upsertEntry).
         // pending_local is carried here too: a same-path merge must not drop a remote change the next delta will not send.
@@ -3848,11 +3850,10 @@ class StateDatabase(
                 "local_mtime, local_size, is_folder, is_pinned, is_hydrated, last_synced, status, " +
                 "download_quarantined, last_error_at, local_hash, cache_backed, edit_base, remote_version, remote_content_id, " +
                 "hint_file_id, hint_bucket, hint_encrypt_version, hint_size, hint_modified, hint_updated_at, " +
-                "changed_by, changed_at_ms, " +
-                "pending_local, upload_refused, name_block, pending_upload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
+                "changed_by, changed_at_ms, pending_local, upload_refused, name_block, pending_upload, upload_digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
                 "(SELECT pending_local FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'), " +
                 "(SELECT upload_refused FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'), " +
-                "(SELECT name_block FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'), ?)"
+                "(SELECT name_block FROM sync_entries WHERE remote_id=? AND path=? AND status='EXISTS'), ?, ?)"
 
         /** The download hint's columns (gkrost/unidrive-cli#414), moved as one tuple wherever the row is written. */
         private val HINT_COLUMNS =
