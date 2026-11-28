@@ -7,7 +7,7 @@
 # line to a baseline that lacks it, so this exemption cannot be reused: from here on the baseline only goes down again.
 file:app/cli/src/main/kotlin/org/krost/unidrive/cli/DaemonRuntime.kt 1234
 file:app/cli/src/main/kotlin/org/krost/unidrive/cli/StatusCommand.kt 1411
-file:app/cli/src/main/kotlin/org/krost/unidrive/cli/SyncCommand.kt 1110
+file:app/cli/src/main/kotlin/org/krost/unidrive/cli/SyncCommand.kt 1054
 file:app/engine-core/src/main/kotlin/org/krost/unidrive/engine/RemoteGather.kt 2187
 file:app/engine-core/src/main/kotlin/org/krost/unidrive/sync/StateDatabase.kt 4080
 file:app/hydration/src/main/kotlin/org/krost/unidrive/hydration/HydrationImpl.kt 4247
@@ -17,7 +17,7 @@ file:app/sync-tracking/src/main/kotlin/org/krost/unidrive/tracking/TrackingEngin
 file:app/sync/src/main/kotlin/org/krost/unidrive/sync/IpcServer.kt 1158
 file:app/sync/src/main/kotlin/org/krost/unidrive/sync/Reconciler.kt 2215
 file:app/sync/src/main/kotlin/org/krost/unidrive/sync/SyncConfig.kt 1245
-file:app/sync/src/main/kotlin/org/krost/unidrive/sync/SyncEngine.kt 5399
+file:app/sync/src/main/kotlin/org/krost/unidrive/sync/SyncEngine.kt 5320
 file:providers/internxt/src/main/kotlin/org/krost/unidrive/internxt/InternxtApiService.kt 2230
 file:providers/internxt/src/main/kotlin/org/krost/unidrive/internxt/InternxtProvider.kt 6369
 file:providers/onedrive/src/main/kotlin/org/krost/unidrive/onedrive/GraphApiService.kt 2011
@@ -51,7 +51,7 @@ fun:app/sync/src/main/kotlin/org/krost/unidrive/sync/LocalScanner.kt::visitFile#
 fun:app/sync/src/main/kotlin/org/krost/unidrive/sync/Reconciler.kt::finalizeStreaming#1 121
 fun:app/sync/src/main/kotlin/org/krost/unidrive/sync/Reconciler.kt::reconcile#1 317
 fun:app/sync/src/main/kotlin/org/krost/unidrive/sync/SyncEngine.kt::applyUpload#1 157
-fun:app/sync/src/main/kotlin/org/krost/unidrive/sync/SyncEngine.kt::doSyncOnce#1 1103
+fun:app/sync/src/main/kotlin/org/krost/unidrive/sync/SyncEngine.kt::doSyncOnce#1 1046
 fun:app/sync/src/main/kotlin/org/krost/unidrive/sync/SyncEngine.kt::gatherStreamingChanges#1 567
 fun:providers/internxt/src/main/kotlin/org/krost/unidrive/internxt/InternxtApiService.kt::authenticatedGetReply#1 142
 fun:providers/internxt/src/main/kotlin/org/krost/unidrive/internxt/InternxtProvider.kt::collectScopedInventoryImpl#1 146

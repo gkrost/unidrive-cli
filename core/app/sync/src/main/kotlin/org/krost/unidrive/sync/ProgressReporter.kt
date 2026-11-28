@@ -134,6 +134,18 @@ interface ProgressReporter {
 
     fun onWarning(message: String)
 
+    /**
+     * gkrost/unidrive-cli#267: a deletion safeguard tripped in a dry run, or in daemon mode ([deferred]: the planned
+     * deletes are dropped for this cycle). A one-shot apply throws [SafeguardTrippedException] instead. The default shows
+     * the English warning through [onWarning], so a reporter that only shows text needs nothing new; a reporter for a
+     * machine client overrides it and keys on [SafeguardTripped.kind]. A reporter that delegates (`by`) or fans out to
+     * others must forward it, or the delegate's default swallows the typed outcome.
+     */
+    fun onSafeguard(
+        trip: SafeguardTripped,
+        deferred: Boolean,
+    ) = onWarning(SafeguardText.warning(trip, deferred))
+
     object Silent : ProgressReporter {
         override fun onScanProgress(
             phase: String,
