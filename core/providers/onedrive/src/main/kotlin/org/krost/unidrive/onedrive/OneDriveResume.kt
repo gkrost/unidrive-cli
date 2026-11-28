@@ -79,7 +79,7 @@ internal suspend fun writeOneDriveBody(
         }
         val expected = item.file?.hashes?.quickXorHash
         if (resumedFrom > 0L && expected != null) {
-            val actual = QuickXorHash.of(partial.partialPath)
+            val actual = partial.quickXorHash()
             if (actual != expected) {
                 partial.discard()
                 throw IOException("The resumed $what does not match the item's quickXorHash; the kept prefix is dropped, the retry starts from zero")
@@ -90,6 +90,17 @@ internal suspend fun writeOneDriveBody(
     } finally {
         partial.release()
     }
+}
+
+/**
+ * The quickXorHash of the whole partial, read through the staging's own channel. gkrost/unidrive-cli#1088: a second handle
+ * ([QuickXorHash.of] on [ResumableStaging.partialPath]) cannot read the file on Windows while the staging holds its lock,
+ * because the lock is mandatory there; the read failed, and every resume ended in a download from zero.
+ */
+private fun ResumableStaging.quickXorHash(): String {
+    val hash = QuickXorHash()
+    replayPrefix { buffer, length -> hash.update(buffer, 0, length) }
+    return java.util.Base64.getEncoder().encodeToString(hash.digest())
 }
 
 /**
