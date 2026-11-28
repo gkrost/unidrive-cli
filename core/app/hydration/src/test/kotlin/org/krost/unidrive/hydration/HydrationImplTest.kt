@@ -51,6 +51,7 @@ internal class MinimalFakeProvider(
     // A provider with write tokens of its own (OneDrive): each upload answers with a new version, [nextVersion].
     override val reportsItemVersions: Boolean = false,
 ) : CloudProvider {
+    override val allowsDuplicateNames = false
     // The version the next upload answers with (reportsItemVersions only); null = derived from the upload count.
     @Volatile var nextVersion: String? = null
 

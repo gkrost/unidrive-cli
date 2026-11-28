@@ -41,6 +41,7 @@ import org.krost.unidrive.testing.TestScratch
 class NameRefusalTest {
     /** A tree drive: parents must exist; [override] and [refuse] script the name rule per requested remote path. */
     private class NameRuleProvider : CloudProvider {
+        override val allowsDuplicateNames = false
         override val id = "fake-names"
         override val displayName = "Fake (names)"
         override var isAuthenticated = true

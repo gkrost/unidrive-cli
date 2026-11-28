@@ -38,6 +38,7 @@ import org.krost.unidrive.testing.TestScratch
 class HydrationRenameRollForwardTest {
     // A drive that keeps its items by path with ids that stay through a move, as OneDrive and Internxt do.
     private class MovingDrive : CloudProvider {
+        override val allowsDuplicateNames = false
         override val id = "fake-moving"
         override val displayName = "Fake (rename roll forward)"
         override var isAuthenticated = true

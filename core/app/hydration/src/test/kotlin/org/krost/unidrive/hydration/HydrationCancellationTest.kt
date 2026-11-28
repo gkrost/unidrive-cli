@@ -64,6 +64,7 @@ class HydrationCancellationTest {
     // unlink, rename and open_write_begin already rethrow. A private provider whose create and delete throw the
     // cancellation pins the same behaviour for the two folder verbs.
     private class CancellingFakeProvider : CloudProvider {
+        override val allowsDuplicateNames = false
         override val id = "fake-cancel"
         override val displayName = "Fake (cancellation test)"
         override var isAuthenticated = true

@@ -31,6 +31,7 @@ import org.krost.unidrive.testing.TestScratch
 class HydrationNeverUploadedCostTest {
 
     private class CountingProvider : CloudProvider {
+        override val allowsDuplicateNames = false
         override val id = "counting"
         override val displayName = "Counting"
         override var isAuthenticated = true

@@ -28,6 +28,7 @@ import org.krost.unidrive.testing.TestScratch
  */
 class HydrationNormalisationTwinsTest {
     private class PathAddressedProvider : CloudProvider {
+        override val allowsDuplicateNames = false
         override val id = "path-addressed-fake"
         override val displayName = "Path Addressed Fake"
         override var isAuthenticated = true

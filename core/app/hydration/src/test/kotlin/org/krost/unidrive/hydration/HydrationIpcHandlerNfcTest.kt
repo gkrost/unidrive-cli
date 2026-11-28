@@ -40,6 +40,7 @@ private const val NFD_PATH = "/$NFD_NAME"
 class HydrationIpcHandlerNfcTest {
 
     private class RecordingProvider : CloudProvider {
+        override val allowsDuplicateNames = false
         override val id = "fake-nfc"
         override val displayName = "Fake (NFC test)"
         override var isAuthenticated = true

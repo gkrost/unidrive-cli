@@ -814,6 +814,7 @@ class MountEngineOperationsTest {
             val corruptContent = "hello".toByteArray()
             val hashingProvider =
                 object : CloudProvider {
+                    override val allowsDuplicateNames = false
                     override val id = "fake-hashing"
                     override val displayName = "Fake Hashing"
                     override var isAuthenticated = true

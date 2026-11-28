@@ -60,6 +60,7 @@ class HydrationListContentIdTest {
         // gkrost/unidrive-cli#202: whether the drive declares that its listings name the bytes (CloudProvider.reportsContentIds).
         private val declaresContentIds: Boolean = true,
     ) : CloudProvider {
+        override val allowsDuplicateNames = false
         override val id = "fake-object-naming"
         override val displayName = "Fake (names stored objects)"
         override var isAuthenticated = true

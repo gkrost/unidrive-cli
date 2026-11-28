@@ -28,6 +28,7 @@ import org.krost.unidrive.testing.TestScratch
  */
 class HydrationReplaceRenameOrderTest {
     private class NameHoldingProvider : CloudProvider {
+        override val allowsDuplicateNames = false
         override val id = "fake-replace-order"
         override val displayName = "Fake (replace order)"
         override var isAuthenticated = true

@@ -382,6 +382,7 @@ class HydrationUnlinkListBenchmarkTest {
 
 /** The counting fake: an empty remote that answers the folder and not-found for everything else, with an optional round-trip latency. */
 private class BenchProvider : CloudProvider {
+    override val allowsDuplicateNames = false
     override val id = "bench"
     override val displayName = "Bench"
     override var isAuthenticated = true
