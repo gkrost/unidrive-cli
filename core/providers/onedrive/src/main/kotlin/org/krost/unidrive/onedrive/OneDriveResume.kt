@@ -71,19 +71,19 @@ internal suspend fun writeOneDriveBody(
         if (answer == RangeAnswer.BODY_FROM_ZERO && start > 0L) log.warn("{}: the server ignored Range from byte {}; starting over from zero", what, start)
         val resumedFrom = partial.offset
         val declared = response.contentLength()?.let { it + resumedFrom }
-        partial.append(response.bodyAsChannel())
+        val expected = item.file?.hashes?.quickXorHash
+        // Only a resumed body is checked whole. The kept prefix is replayed before the append (while offset is still the
+        // prefix) and the rest is hashed as it streams, so the check reads the prefix once, not the whole file again.
+        val hash = if (resumedFrom > 0L && expected != null) prefixHash(partial) else null
+        partial.append(response.bodyAsChannel(), hash?.let { h -> { buffer, length -> h.update(buffer, 0, length) } })
         val written = partial.offset
         if (declared != null && written != declared) {
             partial.discard()
             throw RemoteIncompleteDownloadException("Truncated $what: got $written of $declared bytes", storedBytes = written, declaredBytes = declared)
         }
-        val expected = item.file?.hashes?.quickXorHash
-        if (resumedFrom > 0L && expected != null) {
-            val actual = partial.quickXorHash()
-            if (actual != expected) {
-                partial.discard()
-                throw IOException("The resumed $what does not match the item's quickXorHash; the kept prefix is dropped, the retry starts from zero")
-            }
+        if (hash != null && hash.digestBase64() != expected) {
+            partial.discard()
+            throw IOException("The resumed $what does not match the item's quickXorHash; the kept prefix is dropped, the retry starts from zero")
         }
         partial.commit(destination)
         return written
@@ -93,14 +93,15 @@ internal suspend fun writeOneDriveBody(
 }
 
 /**
- * The quickXorHash of the whole partial, read through the staging's own channel. gkrost/unidrive-cli#1088: a second handle
- * ([QuickXorHash.of] on [ResumableStaging.partialPath]) cannot read the file on Windows while the staging holds its lock,
- * because the lock is mandatory there; the read failed, and every resume ended in a download from zero.
+ * A quickXorHash fed with the kept prefix, read through the staging's own channel (as Internxt's resume replays its
+ * prefix). gkrost/unidrive-cli#1088: a second handle ([QuickXorHash.of] on [ResumableStaging.partialPath]) cannot read the
+ * file on Windows while the staging holds its lock, because the lock is mandatory there; the read failed, and every resume
+ * ended in a download from zero. Call before the append, while the staging's offset is still the prefix.
  */
-private fun ResumableStaging.quickXorHash(): String {
+private fun prefixHash(partial: ResumableStaging): QuickXorHash {
     val hash = QuickXorHash()
-    replayPrefix { buffer, length -> hash.update(buffer, 0, length) }
-    return java.util.Base64.getEncoder().encodeToString(hash.digest())
+    partial.replayPrefix { buffer, length -> hash.update(buffer, 0, length) }
+    return hash
 }
 
 /**
