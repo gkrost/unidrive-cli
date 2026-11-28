@@ -15,7 +15,6 @@ import org.krost.unidrive.auth.RefreshableTokenLatch
 import org.krost.unidrive.auth.awaitOAuthCallback
 import org.krost.unidrive.http.HttpRetryBudget
 import org.krost.unidrive.http.truncateErrorBody
-import org.krost.unidrive.io.openBrowser
 import kotlin.time.Duration.Companion.minutes
 
 /**
@@ -61,15 +60,15 @@ class DropboxAuth(
     }
 
     /** Signs in through the browser and keeps the grant. */
-    suspend fun signInWithBrowser() {
+    suspend fun signInWithBrowser(console: org.krost.unidrive.SignInConsole) {
         val state = java.util.UUID.randomUUID().toString()
         val verifier = Pkce.generateVerifier()
         val url = authorizationUrl(state, Pkce.generateChallenge(verifier))
-        println("Opening browser for Dropbox sign-in...")
-        println(redirectNotice(config.redirectUri))
-        println("URL: $url")
-        println("Waiting up to 5 minutes for the sign-in...")
-        openBrowser(url)
+        console.show("Opening browser for Dropbox sign-in...")
+        console.show(redirectNotice(config.redirectUri))
+        console.show("URL: $url")
+        console.show("Waiting up to 5 minutes for the sign-in...")
+        console.openBrowser(url)
         val code =
             awaitOAuthCallback(
                 port = config.oauthCallbackPort,

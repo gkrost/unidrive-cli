@@ -6,7 +6,6 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.QuotaInfo
-import org.krost.unidrive.authenticateAndLog
 import org.krost.unidrive.engine.QuotaState
 import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcAuthException
@@ -58,7 +57,7 @@ class QuotaCommand : Runnable {
         val stateDb = parent.configBaseDir().resolve(profile.name).resolve("state.db")
         try {
             runBlocking(Priority.Foreground) {
-                provider.authenticateAndLog()
+                provider.authenticateOrSignIn()
                 val quota = provider.quota()
                 cacheQuota(stateDb, quota)
                 println("Storage Quota (${provider.displayName}):")

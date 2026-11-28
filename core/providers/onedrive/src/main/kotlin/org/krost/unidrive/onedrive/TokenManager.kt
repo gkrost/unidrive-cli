@@ -3,11 +3,11 @@ package org.krost.unidrive.onedrive
 import org.krost.unidrive.AccountOwner
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.RefreshTimedOutException
+import org.krost.unidrive.SignInConsole
 import org.krost.unidrive.TransientNetworkException
 import org.krost.unidrive.auth.RefreshableTokenLatch
 import org.krost.unidrive.auth.awaitOAuthCallback
 import org.krost.unidrive.http.HttpRetryBudget
-import org.krost.unidrive.io.openBrowser
 import org.krost.unidrive.onedrive.model.Token
 import kotlin.time.Duration.Companion.minutes
 
@@ -77,18 +77,18 @@ class TokenManager(
         }
     }
 
-    suspend fun authenticateWithBrowser(): Token {
+    suspend fun authenticateWithBrowser(console: SignInConsole): Token {
         val state =
             java.util.UUID
                 .randomUUID()
                 .toString()
         val (authUrl, pkceVerifier) = oauthService.getAuthorizationUrl(state)
 
-        println("Opening browser for authentication...")
-        println("URL: $authUrl")
-        println("Waiting up to 5 minutes for authentication...")
+        console.show("Opening browser for authentication...")
+        console.show("URL: $authUrl")
+        console.show("Waiting up to 5 minutes for authentication...")
 
-        openBrowser(authUrl)
+        console.openBrowser(authUrl)
 
         val code =
             awaitOAuthCallback(
@@ -104,16 +104,16 @@ class TokenManager(
         return storeSignIn(oauthService.exchangeCodeForToken(code, pkceVerifier))
     }
 
-    suspend fun authenticateWithDeviceCode(): Token {
+    suspend fun authenticateWithDeviceCode(console: SignInConsole): Token {
         val deviceCode = oauthService.getDeviceCode()
 
-        println(deviceCode.message)
-        println()
-        println("Waiting for authentication...")
+        console.show(deviceCode.message)
+        console.show("")
+        console.show("Waiting for authentication...")
 
         val fresh = storeSignIn(oauthService.pollForToken(deviceCode.deviceCode, deviceCode.interval))
 
-        println("Authentication successful!")
+        console.show("Authentication successful!")
 
         return fresh
     }

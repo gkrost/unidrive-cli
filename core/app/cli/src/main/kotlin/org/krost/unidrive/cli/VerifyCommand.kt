@@ -7,7 +7,6 @@ import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.RemoteObjectAuditReport
 import org.krost.unidrive.RemoteObjectStatus
-import org.krost.unidrive.authenticateAndLog
 import org.krost.unidrive.engine.BackupsNamespace
 import org.krost.unidrive.engine.CachePaths
 import org.krost.unidrive.engine.PlacedNamespace
@@ -185,7 +184,7 @@ class VerifyCommand : Callable<Int> {
     ): Map<String, CloudItem>? =
         try {
             runBlocking(Priority.Foreground) {
-                provider.authenticateAndLog()
+                provider.authenticateOrSignIn()
                 listRemoteFiles(provider, excludes, scope)
             }
         } catch (e: AuthenticationException) {
@@ -283,7 +282,7 @@ class VerifyCommand : Callable<Int> {
         val report =
             try {
                 runBlocking(Priority.Foreground) {
-                    provider.authenticateAndLog()
+                    provider.authenticateOrSignIn()
                     val remoteFiles = listRemoteFiles(provider, excludes, scope).values.sortedBy { it.path }
                     auditor.auditRemoteObjects(remoteFiles)
                 }

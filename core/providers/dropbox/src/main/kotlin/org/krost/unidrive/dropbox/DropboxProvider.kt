@@ -139,7 +139,7 @@ class DropboxProvider(
 
     override fun attachRequestMetrics(sink: org.krost.unidrive.http.RequestMetricsSink?) = api.attachRequestMetrics(sink)
 
-    // archive#1240: one users/get_space_usage with the stored grant; never the browser sign-in of authenticate().
+    // archive#1240: one users/get_space_usage with the stored grant; never the browser sign-in of signIn().
     override suspend fun checkCredentials(): CredentialProof {
         if (!auth.isAuthenticated) auth.load()
         if (!auth.isAuthenticated) throw NotSignedInException("no Dropbox grant is stored for this profile")
@@ -147,12 +147,18 @@ class DropboxProvider(
         return CredentialProof(AccountName.read(config.tokenPath))
     }
 
+    // #267: the stored grant only; the browser sign-in is signIn's.
     override suspend fun authenticate() {
         auth.load()
-        if (!auth.isAuthenticated) auth.signInWithBrowser()
+        if (!auth.isAuthenticated) throw NotSignedInException("no Dropbox grant is stored for this profile")
     }
 
-    // The grant a sign-in through the daemon stored, read in place; never the browser sign-in of authenticate().
+    override suspend fun signIn(console: org.krost.unidrive.SignInConsole) {
+        auth.load()
+        if (!auth.isAuthenticated) auth.signInWithBrowser(console)
+    }
+
+    // The grant a sign-in through the daemon stored, read in place; never the browser sign-in of signIn().
     // A daemon reload has nobody to answer a sign-in: with nothing stored the instance stays unauthenticated and
     // every later request fails as such.
     override suspend fun reloadCredentials() {

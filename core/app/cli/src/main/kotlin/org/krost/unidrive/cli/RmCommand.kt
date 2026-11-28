@@ -10,7 +10,6 @@ import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.ProviderException
-import org.krost.unidrive.authenticateAndLog
 import org.krost.unidrive.engine.RemoteErrors
 import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcEndpoint
@@ -449,7 +448,7 @@ private suspend fun deleteWithProvider(
     path: String,
     request: RmRequest,
 ): Boolean {
-    provider.authenticateAndLog()
+    provider.authenticateOrSignIn()
     if (request.permanent && provider.capabilities().none { it is org.krost.unidrive.Capability.PermanentDelete }) {
         throw LifecycleError(
             "permanent_delete_unsupported",

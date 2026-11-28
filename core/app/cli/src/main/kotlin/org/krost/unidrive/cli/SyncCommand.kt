@@ -11,7 +11,6 @@ import kotlinx.coroutines.selects.select
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.CloudProvider
 import org.krost.unidrive.AccountOwner
-import org.krost.unidrive.authenticateAndLog
 import org.krost.unidrive.engine.ScopeState
 import org.krost.unidrive.onedrive.OneDriveProvider
 import org.krost.unidrive.sync.ConflictLog
@@ -650,7 +649,7 @@ open class SyncCommand : Runnable, CommandLine.IExitCodeGenerator {
                     // subscriber, as before a client connected.
                     ipcServer.registerSyncSubscribeVerb()
 
-                    provider.authenticateAndLog()
+                    provider.authenticateOrSignIn()
                     ipcServer.start(this)
 
                     // A profile signed in before ids were kept has no account_id (AccountOwner): once per run, one bounded

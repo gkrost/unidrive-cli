@@ -82,21 +82,27 @@ class OneDriveProvider(
             Capability.PermanentDelete,
         )
 
+    // #267: the stored token only; the browser sign-in is signIn's.
     override suspend fun authenticate() {
         tokenManager.initialize()
-        if (!tokenManager.isAuthenticated) {
-            tokenManager.authenticateWithBrowser()
-        }
+        if (!tokenManager.isAuthenticated) throw NotSignedInException("no OneDrive token is stored for this profile")
     }
 
-    suspend fun authenticateWithDeviceCode() {
+    override suspend fun signIn(console: SignInConsole) {
         tokenManager.initialize()
         if (!tokenManager.isAuthenticated) {
-            tokenManager.authenticateWithDeviceCode()
+            tokenManager.authenticateWithBrowser(console)
         }
     }
 
-    // archive#1240: one GET of the drive root with the stored token; never the browser fallback of authenticate().
+    suspend fun authenticateWithDeviceCode(console: SignInConsole) {
+        tokenManager.initialize()
+        if (!tokenManager.isAuthenticated) {
+            tokenManager.authenticateWithDeviceCode(console)
+        }
+    }
+
+    // archive#1240: one GET of the drive root with the stored token; never the browser sign-in of signIn().
     override suspend fun checkCredentials(): CredentialProof {
         if (!tokenManager.isAuthenticated) tokenManager.reload()
         if (!tokenManager.isAuthenticated) throw NotSignedInException("no OneDrive token is stored for this profile")
@@ -105,7 +111,7 @@ class OneDriveProvider(
         return CredentialProof(account)
     }
 
-    // The token file a sign-in through the daemon wrote, read in place; never the browser fallback of authenticate().
+    // The token file a sign-in through the daemon wrote, read in place; never the browser sign-in of signIn().
     // A change channel that a sign-out stopped opens again for the new credentials.
     override suspend fun reloadCredentials() {
         tokenManager.reload()

@@ -4,7 +4,9 @@ import kotlinx.coroutines.runBlocking
 import org.krost.unidrive.Capability
 import org.krost.unidrive.CapabilityResult
 import org.krost.unidrive.CloudItem
+import org.krost.unidrive.AuthRequiredException
 import org.krost.unidrive.CloudProvider
+import org.krost.unidrive.NotSignedInException
 import org.krost.unidrive.ProviderException
 import org.krost.unidrive.RemoteConflictException
 import org.krost.unidrive.UnsupportedCapabilityException
@@ -159,6 +161,68 @@ abstract class CloudProviderConformanceTest {
                 provider.close()
             }
         }
+
+    // gkrost/unidrive-cli#267: authenticate() is non-interactive. With nothing stored it refuses at once, typed, and
+    // prints nothing; before, OneDrive and Dropbox opened a browser and waited 5 minutes, Internxt read the console.
+    @Test
+    fun `authenticate with nothing stored refuses typed and prints nothing`() {
+        runBlocking<Unit> {
+            if (!storedCredentialsRemovable) return@runBlocking
+            val provider = newProvider()
+            val (out, err) = java.io.ByteArrayOutputStream() to java.io.ByteArrayOutputStream()
+            val (originalOut, originalErr) = System.out to System.err
+            System.setOut(java.io.PrintStream(out, true))
+            System.setErr(java.io.PrintStream(err, true))
+            try {
+                clearStoredCredentials()
+                val refusal = assertFails { kotlinx.coroutines.withTimeout(10_000) { provider.authenticate() } }
+                assertTrue(
+                    refusal is NotSignedInException || refusal is AuthRequiredException,
+                    "authenticate() with nothing stored must refuse as not signed in; got $refusal",
+                )
+            } finally {
+                System.setOut(originalOut)
+                System.setErr(originalErr)
+                provider.close()
+            }
+            assertEquals("", out.toString() + err.toString(), "authenticate() printed although it must never sign in")
+        }
+    }
+
+    @Test
+    fun `signIn with credentials stored asks the console nothing`() =
+        runBlocking<Unit> {
+            val provider = newProvider()
+            val console = RecordingSignInConsole()
+            try {
+                provider.signIn(console)
+                assertTrue(provider.isAuthenticated, "signIn left the provider unauthenticated although credentials are stored")
+            } finally {
+                provider.close()
+            }
+            assertEquals(emptyList(), console.events)
+        }
+
+    // gkrost/unidrive-cli#267: a provider that keeps a sign-in of its own must override signIn. The default is authenticate(),
+    // which with nothing stored only refuses again, so `unidrive auth` would never sign in. A real sign-in reaches the console
+    // first (OneDrive and Dropbox open the browser, Internxt asks for the email), and this console stops it there.
+    @Test
+    fun `signIn with nothing stored signs in through the console`() {
+        runBlocking<Unit> {
+            if (!storedCredentialsRemovable) return@runBlocking
+            val provider = newProvider()
+            val console = RecordingSignInConsole(onOpenBrowser = { throw SignInReached() })
+            try {
+                clearStoredCredentials()
+                runCatching { kotlinx.coroutines.withTimeout(10_000) { provider.signIn(console) } }
+            } finally {
+                provider.close()
+            }
+            assertTrue(console.events.isNotEmpty(), "signIn with nothing stored never reached the console; does ${provider.id} override signIn?")
+        }
+    }
+
+    private class SignInReached : RuntimeException("the sign-in reached the browser")
 
     @Test
     fun `reloadCredentials with nothing stored leaves the provider unauthenticated`() {

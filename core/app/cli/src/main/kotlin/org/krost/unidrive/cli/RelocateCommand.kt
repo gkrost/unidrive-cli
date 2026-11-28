@@ -136,8 +136,8 @@ class RelocateCommand : Runnable {
         // CloudRelocator's coroutines render as `[???????] [*] [-------]`
         // (the logback fallback values from logback.xml line 31), making
         // postmortem against unidrive.log impossible.
-        runBlocking(MDCContext() + Priority.Foreground) { fromProviderObj.authenticate() }
-        runBlocking(MDCContext() + Priority.Foreground) { toProviderObj.authenticate() }
+        runBlocking(MDCContext() + Priority.Foreground) { fromProviderObj.authenticateOrSignIn() }
+        runBlocking(MDCContext() + Priority.Foreground) { toProviderObj.authenticateOrSignIn() }
 
         if (!fromProviderObj.isAuthenticated) {
             System.err.println("Error: source provider '$fromProvider' not authenticated")

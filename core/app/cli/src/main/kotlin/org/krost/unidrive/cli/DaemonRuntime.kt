@@ -358,10 +358,7 @@ class DaemonRuntime(
             try {
                 authenticateOrRelogin(provider, vaultRelogin, signInTarget, credentialHealthCheck) // #861: an expired Internxt session signs in with the vaulted password
             } catch (e: Exception) {
-                System.err.println(
-                    "unidrive daemon: authentication failed for profile " +
-                        "'$profileName': ${e.message}",
-                )
+                System.err.println(daemonAuthFailureLine(profileName, e)) // #267: a profile not signed in says auth_required
                 throw e
             }
 

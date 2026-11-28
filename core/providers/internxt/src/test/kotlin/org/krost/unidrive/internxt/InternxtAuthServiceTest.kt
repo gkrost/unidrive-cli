@@ -766,7 +766,7 @@ class InternxtAuthServiceTest {
             val auth = CountingAuthService(InternxtConfig(credentialProtector = null, tokenPath = tmp))
             auth.initialize()
 
-            val e = assertFailsWith<AuthRequiredException> { auth.authenticateInteractive() }
+            val e = assertFailsWith<AuthRequiredException> { auth.authenticateInteractive(org.krost.unidrive.TerminalSignInConsole) }
             val message = assertNotNull(e.message)
             assertTrue(message.startsWith("auth_required:"), "message must carry the typed reason; got: $message")
             assertTrue(message.contains(tmp.fileName.toString()), "message must name the profile; got: $message")

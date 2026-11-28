@@ -9,7 +9,6 @@ import kotlinx.serialization.json.putJsonArray
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
-import org.krost.unidrive.authenticateAndLog
 import org.krost.unidrive.sync.IpcServer
 import org.krost.unidrive.sync.PathNormalizer
 import org.krost.unidrive.sync.ProfileMode
@@ -229,7 +228,7 @@ private fun trashPlanned(
     try {
         runBlocking(Priority.Foreground) {
             try {
-                provider.authenticateAndLog()
+                provider.authenticateOrSignIn()
             } catch (e: AuthenticationException) {
                 throw LifecycleError("auth_required", "profile '${target.name}' is not signed in; run `unidrive -p ${target.name} auth`", e)
             }

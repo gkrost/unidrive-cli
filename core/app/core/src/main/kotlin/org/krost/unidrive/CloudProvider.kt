@@ -43,7 +43,20 @@ interface CloudProvider {
      */
     fun capabilities(): Set<Capability>
 
+    /**
+     * Authenticates with the credentials stored for this profile, never interactively (gkrost/unidrive-cli#267): no
+     * browser, no console, no device code. Throws [NotSignedInException] or [AuthRequiredException] (Internxt: missing or
+     * expired, the line a daemon start has always logged) when no usable sign-in is stored. A client with a human to ask
+     * then calls [signIn].
+     */
     suspend fun authenticate()
+
+    /**
+     * The interactive sign-in, for a client with a human to ask: everything it shows, opens or asks goes through
+     * [console]. On return the instance is authenticated as after [authenticate]. The default is [authenticate]: a
+     * provider whose stored configuration is the credential (S3 keys, a local root) has nothing to ask.
+     */
+    suspend fun signIn(console: SignInConsole) = authenticate()
 
     /**
      * The stable id of the user the current credentials belong to (one identity call, no sign-in), or null when this
@@ -73,15 +86,15 @@ interface CloudProvider {
      * it once a sign-in through it (`auth.login`, `auth.complete`) has written new credentials, so the same provider
      * instance, and every transfer that goes through it from then on, uses them without a restart.
      *
-     * The default refuses: [authenticate] is allowed to fall back to an interactive sign-in when nothing is stored
-     * (a browser, a console prompt), and a daemon has nobody to answer a prompt. Every provider overrides this with
+     * The default refuses: a reload must never reach a sign-in ([signIn]: a browser, a console prompt), and a daemon
+     * has nobody to answer a prompt. Every provider overrides this with
      * its own explicit decision — reading the stored credentials in place, or [authenticate] again where that is
      * provably non-interactive (S3: the keys are the credential; localfs: the root is). The provider conformance
      * suite holds every adapter to it.
      */
     suspend fun reloadCredentials() {
         throw UnsupportedOperationException(
-            "$id must override reloadCredentials: the default never runs authenticate() (it can prompt for a sign-in), " +
+            "$id must override reloadCredentials: the default never runs signIn() (it can prompt for a sign-in), " +
                 "it states its own reload decision instead",
         )
     }

@@ -546,13 +546,13 @@ class StatusCommand : Callable<Int> {
      * history, recycle bin, or OneNote metadata. Field-observed delta on
      * `onedrive-test`: 164 GB enumerated vs 349 GB real (~46 % shortfall).
      *
-     * Side-effect contract: status is a read-only diagnostic. We never call
-     * `provider.authenticateAndLog()` against a profile whose offline health
-     * check isn't `Ok` — for Internxt that path would prompt for email /
-     * password / 2FA mid-render, which is the wrong UX for a status query.
-     * Interactive auth happens via `unidrive auth`; here a non-Ok health
-     * just returns null and the caller renders the cached state with the
-     * stale glyph from [buildAccountRow].
+     * Side-effect contract: status is a read-only diagnostic and never prompts.
+     * We never call `provider.authenticateAndLog()` against a profile whose
+     * offline health check isn't `Ok`. Since gkrost/unidrive-cli#267 that call
+     * cannot prompt (a sign-in is `signIn()`'s, and status never calls it), so
+     * the gate saves the round trip a failing check would cost. Sign-in is
+     * `unidrive auth`; here a non-Ok health just returns null and the caller
+     * renders the cached state with the stale glyph from [buildAccountRow].
      */
     private fun fetchQuotaUsedIfSupported(
         profile: ProfileInfo,
@@ -1060,13 +1060,13 @@ class StatusCommand : Callable<Int> {
  * Pure side-effect-gate for `unidrive status`. The status command is a
  * read-only diagnostic; the network probe must never be attempted against
  * a profile whose offline credential health says the persisted token is
- * missing, stale, or otherwise won't authenticate without interaction.
+ * missing, stale, or otherwise won't authenticate without a sign-in.
  *
- * For Internxt specifically, calling `provider.authenticateAndLog()` on a
- * profile with an expired JWT drops into `authService.authenticateInteractive()`
- * which prompts for email / password / 2FA on stdin — completely the wrong
- * UX mid-status-render. Interactive auth happens via `unidrive auth`; here
- * a non-Ok health just returns null from the quota probe and the caller
+ * Since gkrost/unidrive-cli#267 `provider.authenticateAndLog()` never prompts:
+ * an expired Internxt JWT is refused with `auth_required`, not asked for on
+ * stdin (that is `signIn()`'s, and status never calls it). The gate still
+ * saves the round trip a failing check would cost. Sign-in is `unidrive auth`;
+ * here a non-Ok health just returns null from the quota probe and the caller
  * renders the cached state with a stale glyph.
  *
  * The only health value that licenses a network round-trip is [CredentialHealth.Ok].

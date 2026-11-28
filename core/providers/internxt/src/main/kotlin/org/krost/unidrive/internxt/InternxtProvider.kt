@@ -344,18 +344,18 @@ class InternxtProvider(
         }
     }
 
-    override suspend fun authenticate() {
-        authService.initialize()
-        if (!authService.isAuthenticated || authService.isJwtExpired()) {
-            authService.authenticateInteractive()
-        }
-        // Bring up the notifications WS now that we have a JWT, if anyone listens.
-        // Failures are logged inside NotificationsClient; the periodic poll is the
-        // safety net so a WS that won't connect mustn't fail the authenticate path.
+    override suspend fun authenticate() = authenticateWith(console = null)
+
+    override suspend fun signIn(console: SignInConsole) = authenticateWith(console)
+
+    private suspend fun authenticateWith(console: SignInConsole?) {
+        authService.signedIn(console)
+        // Bring up the notifications WS now that we have a JWT, if anyone listens. Failures are logged inside
+        // NotificationsClient; the periodic poll is the safety net so a WS that won't connect mustn't fail the authenticate path.
         if (remoteHintsWanted) ensureNotificationsClient()
     }
 
-    // archive#1240: one GET of the usage figure with the stored session; never the console prompt of authenticate().
+    // archive#1240: one GET of the usage figure with the stored session; never the console prompt of signIn().
     override suspend fun checkCredentials(): CredentialProof {
         if (!authService.isAuthenticated) authService.initialize()
         if (!authService.isAuthenticated) throw NotSignedInException("no Internxt credentials are stored for this profile")
@@ -365,7 +365,7 @@ class InternxtProvider(
     }
 
     /**
-     * The credentials a sign-in through the daemon stored, read in place; never the console prompt of [authenticate].
+     * The credentials a sign-in through the daemon stored, read in place; never the console prompt of [signIn].
      * The notifications socket was opened with the credentials that were replaced, so it is opened again with the new
      * ones (or stays closed when nothing is stored).
      */

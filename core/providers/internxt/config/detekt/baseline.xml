@@ -24,7 +24,7 @@
     <ID>LongParameterList:InternxtProvider.kt$InternxtProvider$( segments: List&lt;String&gt;, plainName: String, ext: String?, parentPath: String, existingRemoteId: String?, ifMatchETag: String?, remotePath: String, localMtime: Instant, )</ID>
     <ID>LongParameterList:InternxtProvider.kt$InternxtProvider.Companion$( getContents: suspend (String) -&gt; FolderContentResponse, driveRootUuid: String, scopeRoots: List&lt;String&gt;, scanned: java.util.concurrent.atomic.AtomicInteger, skipped: java.util.concurrent.atomic.AtomicInteger, log: org.slf4j.Logger, concurrency: Int = 4, onProgress: ((ScanProgress) -&gt; Unit)? = null, resume: TreeResume? = null, persist: (suspend (rows: List&lt;org.krost.unidrive.CloudItem&gt;, startsDone: Set&lt;String&gt;) -&gt; Unit)? = null, )</ID>
     <ID>LongParameterList:InternxtProvider.kt$InternxtProvider.Companion$( getContents: suspend (String) -&gt; FolderContentResponse, folderUuid: String, accumulator: MutableList&lt;InternxtFile&gt;, folderAccumulator: MutableList&lt;InternxtFolder&gt;, depth: Int, scanned: java.util.concurrent.atomic.AtomicInteger, skipped: java.util.concurrent.atomic.AtomicInteger, log: org.slf4j.Logger, onProgress: (() -&gt; Unit)? = null, )</ID>
-    <ID>NestedBlockDepth:AuthService.kt$AuthService$suspend fun authenticateInteractive(): InternxtCredentials</ID>
+    <ID>NestedBlockDepth:AuthService.kt$AuthService$suspend fun authenticateInteractive(console: SignInConsole): InternxtCredentials</ID>
     <ID>NestedBlockDepth:InternxtApiService.kt$InternxtApiService$private suspend fun authenticatedGetReply( url: String, params: Map&lt;String, String&gt; = emptyMap(), socketTimeoutMs: Long = HttpDefaults.SOCKET_TIMEOUT_MS, ): GetReply</ID>
     <ID>NestedBlockDepth:InternxtProvider.kt$InternxtProvider$override suspend fun createFolders(paths: List&lt;String&gt;): List&lt;CloudItem&gt;</ID>
     <ID>NestedBlockDepth:InternxtProvider.kt$InternxtProvider$private suspend fun uploadEmpty( segments: List&lt;String&gt;, parentPath: String, existingRemoteId: String?, ifMatchETag: String?, remotePath: String, localMtime: Instant, localPath: Path, ): CloudItem</ID>
@@ -32,7 +32,7 @@
     <ID>RethrowCaughtException:InternxtProvider.kt$InternxtProvider$throw e</ID>
     <ID>SwallowedException:InternxtProvider.kt$e: InternxtApiException</ID>
     <ID>ThrowsCount:AuthService.kt$AuthService$protected open suspend fun postLoginAccess( body: JsonObject, ): String</ID>
-    <ID>ThrowsCount:AuthService.kt$AuthService$suspend fun authenticateInteractive(): InternxtCredentials</ID>
+    <ID>ThrowsCount:AuthService.kt$AuthService$suspend fun authenticateInteractive(console: SignInConsole): InternxtCredentials</ID>
     <ID>ThrowsCount:AuthService.kt$AuthService$suspend fun refreshToken(rejectedJwt: String? = null): InternxtCredentials</ID>
     <ID>ThrowsCount:InternxtApiService.kt$InternxtApiService$private suspend fun authenticatedGetReply( url: String, params: Map&lt;String, String&gt; = emptyMap(), socketTimeoutMs: Long = HttpDefaults.SOCKET_TIMEOUT_MS, ): GetReply</ID>
     <ID>ThrowsCount:InternxtApiService.kt$InternxtApiService$private suspend fun watchedShardPut( url: String, sizeBytes: Long, onBytesSent: ((Long) -&gt; Unit)? = null, progressIntervalMs: Long = SHARD_PROGRESS_INTERVAL_MS, body: (UploadProgress) -&gt; io.ktor.http.content.OutgoingContent, ): String?</ID>

@@ -107,7 +107,7 @@ internal class QuotaSnapshotMonitor(
     /**
      * The fetch behind a quota refresh, on the provider instance the caller hands over. It never signs in (#211):
      * [CloudProvider.checkCredentials] refuses a profile whose credentials are not stored, where
-     * [CloudProvider.authenticate] would answer by opening a browser on the daemon host — a status poll must stay a
+     * [CloudProvider.signIn] would answer by opening a browser on the daemon host — a status poll must stay a
      * status poll. The values land in the snapshot; a failure keeps the last ones and names itself as the stale
      * reason. A cancelled fetch is not a quota error: cancellation goes on, the in-flight flag is cleared by the
      * caller. Returns the snapshot it left (the fresh one, or the last one flagged stale).

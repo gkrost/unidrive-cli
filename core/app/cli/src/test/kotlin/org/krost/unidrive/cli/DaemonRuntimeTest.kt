@@ -395,6 +395,54 @@ class DaemonRuntimeTest {
         )
     }
 
+    // gkrost/unidrive-cli#267: OneDrive and Dropbox refuse with NotSignedInException when nothing is stored. The Windows client
+    // offers its sign-in only for an exit 78 whose error log names auth_required (unidrive-windows DaemonAuthRefusal), so the
+    // start's line says it, as Internxt's AuthRequiredException and the offline credential gate do.
+    @Test
+    fun `a start with nothing stored to sign in with says auth_required and the remedy on stderr`() =
+        runBlocking {
+            val runtime =
+                DaemonRuntime(
+                    profileMode = ProfileMode.MOUNT,
+                    profileName = "test_profile",
+                    lockFile = lockFile,
+                    dbPath = dbPath,
+                    syncRoot = tempDir,
+                    socketPath = socketPath,
+                    providerFactory = { AuthFailingStubProvider(org.krost.unidrive.NotSignedInException("no OneDrive token is stored for this profile")) },
+                )
+            val stderr = java.io.ByteArrayOutputStream()
+            val originalErr = System.err
+            System.setErr(java.io.PrintStream(stderr, true, Charsets.UTF_8))
+            val ex =
+                try {
+                    runCatching { runtime.start() }.exceptionOrNull()
+                } finally {
+                    System.setErr(originalErr)
+                }
+
+            assertTrue(ex is org.krost.unidrive.NotSignedInException, "got $ex")
+            assertEquals(
+                listOf(
+                    "Error: unidrive daemon: auth_required: profile 'test_profile' is not signed in " +
+                        "(no OneDrive token is stored for this profile). Sign in again: unidrive -p test_profile auth",
+                ),
+                // The logger's own lifecycle-error line goes to stderr as well; only the daemon's start lines count here.
+                stderr.toString(Charsets.UTF_8).lines().filter { it.startsWith("Error: unidrive daemon:") || it.startsWith("unidrive daemon:") },
+            )
+            assertFalse(Files.exists(socketPath), "the socket is never bound")
+        }
+
+    @Test
+    fun `any other refusal at start keeps the authentication failed line`() {
+        assertEquals(
+            "unidrive daemon: authentication failed for profile 'p': revoked",
+            daemonAuthFailureLine("p", org.krost.unidrive.AuthenticationException("revoked")),
+        )
+        val internxt = org.krost.unidrive.AuthRequiredException("auth_required: Internxt credentials are missing for profile 'p'")
+        assertEquals("unidrive daemon: authentication failed for profile 'p': ${internxt.message}", daemonAuthFailureLine("p", internxt))
+    }
+
     @Test
     fun daemon_binds_socket_and_serves_hydration_verbs() = runBlocking {
         val provider: CloudProvider = StubProvider()
@@ -2099,7 +2147,9 @@ class DaemonRuntimeTest {
      * Used by T4 to pin the fail-fast contract: socket must NOT be bound
      * when auth fails.
      */
-    private class AuthFailingStubProvider : CloudProvider {
+    private class AuthFailingStubProvider(
+        private val refusal: Exception = org.krost.unidrive.AuthenticationException("test auth failure (T4)"),
+    ) : CloudProvider {
         override val id: String = "stub-auth-failing"
         override val displayName: String = "Stub (auth fails)"
         override var isAuthenticated: Boolean = false
@@ -2107,7 +2157,7 @@ class DaemonRuntimeTest {
         override fun capabilities(): Set<Capability> = emptySet()
 
         override suspend fun authenticate() {
-            throw org.krost.unidrive.AuthenticationException("test auth failure (T4)")
+            throw refusal
         }
 
         override suspend fun listChildren(path: String): List<CloudItem> = emptyList()
