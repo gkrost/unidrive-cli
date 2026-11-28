@@ -388,4 +388,35 @@ class IpcProgressReporterTest {
             assertEquals(setOf("event", "profile", "message", "timestamp"), event.keys)
             client.close()
         }
+
+    // gkrost/unidrive-cli#267: onSafeguard builds its own `warning` message instead of going through onWarning, so it must
+    // keep onWarning's sanitising: redacted, one line, at most 500 characters. A sync_root is any local path.
+    @Test
+    fun a_safeguard_warning_message_is_redacted_single_line_and_capped() =
+        runTest {
+            server = IpcServer(socketPath)
+            server!!.start(backgroundScope)
+
+            val client = connectClient()
+            awaitClientCount(server!!)
+            subscribeSync(client)
+
+            val root = "/home/u/token=SECRET\nnext" + "/deep".repeat(120)
+            val trip = SafeguardTripped(SafeguardTripped.Kind.DELETE_ABSOLUTE, 99, null, 50, null, root)
+            IpcProgressReporter(server!!, "personal").onSafeguard(trip, deferred = true)
+
+            val event = readLines(client, minLines = 1).map { parseJson(it) }.single { it["event"]!!.jsonPrimitive.content == "warning" }
+            val message = event["message"]!!.jsonPrimitive.content
+            assertFalse("SECRET" in message, message)
+            assertFalse("\n" in message, message)
+            assertEquals(500, message.length, message)
+            assertTrue(
+                message.startsWith(
+                    "UD-265 Deletion safeguard: 99 deletes planned, exceeding max_delete_absolute=50. " +
+                        "sync_root='/home/u/token=<redacted> next/deep",
+                ),
+                message,
+            )
+            client.close()
+        }
 }
