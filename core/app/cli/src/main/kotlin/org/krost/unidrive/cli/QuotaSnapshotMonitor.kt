@@ -73,14 +73,21 @@ internal class QuotaSnapshotMonitor(
      * reply: the fetch runs on serveScope and the NEXT status serves the fresh snapshot.
      * The reply's own `stale` flag is recomputed from the TTL, so a client sees staleness
      * immediately even before the fetch lands.
+     *
+     * #1073: an account-level quota hold (`quotaHold`) fetches without a client and against the
+     * paused rule — the hold releases headless, on the poll cadence, so the snapshot must keep
+     * moving exactly when the daemon is held.
      */
     fun maybeTriggerQuotaRefresh(
         clientCount: Int,
         scope: kotlinx.coroutines.CoroutineScope,
         // archive#778: no fetch while the daemon is paused; the snapshot is still marked stale once its TTL has expired.
         paused: Boolean = false,
+        // #1073: the quota hold is active; the fetch runs headless and pause-immune.
+        quotaHold: Boolean = false,
     ) {
-        if (quotaRefreshMs <= 0 || clientCount <= 0) return
+        if (quotaRefreshMs <= 0) return
+        if (clientCount <= 0 && !quotaHold) return
         val snap = quotaSnapshot
         val expired = snap == null || snap.fetchedAtMs == null ||
             System.currentTimeMillis() - snap.fetchedAtMs >= quotaRefreshMs
@@ -90,7 +97,7 @@ internal class QuotaSnapshotMonitor(
             // value as fresh while the refetch is in flight.
             quotaSnapshot = snap.copy(stale = true)
         }
-        if (paused) return
+        if (paused && !quotaHold) return
         if (!quotaRefreshInFlight.compareAndSet(false, true)) return
         scope.launch {
             try {
@@ -102,6 +109,46 @@ internal class QuotaSnapshotMonitor(
                 quotaRefreshInFlight.set(false)
             }
         }
+    }
+
+    /**
+     * #1073: the hold's own refresh — a fetch now, past the TTL, single-flight with the client-triggered
+     * ones (a status poll may be refreshing the same moment). Without a provider it returns the snapshot
+     * as it stands, so a caller releases only on a fresh fetch, never on a missing one.
+     */
+    suspend fun refreshForQuotaHold(provider: CloudProvider?): QuotaSnapshot? {
+        provider ?: return quotaSnapshot
+        if (!quotaRefreshInFlight.compareAndSet(false, true)) return quotaSnapshot
+        try {
+            retryQuotaPersist(db())
+            return refreshQuotaSnapshotWith(provider)
+        } finally {
+            quotaRefreshInFlight.set(false)
+        }
+    }
+
+    /**
+     * #1073: a typed remote-space refusal is ground truth — the provider refused a write for want of room,
+     * while the usage endpoint may lag or under-count (a full drive was seen reporting 84 %). Marks the
+     * cached snapshot full (used = total, remaining = 0) as of now and writes it through the daemon's
+     * database like a fetched snapshot, so `quota --json` and the next start read it too. Without a known
+     * total there is nothing to reconcile (a provider without a quota concept relies on the refusal alone).
+     * Returns whether the snapshot was reconciled.
+     */
+    fun markFullFromRefusal(nowMs: Long = System.currentTimeMillis()): Boolean {
+        val total = quotaSnapshot?.totalBytes ?: return false
+        val snapshot =
+            QuotaSnapshot(
+                usedBytes = total,
+                totalBytes = total,
+                remainingBytes = 0,
+                fetchedAtMs = nowMs,
+                stale = false,
+                error = null,
+            )
+        quotaSnapshot = snapshot
+        persistQuotaSnapshot(db(), snapshot)
+        return true
     }
 
     /**
