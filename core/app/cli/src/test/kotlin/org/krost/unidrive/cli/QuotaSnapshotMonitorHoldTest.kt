@@ -181,4 +181,63 @@ class QuotaSnapshotMonitorHoldTest {
         assertEquals(1_000, snapshot?.usedBytes)
         assertEquals(0, snapshot?.remainingBytes)
     }
+
+    // ── the ≥95 % threshold warning: one line per crossing, not per reading ─────────────────────────
+
+    private fun warns(appender: ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>): Int =
+        appender.list.count { it.formattedMessage.contains("95% of its quota") }
+
+    @Test
+    fun `crossing 95 percent warns exactly once, again only after dropping below`() {
+        val logger = org.slf4j.LoggerFactory.getLogger(QuotaSnapshotMonitor::class.java) as ch.qos.logback.classic.Logger
+        val appender = ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>().apply { start() }
+        logger.addAppender(appender)
+        try {
+            val provider = QuotaProvider().apply { quotaResult = QuotaInfo(total = 1_000, used = 960, remaining = 40) }
+            val monitor = seededMonitor(provider = { provider }, used = 960, total = 1_000)
+
+            assertEquals(1, warns(appender), "one warning at the crossing (here: the seeded reading)")
+            runBlocking { monitor.refreshForQuotaHold(provider) }
+            assertEquals(1, warns(appender), "another reading above the threshold is not news")
+
+            provider.quotaResult = QuotaInfo(total = 1_000, used = 500, remaining = 500)
+            runBlocking { monitor.refreshForQuotaHold(provider) }
+            assertEquals(1, warns(appender), "below the threshold: no warning, the crossing resets")
+
+            provider.quotaResult = QuotaInfo(total = 1_000, used = 980, remaining = 20)
+            runBlocking { monitor.refreshForQuotaHold(provider) }
+            assertEquals(2, warns(appender), "the next crossing warns once")
+        } finally {
+            logger.detachAppender(appender)
+        }
+    }
+
+    @Test
+    fun `the refusal's reconcile warns once when it takes the snapshot across`() {
+        val logger = org.slf4j.LoggerFactory.getLogger(QuotaSnapshotMonitor::class.java) as ch.qos.logback.classic.Logger
+        val appender = ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>().apply { start() }
+        logger.addAppender(appender)
+        try {
+            val monitor = seededMonitor(provider = { null }, used = 950, total = 1_000)
+
+            assertEquals(1, warns(appender), "950 of 1000 is the threshold exactly")
+
+            monitor.markFullFromRefusal()
+            assertEquals(1, warns(appender), "already above: the reconcile is not a second crossing")
+        } finally {
+            logger.detachAppender(appender)
+        }
+    }
+
+    @Test
+    fun `at or above 95 percent of total is near_full, below is not`() {
+        assertTrue(quotaSnapshotNearFull(QuotaSnapshot(usedBytes = 950, totalBytes = 1_000, remainingBytes = 50)), "the threshold exactly")
+        assertTrue(quotaSnapshotNearFull(QuotaSnapshot(usedBytes = 1_000, totalBytes = 1_000, remainingBytes = 0)), "full")
+        assertTrue(quotaSnapshotNearFull(QuotaSnapshot(usedBytes = 1_050, totalBytes = 1_000, remainingBytes = 0)), "over-counting usage is still near full")
+        assertFalse(quotaSnapshotNearFull(QuotaSnapshot(usedBytes = 949, totalBytes = 1_000, remainingBytes = 51)))
+        assertFalse(quotaSnapshotNearFull(QuotaSnapshot(usedBytes = null, totalBytes = 1_000)))
+        assertFalse(quotaSnapshotNearFull(QuotaSnapshot(usedBytes = 5, totalBytes = null)))
+        assertFalse(quotaSnapshotNearFull(QuotaSnapshot(usedBytes = 5, totalBytes = 0)), "a nonsense total is no threshold to cross")
+        assertFalse(quotaSnapshotNearFull(null))
+    }
 }

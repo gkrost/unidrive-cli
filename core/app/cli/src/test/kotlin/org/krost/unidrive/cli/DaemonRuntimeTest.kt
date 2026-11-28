@@ -1830,6 +1830,45 @@ class DaemonRuntimeTest {
             }
         }
 
+    // #1073: the ≥95 % warning rides the quota payload: present exactly while the snapshot says at or above.
+    @Test
+    fun `the quota payload names near_full at 95 percent and omits it below`() =
+        runBlocking(Dispatchers.IO) {
+            val stub = StubProvider().apply { quotaResult = QuotaInfo(total = 50, used = 50, remaining = 0) }
+            seedQuotaCache(used = 5, total = 50, fetchedAt = Instant.now().minusSeconds(7_200))
+            // A 1 ms TTL: every status request triggers a refresh, so the threshold crossings land without waiting.
+            val daemon = startDaemon(stub, quotaRefreshMs = 1)
+            val job = launch { daemon.start() }
+            try {
+                awaitSocket()
+                sendOneRequest("""{"verb":"daemon.status"}""")
+                awaitQuotaCalls(stub, 1)
+
+                val reply = sendOneRequest("""{"verb":"daemon.status"}""")
+                val quota = Json.parseToJsonElement(reply).jsonObject.getValue("quota").jsonObject
+                assertTrue(quota.getValue("near_full").jsonPrimitive.boolean, "the fresh fetch says full: near_full is present")
+
+                stub.quotaResult = QuotaInfo(total = 50, used = 5, remaining = 45)
+                val deadline = System.currentTimeMillis() + 5_000
+                var absent = false
+                var last: JsonObject? = null
+                while (System.currentTimeMillis() < deadline && !absent) {
+                    val q =
+                        Json.parseToJsonElement(sendOneRequest("""{"verb":"daemon.status"}"""))
+                            .jsonObject.getValue("quota").jsonObject
+                    // The 1 ms TTL marks every served snapshot stale, so absence rides on the fresh values,
+                    // not on the stale flag: the member is gone once a fetch below the threshold was served.
+                    absent = q["near_full"] == null && q.getValue("used_bytes").jsonPrimitive.long == 5L
+                    last = q
+                    delay(50)
+                }
+                assertTrue(absent, "below the threshold the member is absent again; last: $last")
+            } finally {
+                daemon.close()
+                job.join()
+            }
+        }
+
 
     // Polls daemon.status until its enumeration object satisfies [predicate]; fails with the last reply otherwise.
     private suspend fun awaitEnumeration(

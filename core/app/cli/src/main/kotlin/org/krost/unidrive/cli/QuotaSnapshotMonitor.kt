@@ -19,6 +19,17 @@ internal data class QuotaSnapshot(
 )
 
 /**
+ * #1073: at or above 95 % of `total_bytes` used. A refusal reconciles the snapshot to full, so a full drive
+ * reads near full at once even where the usage endpoint under-reports. Anything without a usable total is not.
+ */
+internal fun quotaSnapshotNearFull(snapshot: QuotaSnapshot?): Boolean {
+    val used = snapshot?.usedBytes ?: return false
+    val total = snapshot.totalBytes ?: return false
+    if (total <= 0) return false
+    return used * 20 >= total * 19 // 19/20 = 0.95, exact over integers
+}
+
+/**
  * The daemon's quota snapshot (archive#655): what daemon.status serves as `quota`. The snapshot is
  * seeded from the cache in state.db, refreshed single-flight off the request path (a client-connected
  * status request is the trigger; no client asking means no provider call) and written through the
@@ -44,6 +55,9 @@ internal class QuotaSnapshotMonitor(
 
     private val quotaRefreshInFlight = AtomicBoolean(false)
 
+    // #1073: the ≥95 % warning went out for the current crossing (a reading that dropped below resets it).
+    private val nearFullWarned = AtomicBoolean(false)
+
     // The local scanner's manual batch must keep its transaction until it commits or rolls back, and it can stay open
     // for a whole pass: a refresh that finds it open leaves the values here instead of waiting with the provider open.
     // The next refresh, or the shutdown, writes them, unless a newer snapshot has replaced them by then.
@@ -57,7 +71,7 @@ internal class QuotaSnapshotMonitor(
         val remaining = cached.remaining
         val fetchedAt = cached.fetchedAt ?: return
         val age = System.currentTimeMillis() - fetchedAt.toEpochMilli()
-        quotaSnapshot = QuotaSnapshot(
+        val snapshot = QuotaSnapshot(
             usedBytes = used,
             totalBytes = total,
             remainingBytes = remaining,
@@ -65,6 +79,27 @@ internal class QuotaSnapshotMonitor(
             stale = quotaRefreshMs <= 0 || age >= quotaRefreshMs,
             error = null,
         )
+        quotaSnapshot = snapshot
+        noteNearFull(snapshot)
+    }
+
+    /**
+     * #1073: one engine log WARN per ≥95 %-crossing, never per reading and never per file. A reading below the
+     * threshold resets the crossing; the next one above warns again. The warning rides on every snapshot the
+     * monitor takes (the seed, a fetched refresh, a refusal's reconcile).
+     */
+    private fun noteNearFull(snapshot: QuotaSnapshot?) {
+        if (!quotaSnapshotNearFull(snapshot)) {
+            nearFullWarned.set(false)
+            return
+        }
+        if (nearFullWarned.compareAndSet(false, true)) {
+            log.warn(
+                "cloud storage is at or above 95% of its quota ({} of {} bytes in use); uploads will be held when the drive is full",
+                snapshot!!.usedBytes,
+                snapshot.totalBytes,
+            )
+        }
     }
 
     /**
@@ -148,6 +183,7 @@ internal class QuotaSnapshotMonitor(
             )
         quotaSnapshot = snapshot
         persistQuotaSnapshot(db(), snapshot)
+        noteNearFull(snapshot)
         return true
     }
 
@@ -175,6 +211,7 @@ internal class QuotaSnapshotMonitor(
                 )
             quotaSnapshot = snapshot
             persistQuotaSnapshot(db(), snapshot)
+            noteNearFull(snapshot)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -217,11 +254,15 @@ internal class QuotaSnapshotMonitor(
  * The `quota` member of `daemon.status` (archive#655): the snapshot as the monitor holds it. Unknowns are null —
  * never zero, never a division by a missing total; a failed fetch keeps the last values with `stale=true` and the
  * error named. The snapshot a typed remote-space refusal reconciled (#1073) reads exactly like a fetched one.
+ * `near_full` (#1073) is present exactly while the snapshot says at or above 95 % of total used — a client's
+ * warning banner clears by the member's absence.
  */
 internal fun quotaStatusJson(snapshot: QuotaSnapshot?): String {
     val snap = snapshot ?: QuotaSnapshot()
     val errorJson = snap.error?.let { org.krost.unidrive.io.ndjsonString(it) } ?: "null"
     return """{"used_bytes":${snap.usedBytes ?: "null"},""" +
         """"total_bytes":${snap.totalBytes ?: "null"},""" +
-        """"fetched_at_ms":${snap.fetchedAtMs ?: "null"},"stale":${snap.stale},"error":$errorJson}"""
+        """"fetched_at_ms":${snap.fetchedAtMs ?: "null"},"stale":${snap.stale},"error":$errorJson""" +
+        (if (quotaSnapshotNearFull(snapshot)) ""","near_full":true""" else "") +
+        "}"
 }
