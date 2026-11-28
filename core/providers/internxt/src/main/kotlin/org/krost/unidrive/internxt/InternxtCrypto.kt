@@ -19,6 +19,7 @@ open class InternxtCrypto {
         private const val SALT_SIZE = 64
         private const val IV_SIZE = 16
         private const val TAG_SIZE = 16
+        private const val SALTED_HEADER_LENGTH = 16
         private const val KEY_SIZE = 32
         private const val GCM_TAG_BITS = 128
         private const val BIP39_ITERATIONS = 2048
@@ -176,7 +177,6 @@ open class InternxtCrypto {
     // --- CryptoJS-compatible AES (OpenSSL EVP_BytesToKey, AES-256-CBC) ---
 
     private val SALTED_PREFIX = "Salted__".toByteArray(Charsets.US_ASCII)
-    private val SALTED_HEADER_LENGTH = 16
 
     /**
      * Decrypt data encrypted by CryptoJS.AES.encrypt(plaintext, passphrase).
