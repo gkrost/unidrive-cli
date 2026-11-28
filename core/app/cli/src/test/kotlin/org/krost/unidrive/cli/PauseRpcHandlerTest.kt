@@ -171,4 +171,73 @@ class PauseRpcHandlerTest {
             transfer.cancel()
         }
     }
+
+    // ── #1073: the account-level hold of a full remote drive ────────────────────────────────────────
+
+    @Test
+    fun `the quota hold pauses with reason quota, auto and untimed, and tells subscribers`() {
+        val armed = handler.pauseForQuota()
+
+        assertTrue(armed)
+        assertEquals(PauseGate.State(PauseGate.QUOTA_HOLD_REASON, 1_000L, true), gate.current)
+        assertEquals(listOf<HydrationEvent>(HydrationEvent.Paused(PauseGate.QUOTA_HOLD_REASON, 1_000L, true)), events)
+    }
+
+    @Test
+    fun `a refusal while the quota hold stands is the same pause, not news`() {
+        assertTrue(handler.pauseForQuota())
+        now = 9_000L
+        events.clear()
+
+        assertTrue(handler.pauseForQuota())
+
+        assertEquals(PauseGate.State(PauseGate.QUOTA_HOLD_REASON, 1_000L, true), gate.current)
+        assertTrue(events.isEmpty(), "the hold fires once per crossing")
+    }
+
+    @Test
+    fun `the quota hold does not displace a person's pause`() {
+        handler.pause("""{"verb":"daemon.pause","reason":"user","auto":false}""")
+        events.clear()
+
+        assertFalse(handler.pauseForQuota())
+
+        assertEquals(PauseGate.State("user", 1_000L, false), gate.current, "the person's pause stands")
+        assertTrue(events.isEmpty())
+    }
+
+    @Test
+    fun `the quota hold does not displace the vault lock`() {
+        handler.pauseForVaultLock()
+        events.clear()
+
+        assertFalse(handler.pauseForQuota())
+
+        assertEquals(PauseGate.State(PauseRpcHandler.VAULT_LOCKED_REASON, 1_000L, true), gate.current)
+        assertTrue(events.isEmpty())
+    }
+
+    @Test
+    fun `the release ends exactly the quota hold and tells subscribers`() {
+        assertFalse(handler.resumeForQuotaRelease(), "nothing to release while running")
+        handler.pauseForQuota()
+        events.clear()
+
+        assertTrue(handler.resumeForQuotaRelease())
+
+        assertFalse(gate.isPaused)
+        assertEquals(listOf<HydrationEvent>(HydrationEvent.Resumed()), events)
+        assertFalse(handler.resumeForQuotaRelease())
+    }
+
+    @Test
+    fun `the release does not end a pause of another reason`() {
+        handler.pause("""{"verb":"daemon.pause","reason":"user","auto":false}""")
+        events.clear()
+
+        assertFalse(handler.resumeForQuotaRelease())
+
+        assertEquals(PauseGate.State("user", 1_000L, false), gate.current)
+        assertTrue(events.isEmpty())
+    }
 }

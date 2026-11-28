@@ -192,6 +192,69 @@ class HydrationHistoryRetryTest {
         assertEquals(1, env.syncEngine.uploadAttempts(), "the same bytes are not offered again")
     }
 
+    // ── #1073: while the account-level hold of a full drive stands, a remote_space row is not re-queued ──
+
+    private suspend fun kotlinx.coroutines.test.TestScope.envWithRemoteSpaceDeferral(history: TransferHistory): HydrationTestEnv {
+        val env = HydrationTestEnv(
+            recoveryUploadScope = this,
+            maxUploadAttempts = 1,
+            exhaustedRetryDelaysMs = emptyList(),
+            history = history,
+        )
+        env.pendingFile("the drive is full")
+        env.syncEngine.failUploadsWith(1, org.krost.unidrive.InsufficientRemoteSpaceException("Max space used"))
+        assertIs<OpenResult.Ok>(env.submit())
+        advanceUntilIdle()
+        assertEquals(1, env.syncEngine.uploadAttempts(), "the refusal deferred the row, it did not climb the ladder")
+        return env
+    }
+
+    @Test
+    fun `history retry on a remote_space row is refused with quota_hold while the hold stands`() = runTest {
+        val history = openHistory()
+        val env = envWithRemoteSpaceDeferral(history)
+        val failedRow = rowsOf(history, path).single { it.result == TransferResult.FAILED }
+        env.pause.pause(PauseGate.QUOTA_HOLD_REASON, auto = true) // the hold, as the daemon arms it
+
+        val outcome = env.hydration.retryUpload(path, failedRow.operationId, UUID.randomUUID().toString())
+
+        assertIs<HistoryRetryOutcome.Refused>(outcome)
+        assertEquals("quota_hold", outcome.token, "the 6-h deferral expires into a hold that is still on: the retry would meet the same refusal")
+        advanceUntilIdle()
+        assertEquals(1, env.syncEngine.uploadAttempts(), "nothing was sent into the refusal")
+    }
+
+    @Test
+    fun `history retry on a remote_space row is refused_bytes once the hold lifted and the deferral stands`() = runTest {
+        val history = openHistory()
+        val env = envWithRemoteSpaceDeferral(history)
+        val failedRow = rowsOf(history, path).single { it.result == TransferResult.FAILED }
+        env.pause.pause(PauseGate.QUOTA_HOLD_REASON, auto = true)
+        env.pause.resume() // released; the row's own 6-h deferral is still in force
+
+        val outcome = env.hydration.retryUpload(path, failedRow.operationId, UUID.randomUUID().toString())
+
+        assertIs<HistoryRetryOutcome.Refused>(outcome)
+        assertEquals("refused_bytes", outcome.token, "the hold's suppression is not the deferral's")
+    }
+
+    @Test
+    fun `history retry on a remote_space row is admitted once the hold lifted and the deferral expired`() = runTest {
+        val history = openHistory()
+        val env = envWithRemoteSpaceDeferral(history)
+        val failedRow = rowsOf(history, path).single { it.result == TransferResult.FAILED }
+        env.pause.pause(PauseGate.QUOTA_HOLD_REASON, auto = true)
+        env.pause.resume()
+        // The deferral expires: the row's refusal record is rewritten with a past deadline, content untouched.
+        val cachePath = env.syncEngine.resolveCachePath(path)
+        val stamp = "${Files.getLastModifiedTime(cachePath).toMillis()}|${Files.size(cachePath)}"
+        env.hydration.stateDb.markUploadRefused(path, "$stamp|${System.currentTimeMillis() - 1}|remote_space", keepCloudBaseline = true)
+
+        val outcome = env.hydration.retryUpload(path, failedRow.operationId, UUID.randomUUID().toString())
+
+        assertIs<HistoryRetryOutcome.Admitted>(outcome, "space is free again: the row goes once")
+    }
+
     @Test
     fun `a path that is uploading answers busy`() = runTest {
         val history = openHistory()

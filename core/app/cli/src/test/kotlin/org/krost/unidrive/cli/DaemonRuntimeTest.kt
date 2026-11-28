@@ -27,6 +27,7 @@ import org.krost.unidrive.QuotaInfo
 import org.krost.unidrive.ScanProgress
 import org.krost.unidrive.io.OwnerOnly
 import org.krost.unidrive.io.grantProblem
+import org.krost.unidrive.hydration.PauseGate
 import org.krost.unidrive.sync.ProfileMode
 import org.krost.unidrive.sync.IpcAuth
 import org.krost.unidrive.sync.IpcAuthClient
@@ -1878,6 +1879,102 @@ class DaemonRuntimeTest {
             }
         }
 
+    // #1073: the ≥95 % warning rides the quota payload: present exactly while the snapshot says at or above.
+    @Test
+    fun `the quota payload names near_full at 95 percent and omits it below`() =
+        runBlocking(Dispatchers.IO) {
+            val stub = StubProvider().apply { quotaResult = QuotaInfo(total = 50, used = 50, remaining = 0) }
+            seedQuotaCache(used = 5, total = 50, fetchedAt = Instant.now().minusSeconds(7_200))
+            // A 1 ms TTL: every status request triggers a refresh, so the threshold crossings land without waiting.
+            val daemon = startDaemon(stub, quotaRefreshMs = 1)
+            val job = launch { daemon.start() }
+            try {
+                awaitSocket()
+                sendOneRequest("""{"verb":"daemon.status"}""")
+                awaitQuotaCalls(stub, 1)
+
+                val reply = sendOneRequest("""{"verb":"daemon.status"}""")
+                val quota = Json.parseToJsonElement(reply).jsonObject.getValue("quota").jsonObject
+                assertTrue(quota.getValue("near_full").jsonPrimitive.boolean, "the fresh fetch says full: near_full is present")
+
+                stub.quotaResult = QuotaInfo(total = 50, used = 5, remaining = 45)
+                val deadline = System.currentTimeMillis() + 5_000
+                var absent = false
+                var last: JsonObject? = null
+                while (System.currentTimeMillis() < deadline && !absent) {
+                    val q =
+                        Json.parseToJsonElement(sendOneRequest("""{"verb":"daemon.status"}"""))
+                            .jsonObject.getValue("quota").jsonObject
+                    // The 1 ms TTL marks every served snapshot stale, so absence rides on the fresh values,
+                    // not on the stale flag: the member is gone once a fetch below the threshold was served.
+                    absent = q["near_full"] == null && q.getValue("used_bytes").jsonPrimitive.long == 5L
+                    last = q
+                    delay(50)
+                }
+                assertTrue(absent, "below the threshold the member is absent again; last: $last")
+            } finally {
+                daemon.close()
+                job.join()
+            }
+        }
+
+    // #1073, end to end: an upload a full drive refuses holds the daemon by itself (the paused payload says
+    // reason quota, auto), and the hold's headless release round ends it once a fresh fetch shows room — the
+    // client never pauses or resumes anything.
+    @Test
+    fun `a full drive holds the daemon by itself and a fresh quota fetch releases it`() =
+        runBlocking(Dispatchers.IO) {
+            val provider = SpaceRefusingProvider().apply { quotaResult = QuotaInfo(total = 10, used = 10, remaining = 0) }
+            seedQuotaCache(used = 9, total = 10, fetchedAt = Instant.now().minusSeconds(7_200))
+            // A 1 ms quota TTL: the hold's release rounds run at that cadence, so the release needs no wait.
+            val daemon = startDaemon(provider, quotaRefreshMs = 1)
+            val job = launch { daemon.start() }
+            try {
+                awaitSocket()
+                val created = Json.parseToJsonElement(
+                    sendOneRequest("""{"verb":"hydration.create","handle_id":"create-1","path":"/hold.txt"}"""),
+                ).jsonObject
+                assertTrue(created.getValue("ok").jsonPrimitive.content.toBoolean(), "create should succeed: $created")
+                val cachePath = Path.of(created.getValue("cache_path").jsonPrimitive.content)
+                Files.writeString(cachePath, "the drive is full")
+                val cacheJson = kotlinx.serialization.json.JsonPrimitive(cachePath.toString()).toString()
+                val opened = Json.parseToJsonElement(
+                    sendOneRequest("""{"verb":"hydration.open_write","handle_id":"write-1","path":"/hold.txt","cache_path":$cacheJson}"""),
+                ).jsonObject
+                assertTrue(opened.getValue("ok").jsonPrimitive.content.toBoolean(), "open_write should accept: $opened")
+
+                val deadline = System.currentTimeMillis() + 10_000
+                var hold: JsonObject? = null
+                while (System.currentTimeMillis() < deadline) {
+                    hold = (Json.parseToJsonElement(sendOneRequest("""{"verb":"daemon.status"}""")).jsonObject["paused"]) as? JsonObject
+                    if (hold != null && hold.getValue("reason").jsonPrimitive.content == PauseGate.QUOTA_HOLD_REASON) break
+                    hold = null
+                    delay(50)
+                }
+                val armed = assertNotNull(hold, "the typed refusal armed the hold")
+                assertTrue(armed.getValue("auto").jsonPrimitive.boolean)
+                assertTrue(provider.uploadsRefused.get() >= 1, "precondition: the provider refused the upload")
+                assertTrue(
+                    Json.parseToJsonElement(sendOneRequest("""{"verb":"daemon.status"}""")).jsonObject.getValue("quota")
+                        .jsonObject.getValue("used_bytes").jsonPrimitive.long == 10L,
+                    "the refusal reconciled the cached snapshot to full",
+                )
+
+                provider.full = false
+                provider.quotaResult = QuotaInfo(total = 10, used = 5, remaining = 5)
+                val releaseDeadline = System.currentTimeMillis() + 10_000
+                var released = false
+                while (System.currentTimeMillis() < releaseDeadline && !released) {
+                    released = Json.parseToJsonElement(sendOneRequest("""{"verb":"daemon.status"}""")).jsonObject["paused"] == null
+                    delay(50)
+                }
+                assertTrue(released, "the fresh fetch with room released the hold by itself")
+            } finally {
+                daemon.close()
+                job.join()
+            }
+        }
+
 
     // Polls daemon.status until its enumeration object satisfies [predicate]; fails with the last reply otherwise.
     private suspend fun awaitEnumeration(
@@ -2104,6 +2201,39 @@ class DaemonRuntimeTest {
             uploadStarted.complete(Unit)
             onProgress?.invoke(1L, 2L)
             gate.await()
+            val size = Files.size(localPath)
+            onProgress?.invoke(size, size)
+            return CloudItem(
+                id = "uploaded-$remotePath",
+                name = remotePath.substringAfterLast('/'),
+                path = remotePath,
+                size = size,
+                isFolder = false,
+                modified = Instant.now(),
+                created = null,
+                hash = null,
+                mimeType = null,
+            )
+        }
+    }
+
+    // #1073: a full drive — every upload refused with the typed space error until [full] is cleared; the quota
+    // endpoint answers [quotaResult] as any Stub does.
+    private class SpaceRefusingProvider : StubProvider() {
+        @Volatile var full = true
+        val uploadsRefused = java.util.concurrent.atomic.AtomicInteger(0)
+
+        override suspend fun upload(
+            localPath: Path,
+            remotePath: String,
+            existingRemoteId: String?,
+            ifMatchETag: String?,
+            onProgress: ((Long, Long) -> Unit)?,
+        ): CloudItem {
+            if (full) {
+                uploadsRefused.incrementAndGet()
+                throw org.krost.unidrive.InsufficientRemoteSpaceException("Max space used")
+            }
             val size = Files.size(localPath)
             onProgress?.invoke(size, size)
             return CloudItem(

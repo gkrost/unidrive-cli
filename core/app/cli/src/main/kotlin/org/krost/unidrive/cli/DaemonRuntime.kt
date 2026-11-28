@@ -26,6 +26,7 @@ import org.krost.unidrive.hydration.HydrationEvent
 import org.krost.unidrive.hydration.HydrationImpl
 import org.krost.unidrive.hydration.HydrationIpcHandler
 import org.krost.unidrive.hydration.MountEngine
+import org.krost.unidrive.hydration.PauseGate
 import org.krost.unidrive.hydration.StateDbNameSpellingStore
 import org.krost.unidrive.hydration.provesProviderReachable
 import org.krost.unidrive.hydration.serialiseHydrationEvent
@@ -848,24 +849,14 @@ class DaemonRuntime(
                     val credentialHealthJson = credentialReading.toJson(System.currentTimeMillis())
                     // auth (unidrive-cli#387): the same reading as a sign-in question, with the profile folder the check looked in.
                     val authJson = authStatusOf(credentialReading.state, lockFile.parent, totpRequired = vaultRelogin?.totpRequired == true).toJson().toString()
-                    // quota (archive#655): the account's storage plan snapshot. Absent entirely for
-                    // providers without an account quota (ProviderMetadata hasQuota=false —
-                    // localfs probes machine storage). A client-connected status request is
-                    // also the refresh trigger: a fetch runs single-flight when the TTL has
-                    // expired; no client asking means no provider call. Failure keeps the
-                    // last value with stale=true and the error named; unknowns are null —
-                    // never zero, never a division by a missing total.
-                    if (providerHasQuota) quotaMonitor.maybeTriggerQuotaRefresh(clientCount, serveScope, paused = pause.isPaused)
-                    val quotaJson =
-                        if (!providerHasQuota) {
-                            null
-                        } else {
-                            val snap = quotaMonitor.quotaSnapshot ?: QuotaSnapshot()
-                            val errorJson = snap.error?.let { ndjsonString(it) } ?: "null"
-                            """{"used_bytes":${snap.usedBytes ?: "null"},""" +
-                                """"total_bytes":${snap.totalBytes ?: "null"},""" +
-                                """"fetched_at_ms":${snap.fetchedAtMs ?: "null"},"stale":${snap.stale},"error":$errorJson}"""
-                        }
+                    // quota (archive#655): the account's storage plan snapshot. Absent entirely for providers
+                    // without an account quota (ProviderMetadata hasQuota=false — localfs probes machine storage).
+                    // A client-connected status request is also the refresh trigger; a quota hold (#1073) keeps
+                    // the fetch running headless, past the pause rule, so the hold can release by itself.
+                    if (providerHasQuota) {
+                        quotaMonitor.maybeTriggerQuotaRefresh(clientCount, serveScope, paused = pause.isPaused, quotaHold = pause.current?.reason == PauseGate.QUOTA_HOLD_REASON)
+                    }
+                    val quotaJson = if (!providerHasQuota) null else quotaStatusJson(quotaMonitor.quotaSnapshot)
                     // poll_interval_ms (archive#463): the effective interval of the remote poll (0 = off). The
                     // next attempt after a failure is enumeration.next_attempt_at_ms (additive, read-only).
                     // engine_version (archive#554): the build a co-client is talking to — behaviour fixes do
@@ -970,6 +961,15 @@ class DaemonRuntime(
                 // vault_locked, an event to the same subscribers), vault.unlock resumes them.
                 pre.vaultRpc.onLocked = { pauseHandler.pauseForVaultLock() }
                 pre.vaultRpc.onResumed = { pauseHandler.resumeForVaultUnlock() }
+                // #1073: the account-level hold of a full remote drive. The mount's typed remote-space refusal
+                // (its Failed event with the remote_space token) arms the hold once per crossing: the snapshot
+                // is reconciled full, the gate pauses with reason quota, and a release watcher refreshes the
+                // quota headless on the hold's cadence until a fresh fetch shows room again. A mirror has no
+                // upload queue and no hold.
+                hydration?.let { h ->
+                    val quotaHold = QuotaHold(pause, pauseHandler, quotaMonitor, { servingProvider }, quotaRefreshMs, serveScope)
+                    serveScope.launch { h.events.collect { quotaHold.onEvent(it) } }
+                }
 
                 // auth.logout (§4.10): sign the account out while the daemon keeps running — the daemon is the
                 // profile-lock holder, so the credential removal is its job (the CLI hands it over over IPC).

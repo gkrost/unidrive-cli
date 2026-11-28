@@ -138,6 +138,9 @@ internal class HistoryRetryRounds(
             return "busy"
         }
         if (!Files.exists(cachePath)) return "source_changed"
+        // #1073: while the hold of a full drive stands, a remote_space row is not re-queued — its 6-h deferral
+        // expires into a hold that is still on, and the retry would meet the same refusal.
+        if (impl.quotaHoldActive && impl.holdsRemoteSpaceDeferral(path)) return "quota_hold"
         if (impl.refusedEarlier(path, cachePath, userRetry = true) != null) return "refused_bytes"
         // The replay's base check, at admission time: a cloud version that moved since the edit began sends
         // nothing (both copies must survive). A row without a noted base offers its current token, as the
