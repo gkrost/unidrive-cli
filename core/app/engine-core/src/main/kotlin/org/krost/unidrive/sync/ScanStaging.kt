@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.Connection
+import java.sql.SQLException
 import java.sql.Statement
 import java.time.Instant
 
@@ -132,7 +133,7 @@ internal class ScanStaging(
         stmt.executeUpdate("CREATE TABLE IF NOT EXISTS scan_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         if (!hasVersion) {
             val c = stmt.connection
-            c.autoCommit = false
+            openStagingTransaction(c)
             var committed = false
             try {
                 stmt.executeUpdate("ALTER TABLE scan_staging ADD COLUMN remote_version TEXT")
@@ -162,7 +163,7 @@ internal class ScanStaging(
     @Synchronized
     private fun <T> transaction(body: (Connection) -> T): T {
         val c = writable()
-        c.autoCommit = false
+        openStagingTransaction(c)
         var committed = false
         try {
             val result = body(c)
@@ -173,6 +174,25 @@ internal class ScanStaging(
             if (!committed) runCatching { c.rollback() }
             c.autoCommit = true
             if (committed) commitHook?.invoke()
+        }
+    }
+
+    /**
+     * The BEGIN of a staging transaction, with state.db's `openTransaction` repair (gkrost/unidrive-cli#1034): the
+     * busy BEGIN is retried a bounded number of times ([retryOnSqliteBusy] — the file is single-writer among
+     * unidrive processes under the profile ProcessLock, but a foreign handle on Windows can still answer busy), and
+     * a failed BEGIN puts the autoCommit flag back. sqlite-jdbc flips the flag before it runs BEGIN, so a flag left
+     * false would make every later staging transaction of this connection run statement by statement, rollbacks
+     * undoing nothing.
+     */
+    private fun openStagingTransaction(c: Connection) {
+        retryOnSqliteBusy {
+            try {
+                c.autoCommit = false
+            } catch (e: SQLException) {
+                runCatching { c.autoCommit = true }
+                throw e
+            }
         }
     }
 
