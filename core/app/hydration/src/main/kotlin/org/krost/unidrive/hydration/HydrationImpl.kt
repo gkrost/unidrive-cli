@@ -296,8 +296,9 @@ class HydrationImpl(
     // The read-only views (Recents, ...): their listing, and the real item a read verb on a view path is run on.
     private val views = HydrationViews(mount)
 
-    // archive#778: the daemon's pause, shared with the downloads of the mount front-end.
-    private val pause: PauseGate = mount.pause
+    // archive#778: the daemon's pause, shared with the downloads of the mount front-end. Internal so the
+    // #1073 hold helpers beside this file (and the retry admission) can read the gate's state.
+    internal val pause: PauseGate = mount.pause
 
     private val _events = MutableSharedFlow<HydrationEvent>(extraBufferCapacity = 64)
     override val events: Flow<HydrationEvent> = _events.asSharedFlow()

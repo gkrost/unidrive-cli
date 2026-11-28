@@ -26,3 +26,15 @@ internal fun spaceDeferralOf(e: ProviderException): UploadDeferredForSpaceExcept
 /** Whether the upload refusal recorded on [path] (`<mtime>|<size>|<retry at>|<reason>`) is a space deferral. */
 internal fun StateDatabase.holdsSpaceDeferral(path: String): Boolean =
     uploadRefusal(path)?.split('|', limit = 4)?.getOrNull(3)?.let { HydrationError.SpaceDeferred.parse(it) } != null
+
+// #1073: the account-level hold of a full remote drive. The daemon arms it through the pause gate; the
+// hydration layer only reads the gate's state — the hold is the daemon's, the deferrals stay the rows' own.
+
+/** The hold of a full remote drive is in force: the gate is paused with [PauseGate.QUOTA_HOLD_REASON]. */
+internal val HydrationImpl.quotaHoldActive: Boolean
+    get() = pause.current?.reason == PauseGate.QUOTA_HOLD_REASON
+
+/** The refusal recorded on [path] is the account's storage having no room for these bytes (`remote_space`). */
+internal fun HydrationImpl.holdsRemoteSpaceDeferral(path: String): Boolean =
+    runCatching { stateDb.uploadRefusal(path) }.getOrNull()?.split('|', limit = 4)?.getOrNull(3) ==
+        HydrationError.SpaceDeferred.REMOTE_SPACE_TOKEN
