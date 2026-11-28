@@ -58,7 +58,13 @@ class AgeV1Strategy(
     // no passphrase demand belongs to the write path of an algorithm whose key lives inside the age file.
     override fun wrapFileKey(fileKey: ByteArray): ByteArray = ByteArray(wrappedKeyLength)
 
-    override fun unwrapFileKey(wrapped: ByteArray): ByteArray = ByteArray(0)
+    // The read path's key demand is here, not in [decrypt]: a key file the passphrase does not open fails its own GCM
+    // tag, an AEADBadTagException, which the provider reads from the decrypt as damaged content and refuses for good
+    // (#1037). Loaded before the decrypt, a wrong passphrase stays this installation's error.
+    override fun unwrapFileKey(wrapped: ByteArray): ByteArray {
+        identity.value
+        return ByteArray(0)
+    }
 
     // The age file's constant overhead — the header's length for one X25519 stanza plus the payload's 16-byte
     // nonce — measured from a zero-byte encrypt with a throwaway public recipient, minus that empty payload's

@@ -260,7 +260,9 @@ private fun refuseMalformed(
 }
 
 // A slot the strategy cannot unwrap (XtraFileKeyRefusedException) is refused like a failed seal; a key store that
-// does not load (wrong passphrase, missing file) throws something else and stays this installation's error.
+// does not load (wrong passphrase, missing file) throws something else and stays this installation's error. Every
+// strategy loads its key store here, before [decryptStaged]: a key file's failed GCM tag is an AEADBadTagException too,
+// which the decrypt's catch would refuse as content (#1037).
 private fun unwrapOrRefuse(
     strategy: XtraEncryptionStrategy,
     header: XtraHeader.ReadResult.Valid,
