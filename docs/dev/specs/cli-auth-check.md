@@ -57,6 +57,7 @@ failed command, archive#1126), on stdout with `--json`:
 | `provider_error` | the provider answered, but not usably (an account without a drive, a refusal that is not about the sign-in) | no |
 | `unsupported` | the provider has no account to check (localfs) | no |
 | `credential_sealed` | the stored token is sealed under the vault key and this process holds no key; the message names the file and `vault.unlock` (#964) | no: unlock the vault |
+| `credential_protection_unavailable` | the credential protection itself failed (a failing backend, a wrong key, a damaged seal); the same token the sign-in steps answer (#964 second review) | no: `vault unlock` or re-seal |
 | `invalid_timeout` | `--timeout` is outside 1 to 300 | no |
 
 The other refusals of the `auth` commands apply unchanged (`profile_not_found`, `config_not_found`, `profile_in_use`,
