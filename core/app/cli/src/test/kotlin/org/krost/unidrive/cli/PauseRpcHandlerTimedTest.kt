@@ -256,4 +256,24 @@ class PauseRpcHandlerTimedTest {
             assertFalse(gate.isPaused)
         }
     }
+
+    // ── #1073: the account-level hold of a full remote drive ────────────────────────────────────────
+
+    @Test
+    fun `a quota hold replaces a timed pause and its old deadline cannot resume it`() = runTest {
+        with(Fixture(this)) {
+            pause(reason = "metered", auto = true, until = now + 1_000_000)
+            events.clear()
+
+            assertTrue(handler.pauseForQuota())
+            assertEquals(PauseGate.State(PauseGate.QUOTA_HOLD_REASON, base, true), gate.current)
+            assertEquals(listOf<HydrationEvent>(HydrationEvent.Paused(PauseGate.QUOTA_HOLD_REASON, base, true)), events)
+            events.clear()
+
+            advanceTimeBy(1_000_000 + PauseRpcHandler.CLOCK_RECHECK_MS)
+            runCurrent()
+            assertTrue(gate.isPaused, "the hold outlives the replaced pause's deadline")
+            assertTrue(events.isEmpty())
+        }
+    }
 }

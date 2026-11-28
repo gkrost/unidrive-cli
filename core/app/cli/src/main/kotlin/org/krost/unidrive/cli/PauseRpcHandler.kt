@@ -111,6 +111,41 @@ class PauseRpcHandler(
             gate.resume().also { if (it) publish(HydrationEvent.Resumed()) }
         }
 
+    /**
+     * #1073: the programmatic pause behind a full remote drive — the same gate, in-flight rule and event as
+     * `daemon.pause`, with the fixed reason [PauseGate.QUOTA_HOLD_REASON] (`auto`, untimed). The hold fires ONCE per
+     * crossing: a repeat while held is the same pause (no event, no change). It does not displace a person's pause
+     * (`auto=false`) or the vault lock — the queue is already stopped there, and a hold whose headless release
+     * resumed a pause it did not begin would un-pause the person or serve a locked vault. A timed pause it replaces
+     * has its timer cancelled with the transition, like the vault lock's. Returns whether the hold is in force
+     * afterwards (true also when it already stood).
+     */
+    fun pauseForQuota(): Boolean =
+        synchronized(gate) {
+            val current = gate.current
+            when {
+                current?.reason == PauseGate.QUOTA_HOLD_REASON -> return@synchronized true
+                current != null && (!current.auto || current.reason == VAULT_LOCKED_REASON) -> return@synchronized false
+            }
+            val change = gate.pause(PauseGate.QUOTA_HOLD_REASON, auto = true, untilMs = null)
+            if (change == PauseGate.Change.UNCHANGED) return@synchronized true
+            cancelTimer()
+            gate.abortSlowTransfers()
+            val state = checkNotNull(gate.current) { "paused just now" }
+            publish(HydrationEvent.Paused(state.reason, state.sinceMs, state.auto, state.untilMs))
+            true
+        }
+
+    /**
+     * The headless release behind #1073: ends exactly the quota hold — a pause of any other reason stands. True when
+     * a quota hold actually ended (the `resumed` event went out), false when nothing was held or the pause is another's.
+     */
+    fun resumeForQuotaRelease(): Boolean =
+        synchronized(gate) {
+            if (gate.current?.reason != PauseGate.QUOTA_HOLD_REASON) return@synchronized false
+            gate.resume().also { if (it) publish(HydrationEvent.Resumed()) }
+        }
+
     // Caller holds synchronized(gate). Replaces any earlier timer; null [untilMs] leaves the pause untimed.
     private fun armTimer(untilMs: Long?) {
         cancelTimer()

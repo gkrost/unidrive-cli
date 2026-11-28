@@ -231,6 +231,12 @@ class PauseGate(
         /** A transfer that needs less than this much longer is left to finish when a pause begins. */
         const val FINISH_UNDER_MS: Long = 10_000
 
+        /**
+         * #1073: the reason the account-level hold of a full remote drive pauses with. A free machine word like the
+         * reasons `daemon.pause` takes; the client words it itself.
+         */
+        const val QUOTA_HOLD_REASON = "quota"
+
         private const val NANOS_PER_MS = 1_000_000.0
     }
 }
