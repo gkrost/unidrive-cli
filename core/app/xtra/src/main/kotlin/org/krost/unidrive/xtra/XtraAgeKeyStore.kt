@@ -28,12 +28,17 @@ class XtraAgeKeyStore(
 
     fun exists(): Boolean = Files.exists(keyPath)
 
+    /**
+     * A fresh identity under [passphrase]; never over an existing key file (it is every file's only key). The install is a
+     * create-new ([createKeyFileExclusively]): of two generates racing for one path exactly one lands, and the other
+     * throws [IllegalStateException] holding no key.
+     */
     fun generate(passphrase: CharArray) {
         require(passphrase.size >= XtraKeyManager.MIN_PASSPHRASE_LENGTH) {
             "Passphrase must be at least ${XtraKeyManager.MIN_PASSPHRASE_LENGTH} characters"
         }
         val identity = X25519Identity.Companion.new()
-        writeKeyFile(passphrase, identity.encodeToString())
+        writeKeyFile(passphrase, identity.encodeToString(), createNew = true)
     }
 
     /** Whether [passphrase] opens the key file (the unwrap succeeds). */
@@ -80,23 +85,27 @@ class XtraAgeKeyStore(
         require(passphrase.size >= XtraKeyManager.MIN_PASSPHRASE_LENGTH) {
             "Passphrase must be at least ${XtraKeyManager.MIN_PASSPHRASE_LENGTH} characters"
         }
-        val replaced = exists()
-        // The identity file is the only copy of what decrypts the account's content, so an import never silently
-        // replaces one: a mistyped --input, or the other machine's older identity, would make every file this
-        // installation already encrypted undecryptable.
-        check(force || !replaced) { "An identity already exists at $keyPath; import with --force to replace it, after an export of it is safe" }
-        if (replaced) {
-            // A forced replace keeps the identity it retires beside the new one, so the files the old identity
-            // encrypted stay decryptable after the import turns out to be the wrong one.
-            val retired = keyPath.resolveSibling("${keyPath.fileName}.bak-${System.currentTimeMillis()}")
-            OwnerOnlyAtomicWrite.replace(retired, produce = { Files.readAllBytes(keyPath) })
+        // The check, the backup of a retired identity and the install are one step (withKeyFileLock), and into an
+        // installation without an identity the install is a create-new: of two imports racing for it exactly one lands.
+        withKeyFileLock(keyPath) {
+            val replaced = exists()
+            // The identity file is the only copy of what decrypts the account's content, so an import never silently
+            // replaces one: a mistyped --input, or the other machine's older identity, would make every file this
+            // installation already encrypted undecryptable.
+            check(force || !replaced) { "An identity already exists at $keyPath; import with --force to replace it, after an export of it is safe" }
+            if (replaced) {
+                // A forced replace keeps the identity it retires beside the new one, so the files the old identity
+                // encrypted stay decryptable after the import turns out to be the wrong one.
+                retireKeyFile(keyPath)
+            }
+            writeKeyFile(passphrase, encoded, createNew = !replaced)
         }
-        writeKeyFile(passphrase, encoded)
     }
 
     private fun writeKeyFile(
         passphrase: CharArray,
         encodedIdentity: String,
+        createNew: Boolean = false,
     ) {
         val salt = randomBytes(SALT_LENGTH)
         val iv = randomBytes(IV_LENGTH)
@@ -105,7 +114,7 @@ class XtraAgeKeyStore(
         Files.createDirectories(keyPath.parent)
         // archive#1053, the vault's rule: the key file is the only copy of what decrypts the account's content,
         // so the new bytes replace the old only once they decrypt back to what was written.
-        OwnerOnlyAtomicWrite.replace(keyPath, salt + iv + encrypted, verify = { tmp ->
+        val verify = { tmp: Path ->
             val onDisk = Files.readAllBytes(tmp)
             check(onDisk.size >= SALT_LENGTH + IV_LENGTH + GCM_TAG_BITS / 8) { "The new key file is truncated; the old one was kept." }
             val diskIv = onDisk.copyOfRange(SALT_LENGTH, SALT_LENGTH + IV_LENGTH)
@@ -113,7 +122,9 @@ class XtraAgeKeyStore(
             check(decryptBlob(key, diskIv, diskCiphertext).decodeToString() == encodedIdentity) {
                 "The new key file is not what was written or does not decrypt; the old one was kept."
             }
-        })
+        }
+        val blob = salt + iv + encrypted
+        if (createNew) createKeyFileExclusively(keyPath, blob, verify) else OwnerOnlyAtomicWrite.replace(keyPath, blob, verify = verify)
     }
 
     private fun deriveKey(

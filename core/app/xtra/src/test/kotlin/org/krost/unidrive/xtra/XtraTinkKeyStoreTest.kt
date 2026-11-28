@@ -37,6 +37,17 @@ class XtraTinkKeyStoreTest {
     }.toByteArray()
 
     @Test
+    fun `a second generate fails and leaves the first key file byte-identical`() {
+        val store = store("generate-twice")
+        store.generate("correct horse battery".toCharArray())
+        val before = Files.readAllBytes(store.path)
+
+        assertFailsWith<IllegalStateException> { store.generate("correct horse battery".toCharArray()) }
+
+        assertContentEquals(before, Files.readAllBytes(store.path))
+    }
+
+    @Test
     fun `a passphrase change re-wraps the same keyset - the old passphrase is refused, files sealed before still open`() {
         val store = store("change")
         store.generate(PASSPHRASE)
