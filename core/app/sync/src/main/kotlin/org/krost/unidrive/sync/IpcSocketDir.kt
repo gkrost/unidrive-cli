@@ -121,7 +121,7 @@ internal object IpcSocketDir {
                 } else {
                     "Remove it so it can be recreated."
                 }
-            throw IllegalStateException("Refusing to use $dir as the IPC socket folder: $it. $wayOut")
+            error("Refusing to use $dir as the IPC socket folder: $it. $wayOut")
         }
         return dir
     }
