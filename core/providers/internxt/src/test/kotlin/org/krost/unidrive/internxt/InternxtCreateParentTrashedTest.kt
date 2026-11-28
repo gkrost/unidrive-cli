@@ -92,6 +92,21 @@ class InternxtCreateParentTrashedTest {
         }
 
     @Test
+    fun `a create 404 whose second look fails on a 5xx listing is a retryable failure, not a refusal`() =
+        withDrive { drive, provider, tmp ->
+            provider.upload(local(tmp, "a.txt"), "/docs/a.txt", existingRemoteId = null, onProgress = null) // caches docs-old
+            drive.trashDocsBehindTheCache()
+            drive.pagedListingFault = HttpStatusCode.ServiceUnavailable
+
+            val failure = assertFailsWith<InternxtApiException> { provider.upload(local(tmp, "b.txt"), "/docs/b.txt", existingRemoteId = null, onProgress = null) }
+            assertEquals(503, failure.statusCode, "the look that failed proves nothing: its own type, not the parent gone")
+
+            // The listing is back and the folder really is gone: now the refusal stands.
+            drive.pagedListingFault = null
+            assertFailsWith<ParentGoneException> { provider.upload(local(tmp, "b.txt"), "/docs/b.txt", existingRemoteId = null, onProgress = null) }
+        }
+
+    @Test
     fun `a 404 with another message keeps its own type`() =
         withDrive { drive, provider, tmp ->
             drive.createFault = { _, _ -> HttpStatusCode.NotFound }
