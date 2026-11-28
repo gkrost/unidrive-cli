@@ -5,6 +5,8 @@ import org.krost.unidrive.Capability
 import org.krost.unidrive.CapabilityResult
 import org.krost.unidrive.CloudItem
 import org.krost.unidrive.CloudProvider
+import org.krost.unidrive.ProviderException
+import org.krost.unidrive.RemoteConflictException
 import org.krost.unidrive.UnsupportedCapabilityException
 import org.krost.unidrive.ViewKind
 import java.nio.file.Path
@@ -87,6 +89,10 @@ abstract class CloudProviderConformanceTest {
 
     /** Removes the stored credentials (and only the stored ones), so nothing is left to reload. */
     protected open fun clearStoredCredentials() {}
+
+    /** A stale-token refusal: the typed conflict, or the provider's own HTTP 412 Precondition Failed. */
+    private fun isStaleTokenRefusal(e: Throwable): Boolean =
+        e is RemoteConflictException || (e as? ProviderException)?.httpStatus == 412
 
     // ── the contracts ─────────────────────────────────────────────────────────
 
@@ -244,9 +250,11 @@ abstract class CloudProviderConformanceTest {
             try {
                 if (!provider.conditionalWrite.upload.checksToken) return@runBlocking
                 val item = seedFile(provider, "/conformance-a.txt", "original")
-                assertFails("a provider that declares ${provider.conditionalWrite.upload} must refuse a stale token, not overwrite") {
-                    provider.upload(localFile("replaced"), item.path, existingRemoteId = item.id, ifMatchETag = staleWriteToken())
-                }
+                // Refusing is a conflict (or a keep-both copy beside the item, OneDrive's answer to a 412), never an incidental
+                // failure: a fake that fails the write for another reason must not let a provider that drops the token pass.
+                val outcome = runCatching { provider.upload(localFile("replaced"), item.path, existingRemoteId = item.id, ifMatchETag = staleWriteToken()) }
+                val refused = outcome.exceptionOrNull()?.let(::isStaleTokenRefusal) ?: outcome.getOrThrow().keptBoth
+                assertTrue(refused, "a provider that declares ${provider.conditionalWrite.upload} must refuse a stale token, not overwrite: $outcome")
             } finally {
                 provider.close()
             }
@@ -274,9 +282,11 @@ abstract class CloudProviderConformanceTest {
             try {
                 if (!provider.conditionalWrite.delete.checksToken) return@runBlocking
                 val item = seedFile(provider, "/conformance-a.txt", "content")
-                assertFails("a provider that declares ${provider.conditionalWrite.delete} must refuse a stale token, not delete") {
-                    provider.delete(item.path, staleWriteToken())
-                }
+                val failure = runCatching { provider.delete(item.path, staleWriteToken()) }.exceptionOrNull()
+                assertTrue(
+                    failure != null && isStaleTokenRefusal(failure),
+                    "a provider that declares ${provider.conditionalWrite.delete} must refuse a stale token as a conflict, not delete: $failure",
+                )
             } finally {
                 provider.close()
             }
