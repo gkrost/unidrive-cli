@@ -1,0 +1,2 @@
+{"argv":["auth","check","--profile","od","--json"]}
+{"ok":false,"error":"credential_sealed","message":"/p/token.json is sealed under the vault key; unlock the vault first (vault.unlock)"}

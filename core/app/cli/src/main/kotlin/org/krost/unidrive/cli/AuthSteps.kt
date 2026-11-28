@@ -10,6 +10,7 @@ import org.krost.unidrive.AccountUnverifiedException
 import org.krost.unidrive.AuthenticationException
 import org.krost.unidrive.CompleteAuthResult
 import org.krost.unidrive.ProviderFactory
+import org.krost.unidrive.auth.CredentialLockedException
 import org.krost.unidrive.auth.CredentialProtectionException
 import org.krost.unidrive.internxt.BadCredentialsException
 import org.krost.unidrive.internxt.InternxtConfig
@@ -68,9 +69,12 @@ private suspend fun <T> providerStep(
         call()
     } catch (e: kotlinx.coroutines.CancellationException) {
         throw e
-    } catch (e: CredentialProtectionException) {
+    } catch (e: CredentialLockedException) {
         // A sealed pending sign-in in a locked process (#797) names its file and vault.unlock; the message is ours, no response.
-        throw LifecycleError("credential_protection_unavailable", e.message ?: "unlock the vault or the native credential store and retry", e)
+        // Its own token (#964): a client words "protected storage failed, retry" for the other one, and retrying does not unlock.
+        throw LifecycleError("credential_sealed", e.message ?: "unlock the vault and retry", e)
+    } catch (e: CredentialProtectionException) {
+        throw LifecycleError("credential_protection_unavailable", e.message ?: "unlock the native credential store and retry", e)
     } catch (e: Exception) {
         throw unreachableRefusal(e) ?: LifecycleError(token, "the sign-in could not be $what: ${e.javaClass.simpleName}", e)
     }
