@@ -212,3 +212,16 @@ internal class QuotaSnapshotMonitor(
         if (runCatching { db.trySetSyncStatesWhenIdle(values) }.getOrDefault(true)) unpersistedQuota.compareAndSet(values, null)
     }
 }
+
+/**
+ * The `quota` member of `daemon.status` (archive#655): the snapshot as the monitor holds it. Unknowns are null —
+ * never zero, never a division by a missing total; a failed fetch keeps the last values with `stale=true` and the
+ * error named. The snapshot a typed remote-space refusal reconciled (#1073) reads exactly like a fetched one.
+ */
+internal fun quotaStatusJson(snapshot: QuotaSnapshot?): String {
+    val snap = snapshot ?: QuotaSnapshot()
+    val errorJson = snap.error?.let { org.krost.unidrive.io.ndjsonString(it) } ?: "null"
+    return """{"used_bytes":${snap.usedBytes ?: "null"},""" +
+        """"total_bytes":${snap.totalBytes ?: "null"},""" +
+        """"fetched_at_ms":${snap.fetchedAtMs ?: "null"},"stale":${snap.stale},"error":$errorJson}"""
+}
