@@ -94,7 +94,7 @@ interface CloudProvider {
      */
     suspend fun reloadCredentials() {
         throw UnsupportedOperationException(
-            "$id must override reloadCredentials: the default never runs authenticate() (it can prompt for a sign-in), " +
+            "$id must override reloadCredentials: the default never runs signIn() (it can prompt for a sign-in), " +
                 "it states its own reload decision instead",
         )
     }

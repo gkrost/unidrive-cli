@@ -202,6 +202,27 @@ abstract class CloudProviderConformanceTest {
             assertEquals(emptyList(), console.events)
         }
 
+    // gkrost/unidrive-cli#267: a provider that keeps a sign-in of its own must override signIn. The default is authenticate(),
+    // which with nothing stored only refuses again, so `unidrive auth` would never sign in. A real sign-in reaches the console
+    // first (OneDrive and Dropbox open the browser, Internxt asks for the email), and this console stops it there.
+    @Test
+    fun `signIn with nothing stored signs in through the console`() {
+        runBlocking<Unit> {
+            if (!storedCredentialsRemovable) return@runBlocking
+            val provider = newProvider()
+            val console = RecordingSignInConsole(onOpenBrowser = { throw SignInReached() })
+            try {
+                clearStoredCredentials()
+                runCatching { kotlinx.coroutines.withTimeout(10_000) { provider.signIn(console) } }
+            } finally {
+                provider.close()
+            }
+            assertTrue(console.events.isNotEmpty(), "signIn with nothing stored never reached the console; does ${provider.id} override signIn?")
+        }
+    }
+
+    private class SignInReached : RuntimeException("the sign-in reached the browser")
+
     @Test
     fun `reloadCredentials with nothing stored leaves the provider unauthenticated`() {
         runBlocking<Unit> {

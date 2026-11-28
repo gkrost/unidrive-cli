@@ -809,3 +809,20 @@ internal fun daemonStartCredentialRefusal(
         "sign-in before it can start ($detail$looked); refusing to prompt without an interactive terminal. " +
         "Sign in again: unidrive -p $profileName auth"
 }
+
+/**
+ * The start's stderr line when authenticating the provider failed. gkrost/unidrive-cli#267: with nothing stored to sign in
+ * with ([NotSignedInException]: OneDrive, Dropbox), it carries [AuthRequiredException.REASON] and the remedy as
+ * [daemonStartCredentialRefusal] does, so a front-end offers its sign-in. That matters most after a locked start, which
+ * skips the offline credential gate. Internxt's [AuthRequiredException] already says the token in its message.
+ */
+internal fun daemonAuthFailureLine(
+    profileName: String,
+    e: Throwable,
+): String =
+    if (e is org.krost.unidrive.NotSignedInException) {
+        "Error: unidrive daemon: ${AuthRequiredException.REASON}: profile '$profileName' is not signed in (${e.message}). " +
+            "Sign in again: unidrive -p $profileName auth"
+    } else {
+        "unidrive daemon: authentication failed for profile '$profileName': ${e.message}"
+    }

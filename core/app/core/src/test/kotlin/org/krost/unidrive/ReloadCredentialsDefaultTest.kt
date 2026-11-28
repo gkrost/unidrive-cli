@@ -83,7 +83,7 @@ class ReloadCredentialsDefaultTest {
         runBlocking<Unit> {
             val failure = runCatching { stubProvider.reloadCredentials() }.exceptionOrNull()
 
-            assertEquals(0, authenticateCalls, "reloadCredentials fell through to authenticate(), which can prompt")
+            assertEquals(0, authenticateCalls, "reloadCredentials fell through to authenticate() instead of refusing")
             assertNotNull(failure, "a provider without a reload decision must be refused loudly, not signed in")
         }
 }

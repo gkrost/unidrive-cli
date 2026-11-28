@@ -353,7 +353,7 @@ class InternxtProvider(
         if (remoteHintsWanted) ensureNotificationsClient()
     }
 
-    // archive#1240: one GET of the usage figure with the stored session; never the console prompt of authenticate().
+    // archive#1240: one GET of the usage figure with the stored session; never the console prompt of signIn().
     override suspend fun checkCredentials(): CredentialProof {
         if (!authService.isAuthenticated) authService.initialize()
         if (!authService.isAuthenticated) throw NotSignedInException("no Internxt credentials are stored for this profile")
@@ -363,7 +363,7 @@ class InternxtProvider(
     }
 
     /**
-     * The credentials a sign-in through the daemon stored, read in place; never the console prompt of [authenticate].
+     * The credentials a sign-in through the daemon stored, read in place; never the console prompt of [signIn].
      * The notifications socket was opened with the credentials that were replaced, so it is opened again with the new
      * ones (or stays closed when nothing is stored).
      */
