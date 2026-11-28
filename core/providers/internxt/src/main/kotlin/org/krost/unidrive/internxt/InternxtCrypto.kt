@@ -19,6 +19,7 @@ open class InternxtCrypto {
         private const val SALT_SIZE = 64
         private const val IV_SIZE = 16
         private const val TAG_SIZE = 16
+        private const val SALTED_HEADER_LENGTH = 16
         private const val KEY_SIZE = 32
         private const val GCM_TAG_BITS = 128
         private const val BIP39_ITERATIONS = 2048
@@ -214,6 +215,9 @@ open class InternxtCrypto {
         passphraseBytes: ByteArray,
     ): String {
         val data = Base64.getDecoder().decode(base64Ciphertext)
+        // The data comes from the server: a value with no ciphertext after prefix and salt is refused here, not by the
+        // slicing below. CBC with padding never encrypts to zero bytes, and an empty ciphertext would decrypt to "".
+        require(data.size > SALTED_HEADER_LENGTH) { "Ciphertext holds nothing after the Salted__ header" }
         // Check "Salted__" prefix
         val prefix = data.copyOfRange(0, 8)
         require(prefix.contentEquals(SALTED_PREFIX)) { "Missing Salted__ prefix" }
