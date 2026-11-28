@@ -78,6 +78,7 @@
     <ID>TooManyFunctions:IpcAuth.kt$IpcAuth$Companion</ID>
     <ID>TooManyFunctions:IpcServer.kt$IpcServer</ID>
     <ID>TooManyFunctions:IpcServer.kt$IpcServer$Companion</ID>
+    <ID>TooManyFunctions:ProgressReporter.kt$ProgressReporter</ID>
     <ID>TooManyFunctions:Reconciler.kt$Reconciler</ID>
     <ID>TooManyFunctions:Reconciler.kt$Reconciler$Companion</ID>
     <ID>TooManyFunctions:SyncConfig.kt$SyncConfig$Companion</ID>

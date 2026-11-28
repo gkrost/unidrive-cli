@@ -104,6 +104,22 @@ class IpcSocketDirTest {
     }
 
     @Test
+    fun `a folder of another user is refused with a way out the user can take, UNIDRIVE_IPC_DIR`() {
+        val e = assertFailsWith<IllegalStateException> { IpcSocketDir.ensurePosixFallbackDir(tmp, uid, FakeOps(existing = good.copy(ownerUid = 1001))) }
+        assertTrue(e.message!!.contains(IpcSocketDir.OVERRIDE_ENV), e.message)
+    }
+
+    @Test
+    fun `a refused override folder does not tell the user to set UNIDRIVE_IPC_DIR`() {
+        val e =
+            assertFailsWith<IllegalStateException> {
+                IpcSocketDir.ensurePosixFolder(tmp.resolve("mine"), uid, FakeOps(existing = good.copy(mode = 0b111_101_101)))
+            }
+        assertTrue(e.message!!.contains("755"), e.message)
+        assertTrue(!e.message!!.contains(IpcSocketDir.OVERRIDE_ENV), e.message)
+    }
+
+    @Test
     fun `on POSIX the fallback folder is created 700, reused, and refused once widened or replaced by a link`() {
         assumeTrue(
             "POSIX file attributes only",

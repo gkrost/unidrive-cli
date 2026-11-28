@@ -109,7 +109,7 @@ class MigrateUploadQuarantinedCommand : Runnable {
         }
         val provider = main.createProvider()
         try {
-            kotlinx.coroutines.runBlocking {
+            kotlinx.coroutines.runBlocking(org.krost.unidrive.http.Priority.Foreground) {
                 provider.authenticateAndLog()
                 val done =
                     QuarantineUploadRun.run(main.providerConfigDir(), journal!!, provider) { local, remotePath, beforeUpload ->

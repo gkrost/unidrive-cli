@@ -21,7 +21,7 @@ internal object StateDbColumnClasses {
             "sync_entries",
             "remote_path download_quarantined last_error_at local_hash cache_backed upload_refused name_block edit_base remote_version " +
                 "mount_deleted_at remote_content_id pending_local never_submitted hint_file_id hint_bucket hint_encrypt_version hint_size " +
-                "hint_modified hint_updated_at changed_by changed_at_ms",
+                "hint_modified hint_updated_at changed_by changed_at_ms upload_digest",
         ) + cols("rename_intents", "ghost")
 
     val required: Set<String> =

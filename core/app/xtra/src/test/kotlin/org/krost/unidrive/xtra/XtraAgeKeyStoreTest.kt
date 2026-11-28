@@ -28,6 +28,17 @@ class XtraAgeKeyStoreTest {
         }
 
     @Test
+    fun `a second generate fails and leaves the first key file byte-identical`() {
+        val store = store("generate-twice")
+        store.generate(PASSPHRASE)
+        val before = Files.readAllBytes(store.path)
+
+        assertFailsWith<IllegalStateException> { store.generate(PASSPHRASE) }
+
+        assertContentEquals(before, Files.readAllBytes(store.path))
+    }
+
+    @Test
     fun `an export is the standard age identity string`() {
         val store = store("export")
         store.generate(PASSPHRASE)

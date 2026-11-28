@@ -719,7 +719,10 @@ class UnidriveHttpClientTest {
         }.use { server ->
             val c = client()
             runBlocking { repeat(6) { c.get("http://127.0.0.1:${server.port}/t$it") } }
-            val started = Thread.getAllStackTraces().keys.filter { it !in before && it.name.startsWith("unidrive-http") }
+            // OkHttp renames a dispatcher thread to "OkHttp <url>" while it runs a call and gives the name back after: a
+            // snapshot taken in that window (a loaded runner, #945) sees the engine's thread under the other name.
+            val callName = "OkHttp http://127.0.0.1:${server.port}/"
+            val started = Thread.getAllStackTraces().keys.filter { it !in before && (it.name.startsWith("unidrive-http") || it.name.startsWith(callName)) }
             assertTrue(started.isNotEmpty(), "the client started no thread of its own")
             c.close()
             val deadline = System.nanoTime() + 5_000_000_000L

@@ -153,4 +153,31 @@ class IpcProgressReporter(
             put("message", sanitized)
         }
     }
+
+    /**
+     * gkrost/unidrive-cli#267: the same `warning` event and message as before (a client that shows text is unchanged),
+     * plus the stable `token` and the trip's numbers, so a client can tell a safeguard from any other warning and offer
+     * the decision in its own words. Additive: no field an older client reads changes.
+     */
+    override fun onSafeguard(
+        trip: SafeguardTripped,
+        deferred: Boolean,
+    ) {
+        val sanitized = UrlRedaction.redact(SafeguardText.warning(trip, deferred)).replace("\n", " ").take(500)
+        emit("warning") {
+            put("message", sanitized)
+            put("token", SafeguardTripped.TOKEN)
+            put(
+                "safeguard",
+                buildJsonObject {
+                    put("kind", trip.kind.token)
+                    put("planned", trip.planned)
+                    trip.total?.let { put("total", it) }
+                    put("threshold", trip.threshold)
+                    trip.subtree?.let { put("subtree", it) }
+                    put("deferred", deferred)
+                },
+            )
+        }
+    }
 }

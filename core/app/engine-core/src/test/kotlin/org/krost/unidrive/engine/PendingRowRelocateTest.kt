@@ -206,4 +206,23 @@ class PendingRowRelocateTest {
             assertEquals(listOf("/résumé"), db.pendingUploadPaths(), "the row is at the NFC target")
         }
     }
+
+    // A name block is about the old name's clash with a sibling: the new name is checked afresh. The other marks stay.
+    @Test
+    fun `a pending row moved aside drops its name block and keeps its other marks`() {
+        val refusal = "1700000000000|3"
+        StateDatabase(file).also { it.initialize() }.use { db ->
+            db.upsertEntry(row("/p"))
+            assertTrue(db.markNeverSubmitted("/p"), "the row is queued as never submitted")
+            assertTrue(db.markUploadRefused("/p", refusal), "the upload was refused once")
+            assertTrue(db.markNameBlocked("/p", "name-clash", "/P"), "the drive refused the name")
+
+            assertTrue(db.movePendingUploadRow("/p", "/q", null), "the move went through")
+
+            assertNull(db.nameBlock("/q"), "the name block stayed with the old name")
+            assertNull(db.getEntry("/q")?.lastErrorAt, "the error stamp of the name block went with it")
+            assertTrue(db.neverSubmitted("/q"), "the never-submitted mark moved with the row")
+            assertEquals(refusal, db.uploadRefusal("/q"), "the upload-refusal mark moved with the row")
+        }
+    }
 }

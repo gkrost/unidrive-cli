@@ -1,6 +1,7 @@
 package org.krost.unidrive.cli
 
 import kotlinx.coroutines.runBlocking
+import org.krost.unidrive.http.Priority
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -226,7 +227,7 @@ private fun trashPlanned(
     plans: List<DedupePlan>,
 ): Map<DedupePlan, List<MemberOutcome>> =
     try {
-        runBlocking {
+        runBlocking(Priority.Foreground) {
             try {
                 provider.authenticateAndLog()
             } catch (e: AuthenticationException) {

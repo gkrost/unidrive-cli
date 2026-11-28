@@ -332,11 +332,12 @@ internal fun decryptVaultReport(
     warn: (String) -> Unit,
 ): DecryptReport {
     val vault = Vault(baseDir.resolve("vault.enc"))
-    val all = vault.read(passphrase)
     val configPath = baseDir.resolve("config.toml")
     var restoredProfiles = 0
     var orphanNames = emptyList<String>()
     val message = ConfigFileTransaction.withLock(configPath) {
+        // #1038: read under the lock, so what is written back below is not an older generation of the vault.
+        val all = vault.read(passphrase)
         // Reserved entries are no profile's: they have no config section to go back into and stay in the vault
         // (the X-tra passphrase, issue#796; the credential seal key, #797). A seal key that is switched off is a leftover
         // like any other once no credentials file is sealed under it.
@@ -473,7 +474,8 @@ class VaultChangePassphraseCommand : java.util.concurrent.Callable<Int> {
 
         val oldPass =
             if (passphraseStdin) readPassphraseStdin("--passphrase-stdin") else readPassphrase("Current passphrase: ")
-        val data = vault.read(oldPass)
+        // Checks the current passphrase before the prompts; the contents re-keyed are read again under the lock below.
+        vault.read(oldPass)
 
         val newPass1 =
             if (newPassphraseStdin) {
@@ -504,7 +506,10 @@ class VaultChangePassphraseCommand : java.util.concurrent.Callable<Int> {
             System.exit(1)
         }
 
-        vault.write(newPass1, data)
+        // #1038: the vault writers serialize on the config lock; a write made while the prompts waited is kept.
+        ConfigFileTransaction.withLock(vaultCmd.parent.configBaseDir().resolve("config.toml")) {
+            vault.write(newPass1, vault.read(oldPass))
+        }
         println("Vault passphrase changed.")
         return 0
     }

@@ -7,6 +7,8 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class AesGcmStrategyTest {
 
@@ -30,6 +32,25 @@ class AesGcmStrategyTest {
 
         val key = fileKey()
         assertContentEquals(key, keyed.unwrapFileKey(keyed.wrapFileKey(key)))
+    }
+
+    // The slot is OAEP-wrapped under the public key alone, so whoever holds it can seal a slot of any length: only a
+    // 32-byte file key is the one this installation's writer makes (#1042).
+    @Test
+    fun `an unwrapped file key that is not 32 bytes is refused like a slot that does not unwrap`() {
+        val dir = org.krost.unidrive.testing.TestScratch.directory("xtra-aesgcm-keylen")
+        val km = XtraKeyManager(dir.resolve("xtra.key"))
+        km.generate("testpass1234".toCharArray())
+        val keyed = AesGcmStrategy(lazy { km })
+
+        for (length in intArrayOf(0, 16, 24, 31, 33, 64)) {
+            val slot = keyed.wrapFileKey(ByteArray(length) { 7 })
+            val refused =
+                assertFailsWith<XtraFileKeyRefusedException>("a $length-byte key") { keyed.unwrapFileKey(slot) }
+            // The slot did unwrap: the message names the length, not a failed unwrap.
+            assertTrue(refused.message!!.contains("$length bytes"), refused.message)
+            assertFalse(refused.message!!.contains("does not unwrap"), refused.message)
+        }
     }
 
     @Test

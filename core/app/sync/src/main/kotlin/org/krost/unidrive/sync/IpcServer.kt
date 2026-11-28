@@ -735,7 +735,8 @@ class IpcServer(
             }
             else -> try {
                 watchingPeer(client, connId, readAhead, verb in cancelOnPeerGoneVerbs) {
-                    kotlinx.coroutines.withContext(handlerDispatcher) { handler(connId, line) }
+                    // gkrost/unidrive-cli#74: a verb is user-started, so it runs on the user lane and may take the reserved slot.
+                    kotlinx.coroutines.withContext(handlerDispatcher + org.krost.unidrive.http.Priority.Foreground) { handler(connId, line) }
                 }
             } catch (_: IpcPeerGoneException) {
                 // gkrost/unidrive-cli#760: nobody waits for this reply; the closed channel ends the reader, which frees the slot.
