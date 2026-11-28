@@ -1,6 +1,7 @@
 package org.krost.unidrive.cli
 
 import kotlinx.coroutines.runBlocking
+import org.krost.unidrive.http.Priority
 import org.krost.unidrive.io.engineKey
 import org.krost.unidrive.sync.ProfileMode
 import org.krost.unidrive.sync.StateDatabase
@@ -53,7 +54,7 @@ class SweepCommand : Runnable {
     var dryRun: Boolean = false
 
     override fun run() =
-        runBlocking {
+        runBlocking(Priority.Foreground) {
             if (!nullBytes) {
                 System.err.println(
                     "No sweep mode selected. Pass --null-bytes (the only scan mode currently supported). " +

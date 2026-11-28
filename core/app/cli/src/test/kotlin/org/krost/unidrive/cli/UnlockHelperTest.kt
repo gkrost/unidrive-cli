@@ -62,6 +62,47 @@ class UnlockHelperTest {
     }
 
     @Test
+    fun `an error text outside the code alphabet is reported as invalid_error_code`() {
+        for (text in listOf("two\nlines", "UPPER", "with space", "", "x".repeat(65), "café", "a-b")) {
+            val reply = """{"error":${JsonPrimitive(text)}}""".toByteArray()
+            assertEquals(UnlockHelper.Result.Hard("invalid_error_code"), UnlockHelper.parse(reply), "[$text]")
+        }
+        assertEquals(UnlockHelper.Result.Hard("witness_mismatch"), UnlockHelper.parse("""{"error":"witness_mismatch"}""".toByteArray()))
+        assertEquals(UnlockHelper.Result.Hard("a".repeat(64)), UnlockHelper.parse("""{"error":"${"a".repeat(64)}"}""".toByteArray()))
+    }
+
+    @Test
+    fun `the helper's stderr is discarded, not left as a pipe nobody reads`() {
+        val builder = UnlockHelper.helperProcessBuilder(dir.resolve("helper"))
+        assertEquals(ProcessBuilder.Redirect.DISCARD, builder.redirectError())
+    }
+
+    @Test
+    fun `the reply ends at the first newline, a helper that keeps stdout open does not stall`() {
+        val reply = """{"error":"declined"}""" + "\n"
+        val process = OpenStdoutProcess(java.io.ByteArrayInputStream(reply.toByteArray()))
+        val started = System.nanoTime()
+        val result = UnlockHelper.readReply(process)
+        assertEquals(UnlockHelper.Result.Soft("declined"), result)
+        assertTrue((System.nanoTime() - started) < 10_000_000_000L, "returned long before the 60 s timeout")
+    }
+
+    @Test
+    fun `a reply that arrives in pieces ends at its newline and drops what follows`() {
+        val reply = """{"error":"declined"}""" + "\n" + """{"secret":"c2VjcmV0"}"""
+        val process = OpenStdoutProcess(SlowStream(reply.toByteArray(), 5))
+        assertEquals(UnlockHelper.Result.Soft("declined"), UnlockHelper.readReply(process))
+    }
+
+    @Test
+    fun `a reply without a newline that is never closed times out and the buffer is wiped`() {
+        val process = OpenStdoutProcess(java.io.ByteArrayInputStream("""{"secret":"c2VjcmV0"}""".toByteArray()))
+        val buffer = ByteArray(65 * 1024 + 1)
+        assertEquals(UnlockHelper.Result.Hard("timeout"), UnlockHelper.readReply(process, 300, buffer))
+        assertTrue(buffer.all { it == 0.toByte() }, "no reply byte stays in the buffer")
+    }
+
+    @Test
     fun `a malformed reply is the hard error invalid_reply`() {
         for (bytes in listOf("".toByteArray(), "not json".toByteArray(), "[1]".toByteArray(), "{}".toByteArray(), """{"secret":"not-base64!"}""".toByteArray())) {
             assertTrue(UnlockHelper.parse(bytes) is UnlockHelper.Result.Hard, String(bytes))
@@ -122,6 +163,48 @@ class UnlockHelperTest {
         Files.setPosixFilePermissions(script, java.nio.file.attribute.PosixFilePermissions.fromString("rwxr-x---"))
         return script
     }
+}
+
+/** Hands out at most [chunk] bytes per read, like a pipe that delivers a reply in pieces. */
+private class SlowStream(
+    private val data: ByteArray,
+    private val chunk: Int,
+) : java.io.InputStream() {
+    private var pos = 0
+
+    override fun read(): Int = if (pos < data.size) data[pos++].toInt() and 0xff else -1
+
+    override fun read(
+        b: ByteArray,
+        off: Int,
+        len: Int,
+    ): Int {
+        if (pos >= data.size) return -1
+        val n = minOf(chunk, len, data.size - pos)
+        System.arraycopy(data, pos, b, off, n)
+        pos += n
+        return n
+    }
+}
+
+/** A helper that answered one line and still holds its stdout open (a grandchild, a slow exit). */
+private class OpenStdoutProcess(
+    first: java.io.InputStream,
+) : Process() {
+    private val stdout: java.io.InputStream =
+        java.io.SequenceInputStream(first, java.io.PipedInputStream(java.io.PipedOutputStream()))
+
+    override fun getOutputStream(): java.io.OutputStream = java.io.OutputStream.nullOutputStream()
+
+    override fun getInputStream(): java.io.InputStream = stdout
+
+    override fun getErrorStream(): java.io.InputStream = java.io.InputStream.nullInputStream()
+
+    override fun waitFor(): Int = 0
+
+    override fun exitValue(): Int = 0
+
+    override fun destroy() {}
 }
 
 /**

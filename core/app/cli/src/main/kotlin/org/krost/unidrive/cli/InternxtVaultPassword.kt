@@ -199,5 +199,5 @@ internal fun Main.reloginBeforeStartRefusal(profile: ProfileInfo): InternxtVault
     if (profile.type != "internxt" || vaultedInternxtSignIn(profile.name) == null) return null
     val target = ProfileTarget(profile.name, profile.type, configBaseDir().resolve(profile.name))
     val handler = AuthLoginRpcHandler(target, onSignedIn = {})
-    return kotlinx.coroutines.runBlocking { InternxtVaultRelogin { vaultedInternxtSignIn(profile.name) }.attempt(handler::login) }
+    return kotlinx.coroutines.runBlocking(org.krost.unidrive.http.Priority.Foreground) { InternxtVaultRelogin { vaultedInternxtSignIn(profile.name) }.attempt(handler::login) }
 }

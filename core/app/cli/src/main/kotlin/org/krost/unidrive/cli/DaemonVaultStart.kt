@@ -87,7 +87,7 @@ private fun Main.readVaultForDaemon(
     passphrase: CharArray,
 ): Map<String, Map<String, String>> =
     try {
-        vault.read(passphrase).also {
+        vault.readTruncatedAsFailed(passphrase).also {
             installCredentialSeal(it)
             vaultDataCache = it
         }
@@ -100,13 +100,25 @@ private fun Main.readVaultForDaemon(
     }
 
 /**
+ * #1046 item 4: [Vault.read], with the IllegalStateException of a truncated vault.enc turned into a failed decryption
+ * that each caller's GeneralSecurityException branch answers. An IllegalStateException thrown after the read (the
+ * seal install, a rewrite's change) is not caught as one.
+ */
+internal fun Vault.readTruncatedAsFailed(passphrase: CharArray): Map<String, Map<String, String>> =
+    try {
+        read(passphrase)
+    } catch (e: IllegalStateException) {
+        throw java.security.GeneralSecurityException(e.message, e)
+    }
+
+/**
  * The `vault.unlock` attempt behind the IPC verb (issue#796): the passphrase is checked against
  * the vault file; on success the data is cached and the daemon's locked state ends.
  */
 internal fun Main.daemonUnlockVault(passphrase: CharArray): VaultUnlockOutcome {
     val vault = Vault(baseConfigDir.resolve("vault.enc"))
     return try {
-        VaultUnlockOutcome.Ok(vault.read(passphrase).also { data ->
+        VaultUnlockOutcome.Ok(vault.readTruncatedAsFailed(passphrase).also { data ->
             installCredentialSeal(data)
             vaultDataCache = data
             daemonVaultLocked = false
@@ -165,7 +177,7 @@ internal fun Main.rewriteDaemonVault(
     val vault = Vault(baseConfigDir.resolve("vault.enc"))
     return try {
         ConfigFileTransaction.withLock(baseConfigDir.resolve("config.toml")) {
-            val data = change(vault.read(passphrase))
+            val data = change(vault.readTruncatedAsFailed(passphrase))
             vault.write(passphrase, data)
             vaultDataCache = data
             VaultUnlockOutcome.Ok(data)
@@ -182,7 +194,7 @@ internal fun Main.rewriteDaemonVault(
 /** gkrost/unidrive-cli#798: whether [passphrase] opens vault.enc; the data read is dropped at once. */
 internal fun Main.vaultPassphraseMatches(passphrase: CharArray): Boolean =
     try {
-        Vault(baseConfigDir.resolve("vault.enc")).read(passphrase)
+        Vault(baseConfigDir.resolve("vault.enc")).readTruncatedAsFailed(passphrase)
         true
     } catch (_: java.security.GeneralSecurityException) {
         false

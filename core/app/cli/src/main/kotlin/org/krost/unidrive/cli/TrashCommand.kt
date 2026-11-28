@@ -1,6 +1,7 @@
 package org.krost.unidrive.cli
 
 import kotlinx.coroutines.runBlocking
+import org.krost.unidrive.http.Priority
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -310,7 +311,7 @@ private fun <T> withRemoteTrashProvider(
     if (resolveFirst) resolveProfileTarget(main, null)
     val provider = main.createProvider()
     return try {
-        runBlocking {
+        runBlocking(Priority.Foreground) {
             provider.authenticateAndLog()
             requireRemoteTrash(provider)
             block(provider)

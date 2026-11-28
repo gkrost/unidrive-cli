@@ -32,6 +32,8 @@ dependencies {
     testImplementation(project(":app:sync"))
     testImplementation(testFixtures(project(":app:sync")))
     testImplementation(project(":app:hydration"))
+    // The store of the download-integrity tests: a localfs root, wrapped as the CLI wraps every provider.
+    testImplementation(project(":providers:localfs"))
 }
 
 tasks.test {
